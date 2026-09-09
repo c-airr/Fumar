@@ -65,7 +65,20 @@ FetchContent_Declare(stb
     GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20
     SOURCE_SUBDIR  no-cmake-here)
 
-FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb)
+# ---------------------------------------------------------------------------
+# Dear ImGui - the editor's user interface, on the docking branch.
+#
+# Docking is not in the stable releases: it is what lets panels be dragged,
+# split and torn off into separate windows, which is the whole shape of an
+# editor. The -docking tags are official releases of that branch.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.92.9b-docking
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  no-cmake-here)
+
+FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb imgui)
 
 # Header-only dependencies get a hand-written INTERFACE target. SYSTEM keeps
 # their warnings out of our build log.
@@ -95,4 +108,39 @@ else()
     message(FATAL_ERROR "fumar: no VulkanMemoryAllocator target found")
 endif()
 
-message(STATUS "fumar: SDL -> ${FUMAR_SDL_TARGET}, VMA -> ${FUMAR_VMA_TARGET}")
+# ---------------------------------------------------------------------------
+# ImGui ships loose source files rather than a build system, so the library is
+# assembled here. The core four files plus the two backends we use: SDL3 for
+# input and window handling, Vulkan for drawing.
+# ---------------------------------------------------------------------------
+add_library(fumar_imgui STATIC
+    "${imgui_SOURCE_DIR}/imgui.cpp"
+    "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+    "${imgui_SOURCE_DIR}/imgui_demo.cpp"
+    "${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp"
+    "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp")
+
+target_include_directories(fumar_imgui SYSTEM PUBLIC
+    "${imgui_SOURCE_DIR}"
+    "${imgui_SOURCE_DIR}/backends")
+
+target_link_libraries(fumar_imgui
+    PUBLIC Vulkan::Headers
+    PRIVATE ${FUMAR_SDL_TARGET})
+
+# fumar never links vulkan-1, so ImGui must not expect the global entry points
+# either - it gets them from us through ImGui_ImplVulkan_LoadFunctions instead.
+target_compile_definitions(fumar_imgui PUBLIC
+    VK_NO_PROTOTYPES
+    IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
+
+# Somebody else's code; our warning flags have nothing useful to say about it.
+if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    target_compile_options(fumar_imgui PRIVATE /w)
+else()
+    target_compile_options(fumar_imgui PRIVATE -w)
+endif()
+
+message(STATUS "fumar: SDL -> ${FUMAR_SDL_TARGET}, VMA -> ${FUMAR_VMA_TARGET}, ImGui -> fumar_imgui")

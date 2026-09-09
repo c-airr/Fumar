@@ -313,6 +313,14 @@ NodeId Renderer::loadModel(const std::filesystem::path& path, NodeId parent) {
     return loadGltfIntoScene(path, context, m_scene, m_resources, parent);
 }
 
+vk::Format Renderer::swapchainFormat() const {
+    return m_swapchain->format();
+}
+
+u32 Renderer::swapchainImageCount() const {
+    return m_swapchain->imageCount();
+}
+
 bool Renderer::recreateSwapchain() {
     if (!m_swapchain->recreate(m_window.framebufferSize())) {
         // Surface has no area - the window is minimised. The old swapchain is
@@ -474,6 +482,13 @@ void Renderer::recordCommands(u32 imageIndex) {
 
         m_resources.mesh(node.mesh).draw(cmd);
     });
+
+    // The user interface draws last, over everything, and inside the same
+    // render pass - starting a second one just for it would mean another store
+    // and load of the whole colour attachment.
+    if (m_overlay) {
+        m_overlay(cmd);
+    }
 
     cmd.endRendering();
 

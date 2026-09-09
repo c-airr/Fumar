@@ -34,3 +34,6 @@ assets/
 
 # distribution output
 dist/
+
+# editor layout, per-machine
+*.ini

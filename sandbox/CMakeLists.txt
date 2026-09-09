@@ -18,10 +18,9 @@ fumar_configure_target(sandbox)
 
 # Compiles the GLSL to SPIR-V and drops the .spv files next to the executable,
 # in bin/shaders/ - which is where Renderer looks for them.
-fumar_add_shaders(sandbox
-    FILES
-        "${CMAKE_SOURCE_DIR}/shaders/mesh.vert"
-        "${CMAKE_SOURCE_DIR}/shaders/mesh.frag")
+# The shaders are built by the fumar_shaders target; this only orders them
+# before the executable so a fresh build never runs without them.
+add_dependencies(sandbox fumar_shaders)
 
 # Assets are optional and not tracked in git, but when the directory exists it
 # is mirrored next to the executable so the renderer can find it at runtime.

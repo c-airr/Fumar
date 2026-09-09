@@ -28,17 +28,21 @@ if(NOT Vulkan_GLSLC_EXECUTABLE)
 endif()
 
 # ----------------------------------------------------------------------------
-#  fumar_add_shaders(<target>
+#  fumar_compile_shaders(<target>
 #      [OUTPUT_DIR <dir>]         # defaults to <exe dir>/shaders
 #      FILES <file.vert> <file.frag> ...)
 #
-#  Each file is compiled to <OUTPUT_DIR>/<name>.spv (e.g. triangle.vert.spv).
+#  Creates a custom target that compiles the listed shaders to
+#  <OUTPUT_DIR>/<name>.spv. Executables depend on it with
+#  add_dependencies(); they must NOT each declare the shaders themselves,
+#  because two targets producing the same output file is an error ninja
+#  refuses outright ("multiple rules generate ...").
 # ----------------------------------------------------------------------------
-function(fumar_add_shaders TARGET)
+function(fumar_compile_shaders TARGET)
     cmake_parse_arguments(ARG "" "OUTPUT_DIR" "FILES" ${ARGN})
 
     if(NOT ARG_FILES)
-        message(FATAL_ERROR "fumar_add_shaders(${TARGET}): FILES list is empty")
+        message(FATAL_ERROR "fumar_compile_shaders(${TARGET}): FILES list is empty")
     endif()
 
     set(out_dir "${ARG_OUTPUT_DIR}")
@@ -70,12 +74,7 @@ function(fumar_add_shaders TARGET)
         list(APPEND spv_files "${spv}")
     endforeach()
 
-    # A separate target for the shaders plus a dependency edge, so ninja builds
-    # them before the executable.
-    add_custom_target(${TARGET}_shaders DEPENDS ${spv_files})
-    add_dependencies(${TARGET} ${TARGET}_shaders)
-
-    # Surface the shader sources in the IDE without trying to compile them as C++.
-    target_sources(${TARGET} PRIVATE ${ARG_FILES})
-    set_source_files_properties(${ARG_FILES} PROPERTIES HEADER_FILE_ONLY TRUE)
+    # SOURCES surfaces the .vert/.frag files in IDE project trees without
+    # anything trying to compile them as C++.
+    add_custom_target(${TARGET} ALL DEPENDS ${spv_files} SOURCES ${ARG_FILES})
 endfunction()

@@ -134,6 +134,14 @@ void Window::pumpEvents() {
 
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // The hook sees the event first, so a UI layer can record it. It does
+        // not get to swallow it: whether the UI wants keyboard or mouse focus
+        // is a question the UI answers separately, and hiding events here would
+        // leave the window unable to notice a resize or a close request.
+        if (m_eventHook) {
+            m_eventHook(&event);
+        }
+
         switch (event.type) {
         case SDL_EVENT_QUIT:
             m_shouldClose = true;

@@ -8,6 +8,7 @@
 // not drag in windows.h or Xlib.
 #include <vulkan/vulkan_core.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,16 @@ public:
     /// Drains the OS event queue. Call once per frame - a window that stops
     /// pumping events is what the system reports as "not responding".
     void pumpEvents();
+
+    /// Called for every OS event before the window acts on it.
+    ///
+    /// The argument is an `SDL_Event*`, passed as void* so this header stays
+    /// free of SDL. That is a deliberate leak of one implementation detail:
+    /// ImGui's input backend takes SDL events directly, and inventing a
+    /// translation layer for every event type would be a lot of code that only
+    /// ImGui would ever read.
+    using EventHook = std::function<void(const void*)>;
+    void setEventHook(EventHook hook) { m_eventHook = std::move(hook); }
 
     /// Blocks until an event arrives or the timeout expires, then handles the
     /// queue as pumpEvents() does. Used while minimised, where there is nothing
@@ -135,6 +146,7 @@ private:
     bool m_minimized = false;
     bool m_resized = false;
     Vec2 m_mouseDelta;
+    EventHook m_eventHook;
 };
 
 } // namespace fumar

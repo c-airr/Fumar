@@ -11,6 +11,7 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <memory>
 
 namespace fumar {
@@ -71,6 +72,32 @@ public:
     /// Records and submits one frame.
     void drawFrame();
 
+    // --- UI integration -----------------------------------------------------
+    // A user interface has to draw inside the same render pass as the scene,
+    // after it, and its backend needs the raw Vulkan handles to set itself up.
+    // These exist for that and nothing else.
+
+    /// Recorded after the scene, still inside the render pass.
+    using OverlayCallback = std::function<void(vk::CommandBuffer)>;
+    void setOverlay(OverlayCallback overlay) { m_overlay = std::move(overlay); }
+
+    rhi::Instance& instance() { return *m_instance; }
+    rhi::Device& device() { return *m_device; }
+
+    /// Colour format of the swapchain, which any pipeline drawing into it must
+    /// be built for.
+    vk::Format swapchainFormat() const;
+
+    /// Format of the depth attachment.
+    ///
+    /// A UI drawing inside the scene's render pass needs this too: Vulkan
+    /// requires every pipeline used in a render pass to declare exactly the
+    /// attachment formats that pass has, depth included, even when the pipeline
+    /// itself never touches depth.
+    vk::Format depthFormat() const { return m_depthFormat; }
+
+    u32 swapchainImageCount() const;
+
 private:
     /// Returns false when the swapchain could not be rebuilt because the
     /// surface has no area yet - the window is minimised.
@@ -123,6 +150,7 @@ private:
     Scene m_scene;
     ResourceRegistry m_resources;
     Camera m_camera;
+    OverlayCallback m_overlay;
 
     /// Set when the swapchain no longer matches the surface. Kept as state
     /// rather than handled on the spot, because a rebuild can fail (minimised

@@ -72,6 +72,14 @@ include(FumarShaders)
 include(FumarVulkan)
 include(FumarDependencies)
 
+# --- shaders ----------------------------------------------------------------
+# Compiled once, into a target both executables depend on. Declaring them per
+# executable would mean two build rules writing the same .spv file.
+fumar_compile_shaders(fumar_shaders
+    FILES
+        "${CMAKE_SOURCE_DIR}/shaders/mesh.vert"
+        "${CMAKE_SOURCE_DIR}/shaders/mesh.frag")
+
 # --- engine modules ---------------------------------------------------------
 # The order mirrors the dependency graph: core depends on nothing, sandbox
 # depends on everything.
@@ -80,13 +88,15 @@ add_subdirectory(engine/scene)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
 add_subdirectory(engine/render)
+add_subdirectory(engine/ui)
 add_subdirectory(sandbox)
+add_subdirectory(editor)
 
 # --- distribution -----------------------------------------------------------
 # `cmake --install build/<preset> --prefix dist` produces a folder that can be
 # copied to another machine and run: the executable, the compiled shaders and
 # whatever assets exist, and nothing else.
-install(TARGETS sandbox RUNTIME DESTINATION .)
+install(TARGETS fumar_editor sandbox RUNTIME DESTINATION .)
 # FILES_MATCHING keeps the .d dependency files glslc leaves behind out of the
 # distribution - they are a build artifact, useless at runtime.
 install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/" DESTINATION shaders
