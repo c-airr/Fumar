@@ -45,16 +45,10 @@ void main() {
     vec3 lit = albedo * (ambient + kLightColor * diffuse);
 
     // Selection tint, mixed in rather than added, so a bright object cannot
-    // blow out to white and a dark one still visibly changes.
-    lit = mix(lit, kSelectionTint, object.highlight * 0.55);
-
-    // A rim term makes the selected object read at a glance even when it is
-    // facing away from the light.
-    if (object.highlight > 0.0) {
-        vec3 toCamera = normalize(-vWorldPosition);
-        float rim = pow(1.0 - abs(dot(normal, toCamera)), 2.0);
-        lit += kSelectionTint * rim * object.highlight * 0.8;
-    }
+    // blow out to white and a dark one still visibly changes. Kept subtle
+    // because the wireframe outline carries most of the signal - this only has
+    // to say which object the outline belongs to.
+    lit = mix(lit, kSelectionTint, object.highlight * 0.35);
 
     outColor = vec4(lit, 1.0);
 }

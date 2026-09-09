@@ -82,13 +82,15 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
     const vk::PipelineRasterizationStateCreateInfo rasterization{
         .depthClampEnable = VK_FALSE,
         .rasterizerDiscardEnable = VK_FALSE,
-        .polygonMode = vk::PolygonMode::eFill,
+        .polygonMode = desc.polygonMode,
         .cullMode = desc.cullMode,
         .frontFace = desc.frontFace,
-        .depthBiasEnable = VK_FALSE,
+        .depthBiasEnable = desc.depthBiasConstant != 0.0f ? VK_TRUE : VK_FALSE,
+        .depthBiasConstantFactor = desc.depthBiasConstant,
+        .depthBiasSlopeFactor = desc.depthBiasConstant != 0.0f ? -1.0f : 0.0f,
         // Not optional: a line width of 0 is invalid and the validation layers
         // will say so, even when nothing draws lines.
-        .lineWidth = 1.0f,
+        .lineWidth = desc.lineWidth,
     };
 
     const vk::PipelineMultisampleStateCreateInfo multisample{

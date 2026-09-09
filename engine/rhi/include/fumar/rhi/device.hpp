@@ -61,6 +61,10 @@ public:
 
     const vk::PhysicalDeviceProperties& properties() const { return m_properties; }
 
+    /// Whether lines thicker than one pixel can be drawn. Optional in Vulkan,
+    /// so anything drawing lines has to cope with it being false.
+    bool wideLinesSupported() const { return m_wideLinesSupported; }
+
     /// Returns the first candidate format the GPU supports with the requested
     /// features, or eUndefined if none qualify.
     ///
@@ -81,6 +85,8 @@ private:
     vk::PhysicalDevice m_physicalDevice;
     vk::PhysicalDeviceProperties m_properties;
     QueueFamilies m_queueFamilies;
+
+    bool m_wideLinesSupported = false;
 
     vk::UniqueDevice m_device;
     vk::Queue m_graphicsQueue;

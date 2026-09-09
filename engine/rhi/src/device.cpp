@@ -71,8 +71,13 @@ bool supportsRequiredFeatures(vk::PhysicalDevice device) {
     const auto chain =
         device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features>();
     const auto& features13 = chain.get<vk::PhysicalDeviceVulkan13Features>();
+    const auto& features10 = chain.get<vk::PhysicalDeviceFeatures2>().features;
 
-    return features13.dynamicRendering == VK_TRUE && features13.synchronization2 == VK_TRUE;
+    // fillModeNonSolid is what allows a pipeline to rasterise triangles as
+    // lines, which is how the editor draws wireframe outlines. It is optional
+    // in the specification but present on every desktop GPU.
+    return features13.dynamicRendering == VK_TRUE && features13.synchronization2 == VK_TRUE &&
+           features10.fillModeNonSolid == VK_TRUE;
 }
 
 /// Ranks a GPU. Higher is better; zero means unusable.
@@ -178,8 +183,24 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
         .dynamicRendering = VK_TRUE,
     };
 
-    const vk::DeviceCreateInfo createInfo{
+    // wideLines is genuinely optional - plenty of hardware only ever draws
+    // one-pixel lines - so it is requested only when available and the pipeline
+    // falls back to a width of 1 otherwise.
+    m_wideLinesSupported = m_physicalDevice.getFeatures().wideLines == VK_TRUE;
+
+    vk::PhysicalDeviceFeatures features10{};
+    features10.fillModeNonSolid = VK_TRUE;
+    features10.wideLines = m_wideLinesSupported ? VK_TRUE : VK_FALSE;
+
+    const vk::PhysicalDeviceFeatures2 features2{
         .pNext = &features13,
+        .features = features10,
+    };
+
+    const vk::DeviceCreateInfo createInfo{
+        // With a Features2 in the chain the older pEnabledFeatures field must be
+        // left null - the two are alternatives, and setting both is invalid.
+        .pNext = &features2,
         .queueCreateInfoCount = static_cast<u32>(queueInfos.size()),
         .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = static_cast<u32>(kRequiredDeviceExtensions.size()),

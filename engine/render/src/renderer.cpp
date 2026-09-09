@@ -116,6 +116,35 @@ Renderer::Renderer(Window& window) : m_window(window) {
                                              vk::ShaderStageFlagBits::eFragment,
                    });
 
+    m_outlinePipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "mesh.vert.spv",
+                       .fragmentShader = shaderDir / "outline.frag.spv",
+                       .colorFormat = kSceneColorFormat,
+                       .depthFormat = m_depthFormat,
+                       .vertexBindings = vertexBindings,
+                       .vertexAttributes = vertexAttributes,
+                       .setLayouts = setLayouts,
+                       .pushConstantSize = sizeof(ObjectPushConstants),
+                       .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
+                                             vk::ShaderStageFlagBits::eFragment,
+                       // No culling: the far side of the wireframe should show
+                       // through, which is what makes it read as a cage around
+                       // the object rather than a half-drawn shell.
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       .polygonMode = vk::PolygonMode::eLine,
+                       .lineWidth = m_device->wideLinesSupported() ? 2.0f : 1.0f,
+                       .depthBiasConstant = -1.0f,
+                       // Tested against the scene so the outline is hidden by
+                       // objects in front of it, but not written, so it never
+                       // occludes anything drawn later.
+                       .depthWrite = false,
+                       // Equal passes as well: the lines sit on the very
+                       // surface they trace, and their depth values match it
+                       // exactly.
+                       .depthCompare = vk::CompareOp::eLessOrEqual,
+                   });
+
     m_frames = std::make_unique<rhi::FrameContext>(*m_device, m_swapchain->imageCount());
 
     FUMAR_INFO("renderer ready");
@@ -146,6 +175,7 @@ Renderer::~Renderer() {
     m_cameraSetLayout.reset();
     m_descriptorPool.reset();
     m_frames.reset();
+    m_outlinePipeline.reset();
     m_pipeline.reset();
     m_upload.reset();
     m_swapchain.reset();
@@ -598,17 +628,13 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
 
         // The world transform comes straight from the last scene update, so
         // this loop does no matrix work of its own.
-        f32 highlight = 0.0f;
-        if (id == m_selected) {
-            highlight = 1.0f;
-        } else if (id == m_highlighted) {
-            highlight = 0.45f;
-        }
-
+        // Only the selection tints its faces. Hovering is answered by the
+        // wireframe pass below and nothing else, so passing the cursor over a
+        // crowded scene does not make objects flash.
         const ObjectPushConstants push{
             .model = worldTransform,
             .baseColor = material.baseColorFactor,
-            .highlight = highlight,
+            .highlight = id == m_selected ? 1.0f : 0.0f,
         };
         cmd.pushConstants<ObjectPushConstants>(
             m_pipeline->layout(),
@@ -616,6 +642,51 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
 
         m_resources.mesh(node.mesh).draw(cmd);
     });
+
+    // --- outlines -----------------------------------------------------------
+    // Drawn last, so they sit over the geometry rather than being overwritten
+    // by whatever was drawn afterwards. Same pass: starting another one would
+    // mean storing and reloading the whole colour attachment for two objects.
+    const auto drawOutline = [&](NodeId id, f32 strength) {
+        if (id == kInvalidNode || !m_scene.isAlive(id)) {
+            return;
+        }
+        const Node& node = m_scene.node(id);
+        if (!node.visible || !m_resources.has(node.mesh)) {
+            return;
+        }
+
+        const ObjectPushConstants push{
+            .model = m_scene.worldTransform(id),
+            .baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
+            .highlight = strength,
+        };
+        cmd.pushConstants<ObjectPushConstants>(
+            m_outlinePipeline->layout(),
+            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+
+        m_resources.mesh(node.mesh).draw(cmd);
+    };
+
+    if (m_highlighted != kInvalidNode || m_selected != kInvalidNode) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->handle());
+
+        // The outline shader ignores both sets, but the layout still declares
+        // them, so something compatible has to be bound or the draw is invalid.
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 0,
+                               m_perFrame[m_frames->currentFrame()].cameraSet, {});
+        if (m_resources.has(m_resources.fallbackMaterial())) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 1,
+                                   m_resources.material(m_resources.fallbackMaterial()).descriptorSet, {});
+        }
+
+        // Hover first, so that when the same object is both, the brighter
+        // selected outline is what ends up on top.
+        if (m_highlighted != m_selected) {
+            drawOutline(m_highlighted, 0.5f);
+        }
+        drawOutline(m_selected, 1.0f);
+    }
 
     cmd.endRendering();
 

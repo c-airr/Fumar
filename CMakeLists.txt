@@ -78,7 +78,8 @@ include(FumarDependencies)
 fumar_compile_shaders(fumar_shaders
     FILES
         "${CMAKE_SOURCE_DIR}/shaders/mesh.vert"
-        "${CMAKE_SOURCE_DIR}/shaders/mesh.frag")
+        "${CMAKE_SOURCE_DIR}/shaders/mesh.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/outline.frag")
 
 # --- engine modules ---------------------------------------------------------
 # The order mirrors the dependency graph: core depends on nothing, sandbox

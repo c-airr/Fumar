@@ -59,6 +59,16 @@ public:
     /// Removes a node and its entire subtree.
     void destroyNode(NodeId id);
 
+    /// Copies a node and everything under it, attached to the same parent.
+    ///
+    /// The copy lands in exactly the same place as the original: an editor that
+    /// nudged it would be guessing at a direction, and the duplicate is
+    /// selected afterwards so the gizmo is already on it. Names get a numeric
+    /// suffix so the outliner never shows two identical rows.
+    ///
+    /// Returns the new node, or kInvalidNode for the root or a dead id.
+    NodeId duplicateNode(NodeId id);
+
     bool isAlive(NodeId id) const;
 
     /// Access to a node's data.
@@ -99,6 +109,8 @@ public:
 private:
     void destroyRecursive(NodeId id);
     void detachFromParent(NodeId id);
+    NodeId duplicateInto(NodeId source, NodeId parent);
+    std::string uniqueName(const std::string& base) const;
 
     // Parallel arrays keyed by NodeId. A slot map rather than a vector of
     // nodes, so ids stay stable when other nodes are destroyed - an editor

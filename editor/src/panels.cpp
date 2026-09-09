@@ -145,6 +145,7 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
     // reading a freed name and would change the vector being walked below.
     bool destroyRequested = false;
     bool addChildRequested = false;
+    bool duplicateRequested = false;
 
     if (ImGui::BeginPopupContextItem()) {
         state.selected = id;
@@ -154,6 +155,9 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
         }
         if (ImGui::MenuItem("Add child")) {
             addChildRequested = true;
+        }
+        if (ImGui::MenuItem("Duplicate", "Ctrl+D")) {
+            duplicateRequested = true;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Delete")) {
@@ -176,6 +180,12 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
 
     if (addChildRequested) {
         state.selected = scene.createNode("node", id);
+    }
+    if (duplicateRequested) {
+        const NodeId copy = scene.duplicateNode(id);
+        if (copy != kInvalidNode) {
+            state.selected = copy;
+        }
     }
     if (destroyRequested) {
         if (state.selected == id) {
@@ -229,7 +239,8 @@ void drawDockspace(EditorState& state) {
             ImGui::EndMenu();
         }
 
-        const char* hint = "right mouse: look   |   WASD: move   |   Q W E R: tools   |   Del: delete";
+        const char* hint =
+            "right mouse: look   |   WASD: move   |   Q W E R: tools   |   Ctrl+D: duplicate   |   Del: delete";
         const f32 hintWidth = ImGui::CalcTextSize(hint).x;
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() - hintWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
         ImGui::TextDisabled("%s", hint);
@@ -277,6 +288,11 @@ void drawViewportPanel(EditorState& state, Renderer& renderer) {
     }
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &state.snapEnabled);
+
+    if (state.gizmoMode == GizmoMode::Scale) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(ImGui::GetIO().KeyShift ? "| uniform" : "| shift: uniform");
+    }
 
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -330,7 +346,10 @@ void drawViewportPanel(EditorState& state, Renderer& renderer) {
             operation = ImGuizmo::ROTATE;
             snapValue = state.rotateSnap;
         } else if (state.gizmoMode == GizmoMode::Scale) {
-            operation = ImGuizmo::SCALE;
+            // Holding shift switches to uniform scaling: one handle drives all
+            // three axes together, which is what you want whenever the object
+            // should keep its proportions.
+            operation = ImGui::GetIO().KeyShift ? ImGuizmo::SCALEU : ImGuizmo::SCALE;
             snapValue = state.scaleSnap;
         }
 

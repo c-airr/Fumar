@@ -4,7 +4,9 @@
 #include "fumar/core/log.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
 #include <utility>
 
 namespace fumar {
@@ -136,6 +138,76 @@ void Scene::destroyRecursive(NodeId id) {
     m_nodes[id] = Node{};
     m_alive[id] = false;
     m_freeSlots.push_back(id);
+}
+
+std::string Scene::uniqueName(const std::string& base) const {
+    // Strips a trailing " 2" style suffix first, so duplicating a duplicate
+    // gives "Cube 3" rather than "Cube 2 2".
+    std::string stem = base;
+    const usize space = stem.find_last_of(' ');
+    if (space != std::string::npos && space + 1 < stem.size()) {
+        const bool allDigits = std::all_of(stem.begin() + static_cast<isize>(space) + 1, stem.end(),
+                                           [](unsigned char c) { return std::isdigit(c) != 0; });
+        if (allDigits) {
+            stem = stem.substr(0, space);
+        }
+    }
+
+    const auto taken = [this](const std::string& candidate) {
+        for (usize i = 0; i < m_nodes.size(); ++i) {
+            if (m_alive[i] && m_nodes[i].name == candidate) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Linear scan per attempt, which is fine for the scene sizes an editor
+    // holds open. A name index would be the answer if it ever is not.
+    for (u32 suffix = 2; suffix < 10000; ++suffix) {
+        std::string candidate = stem + " " + std::to_string(suffix);
+        if (!taken(candidate)) {
+            return candidate;
+        }
+    }
+    return stem;
+}
+
+NodeId Scene::duplicateInto(NodeId source, NodeId parent) {
+    // Everything is read out before createNode, which may reallocate the node
+    // storage and invalidate any reference into it.
+    const std::vector<NodeId> children = m_nodes[source].children;
+    const std::string name = uniqueName(m_nodes[source].name);
+    const Transform transform = m_nodes[source].transform;
+    const MeshHandle mesh = m_nodes[source].mesh;
+    const MaterialHandle material = m_nodes[source].material;
+    const bool visible = m_nodes[source].visible;
+
+    const NodeId copy = createNode(name, parent);
+    m_nodes[copy].transform = transform;
+    m_nodes[copy].mesh = mesh;
+    m_nodes[copy].material = material;
+    m_nodes[copy].visible = visible;
+
+    // Meshes and materials are shared rather than copied: they are referenced
+    // by handle, so a duplicated object costs one node and no GPU memory.
+    for (NodeId child : children) {
+        if (isAlive(child)) {
+            duplicateInto(child, copy);
+        }
+    }
+
+    return copy;
+}
+
+NodeId Scene::duplicateNode(NodeId id) {
+    if (id == kRootNode || !isAlive(id)) {
+        return kInvalidNode;
+    }
+
+    const NodeId copy = duplicateInto(id, m_nodes[id].parent);
+    FUMAR_DEBUG("duplicated '{}' as '{}'", m_nodes[id].name, m_nodes[copy].name);
+    return copy;
 }
 
 void Scene::detachFromParent(NodeId id) {

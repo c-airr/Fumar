@@ -37,6 +37,20 @@ struct GraphicsPipelineDesc {
 
     vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
 
+    /// eFill for solid triangles, eLine to rasterise their edges instead.
+    /// eLine needs the fillModeNonSolid device feature.
+    vk::PolygonMode polygonMode = vk::PolygonMode::eFill;
+
+    /// Line thickness. Anything above 1.0 needs the wideLines device feature.
+    f32 lineWidth = 1.0f;
+
+    /// Nudges generated depth values towards the camera.
+    ///
+    /// A wireframe drawn over the same geometry produces identical depth
+    /// values, and the test then resolves them arbitrarily per pixel - the
+    /// lines flicker in and out. A small negative bias pulls them in front.
+    f32 depthBiasConstant = 0.0f;
+
     /// Which winding counts as front-facing, measured in FRAMEBUFFER space.
     ///
     /// eCounterClockwise matches the glTF convention fumar follows, and it

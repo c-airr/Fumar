@@ -117,6 +117,22 @@ void handleShortcuts(EditorState& state, Scene& scene) {
         state.gizmoMode = GizmoMode::Scale;
     }
 
+    // Ctrl+D duplicates, matching every other editor. The copy is selected
+    // immediately, so the gizmo is already on it and it can be dragged off the
+    // original without another click.
+    //
+    // Written as a modifier check plus a key press rather than with
+    // IsKeyChordPressed: chords go through ImGui shortcut routing, which asks
+    // which window owns the shortcut, and a global editor binding owned by no
+    // particular panel is exactly the case that routing declines to deliver.
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) &&
+        state.selected != kInvalidNode && scene.isAlive(state.selected)) {
+        const NodeId copy = scene.duplicateNode(state.selected);
+        if (copy != kInvalidNode) {
+            state.selected = copy;
+        }
+    }
+
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && state.selected != kInvalidNode &&
         scene.isAlive(state.selected)) {
         scene.destroyNode(state.selected);

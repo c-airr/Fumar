@@ -179,6 +179,10 @@ private:
     std::unique_ptr<rhi::Swapchain> m_swapchain;
     std::unique_ptr<rhi::UploadContext> m_upload;
     std::unique_ptr<rhi::GraphicsPipeline> m_pipeline;
+
+    /// Same geometry, rasterised as lines. Used to outline the hovered and
+    /// selected objects without a second render target or a stencil pass.
+    std::unique_ptr<rhi::GraphicsPipeline> m_outlinePipeline;
     std::unique_ptr<rhi::FrameContext> m_frames;
     std::unique_ptr<rhi::DescriptorPool> m_descriptorPool;
 
