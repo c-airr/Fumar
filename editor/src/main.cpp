@@ -9,6 +9,7 @@
 #include "fumar/scene/scene.hpp"
 #include "fumar/ui/imgui_layer.hpp"
 
+#include <ImGuizmo.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -20,37 +21,136 @@ using namespace fumar;
 
 namespace {
 
-/// Puts something in the scene so a fresh launch is not an empty grey window.
+/// Builds the scene the editor opens with.
 ///
-/// A real editor would open the last project instead. Until scene files exist
-/// (they are the next step), this stands in for one.
+/// A real editor would reopen the last project. Until scene files exist this
+/// stands in for one - and an empty grey window is a poor first impression
+/// either way.
 void createStarterScene(Renderer& renderer) {
     Scene& scene = renderer.scene();
 
-    const MeshHandle groundMesh = renderer.createPlaneMesh(12.0f, 12.0f);
-    const NodeId ground = scene.createNode("ground");
-    scene.node(ground).mesh = groundMesh;
+    // A restrained palette: everything is a shade of grey except the pillar,
+    // which is warmed slightly so it reads as a different material without
+    // turning the scene into a colour chart.
+    const MaterialHandle floorMaterial =
+        renderer.createMaterial("Floor", Vec4{0.34f, 0.345f, 0.36f, 1.0f});
+    const MaterialHandle blockMaterial =
+        renderer.createMaterial("Block", Vec4{0.60f, 0.61f, 0.63f, 1.0f});
+    const MaterialHandle pillarMaterial =
+        renderer.createMaterial("Pillar", Vec4{0.52f, 0.48f, 0.44f, 1.0f});
 
+    const MeshHandle planeMesh = renderer.createPlaneMesh(14.0f);
     const MeshHandle cubeMesh = renderer.createCubeMesh();
-    const NodeId group = scene.createNode("cubes");
-    scene.node(group).transform.position = Vec3{0.0f, 0.5f, 0.0f};
+    const MeshHandle cylinderMesh = renderer.createCylinderMesh(0.9f, 3.0f, 40);
 
-    for (u32 i = 0; i < 3; ++i) {
-        const NodeId cube = scene.createNode(std::format("cube_{}", i), group);
+    const NodeId floor = scene.createNode("Floor");
+    scene.node(floor).mesh = planeMesh;
+    scene.node(floor).material = floorMaterial;
+
+    const NodeId pillar = scene.createNode("Pillar");
+    scene.node(pillar).mesh = cylinderMesh;
+    scene.node(pillar).material = pillarMaterial;
+    // Half its height plus a hair: sitting the bottom cap exactly on the floor
+    // plane makes the two surfaces coplanar, and the depth test then picks
+    // between them per pixel - the flickering black patch known as z-fighting.
+    scene.node(pillar).transform.position = Vec3{0.0f, 1.502f, 0.0f};
+
+    // Grouped under one node, so the whole arrangement can be moved or hidden
+    // with a single selection - which is what a hierarchy is for.
+    const NodeId blocks = scene.createNode("Blocks");
+
+    struct BlockLayout {
+        const char* name;
+        Vec3 position;
+        Vec3 scale;
+        f32 yawDegrees;
+    };
+
+    const BlockLayout layout[]{
+        {"Block A", {-4.0f, 0.5f, 2.5f}, {1.0f, 1.0f, 1.0f}, 0.0f},
+        {"Block B", {-2.6f, 0.35f, -3.2f}, {0.7f, 0.7f, 0.7f}, 25.0f},
+        {"Block C", {3.6f, 0.75f, 1.4f}, {1.5f, 1.5f, 1.5f}, -15.0f},
+        {"Block D", {4.4f, 0.3f, -2.8f}, {0.6f, 0.6f, 0.6f}, 40.0f},
+        {"Step", {0.0f, 0.2f, 4.2f}, {3.0f, 0.4f, 1.2f}, 0.0f},
+    };
+
+    for (const BlockLayout& block : layout) {
+        const NodeId id = scene.createNode(block.name, blocks);
 
         // Taken after createNode, which may have reallocated the node storage.
-        Node& node = scene.node(cube);
+        Node& node = scene.node(id);
         node.mesh = cubeMesh;
-        node.transform.position = Vec3{static_cast<f32>(i) * 2.0f - 2.0f, 0.0f, 0.0f};
-        node.transform.scale = Vec3{0.8f, 0.8f, 0.8f};
+        node.material = blockMaterial;
+        node.transform.position = block.position;
+        node.transform.scale = block.scale;
+        node.transform.rotation = fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, radians(block.yawDegrees));
     }
 
     const std::filesystem::path modelPath = executableDirectory() / "assets" / "DamagedHelmet.glb";
     if (std::filesystem::exists(modelPath)) {
         const NodeId model = renderer.loadModel(modelPath);
         if (model != kInvalidNode) {
-            scene.node(model).transform.position = Vec3{0.0f, 2.0f, -3.0f};
+            scene.node(model).transform.position = Vec3{0.0f, 4.2f, 0.0f};
         }
+    }
+
+    FUMAR_INFO("starter scene: {} nodes, {} meshes, {} materials", scene.nodeCount(),
+               renderer.resources().meshCount(), renderer.resources().materialCount());
+}
+
+/// Keyboard shortcuts that apply when no text field has focus.
+void handleShortcuts(EditorState& state, Scene& scene) {
+    if (ImGui::GetIO().WantTextInput) {
+        return;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
+        state.gizmoMode = GizmoMode::Select;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
+        state.gizmoMode = GizmoMode::Translate;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        state.gizmoMode = GizmoMode::Rotate;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+        state.gizmoMode = GizmoMode::Scale;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && state.selected != kInvalidNode &&
+        scene.isAlive(state.selected)) {
+        scene.destroyNode(state.selected);
+        state.selected = kInvalidNode;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        state.selected = kInvalidNode;
+    }
+}
+
+/// Turns the cursor position in the viewport into a selection.
+///
+/// Runs every frame for the hover highlight, and commits to a selection only on
+/// a click. Doing the pick on hover as well is what makes objects light up as
+/// the cursor passes over them.
+void updatePicking(EditorState& state, Renderer& renderer, bool cameraActive) {
+    if (!state.viewportHovered || cameraActive) {
+        state.hovered = kInvalidNode;
+        renderer.setHighlighted(kInvalidNode);
+        return;
+    }
+
+    const Extent2D size = renderer.viewportExtent();
+    const f32 aspect = size.height > 0 ? static_cast<f32>(size.width) / static_cast<f32>(size.height) : 1.0f;
+
+    const Ray ray = renderer.camera().rayThrough(state.viewportCursor, aspect);
+    state.hovered = renderer.pickNode(ray);
+    renderer.setHighlighted(state.hovered);
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // Clicking empty space clears the selection rather than keeping it,
+        // matching what the outliner does and what people expect.
+        state.selected = state.hovered;
     }
 }
 
@@ -71,13 +171,18 @@ int main() {
     Renderer renderer(window);
     ImGuiLayer ui(window, renderer);
 
-    // The renderer records this after the scene, inside the same render pass.
+    // The renderer records this after the scene, into the window - the scene
+    // itself goes to an off-screen image that the viewport panel displays.
     renderer.setOverlay([&ui](vk::CommandBuffer cmd) { ui.record(cmd); });
 
     createStarterScene(renderer);
-    renderer.camera().position = Vec3{0.0f, 3.0f, 9.0f};
+    renderer.camera().position = Vec3{7.5f, 5.5f, 10.0f};
+    renderer.camera().yaw = -125.0f;
+    renderer.camera().pitch = -20.0f;
 
     EditorState state;
+    state.viewportTexture = ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
+
     auto lastFrameTime = Clock::now();
 
     while (!window.shouldClose()) {
@@ -93,34 +198,69 @@ int main() {
         const f32 deltaSeconds = std::min(std::chrono::duration<f32>(now - lastFrameTime).count(), 0.1f);
         lastFrameTime = now;
 
+        // --- viewport sizing ------------------------------------------------
+        // Uses the size the panel reported LAST frame, and happens before any
+        // widget is described this frame. That ordering is not optional:
+        // resizing creates a new image and frees the descriptor ImGui was given
+        // for the old one, so doing it after ImGui::Image had already recorded
+        // that descriptor would leave a freed handle inside the draw list, and
+        // the validation layers flag it as an invalid descriptor set on submit.
+        //
+        // Costs one frame of latency after a resize - the panel is drawn at the
+        // new size with an image still at the old one - which is invisible next
+        // to the alternative.
+        if (renderer.resizeViewport(state.viewportSize)) {
+            ui.unregisterTexture(state.viewportTexture);
+            state.viewportTexture =
+                ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
+        }
+
         // --- interface ------------------------------------------------------
         ui.beginFrame();
+        ImGuizmo::BeginFrame();
 
         drawDockspace(state);
-        drawHierarchyPanel(state, renderer.scene());
-        drawInspectorPanel(state, renderer.scene(), renderer);
+        drawViewportPanel(state, renderer);
+        drawOutlinerPanel(state, renderer.scene());
+        drawDetailsPanel(state, renderer.scene(), renderer);
+        drawContentPanel(state, renderer);
         drawStatsPanel(state, renderer.scene(), renderer);
 
         if (state.showImGuiDemo) {
-            // Kept reachable from the View menu: it is the fastest reference for
-            // what a widget looks like and how it is called.
+            // Reachable from the Window menu: the fastest reference for what a
+            // widget looks like and how it is called.
             ImGui::ShowDemoWindow(&state.showImGuiDemo);
         }
 
-        ui.endFrame();
+        handleShortcuts(state, renderer.scene());
 
         // --- camera ---------------------------------------------------------
-        // Skipped while the interface has the mouse or keyboard, so dragging a
-        // slider does not also fly the camera across the scene. Once the camera
-        // has grabbed the cursor it keeps it, because in that mode ImGui no
-        // longer receives meaningful mouse positions.
-        const bool uiHasInput = ui.wantsMouse() || ui.wantsKeyboard();
-        if (!uiHasInput || window.relativeMouse()) {
+        // Flying is allowed only from inside the viewport, so dragging in a
+        // panel never moves the view. Once the cursor is captured the check is
+        // skipped, because in that mode ImGui no longer receives meaningful
+        // positions and would report the cursor as being nowhere.
+        const bool cameraActive =
+            window.relativeMouse() ||
+            (state.viewportHovered && window.mouseButtonDown(MouseButton::Right));
+
+        if (cameraActive) {
             renderer.camera().update(window, deltaSeconds);
+        } else if (window.relativeMouse()) {
+            window.setRelativeMouse(false);
         }
 
+        updatePicking(state, renderer, cameraActive);
+        renderer.setSelected(state.selected);
+
+        ui.endFrame();
         renderer.drawFrame();
     }
+
+    // The last submitted frame may still be executing, and its command buffer
+    // references this descriptor set. Freeing it first is a validation error
+    // and, on a real driver, a use-after-free.
+    renderer.waitIdle();
+    ui.unregisterTexture(state.viewportTexture);
 
     FUMAR_INFO("fumar editor shutting down");
     return 0;

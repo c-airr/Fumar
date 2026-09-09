@@ -78,7 +78,19 @@ FetchContent_Declare(imgui
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  no-cmake-here)
 
-FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb imgui)
+# ---------------------------------------------------------------------------
+# ImGuizmo - the translate/rotate/scale handles drawn into the viewport.
+#
+# Pinned to a commit rather than a tag: the newest tag is from 2021 and predates
+# several ImGui API changes. Upstream master tracks them, so that is what works
+# against a current ImGui.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG        18cef5e031d8c6973d80284c67f60549fafd78c1
+    SOURCE_SUBDIR  no-cmake-here)
+
+FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb imgui imguizmo)
 
 # Header-only dependencies get a hand-written INTERFACE target. SYSTEM keeps
 # their warnings out of our build log.
@@ -143,4 +155,9 @@ else()
     target_compile_options(fumar_imgui PRIVATE -w)
 endif()
 
-message(STATUS "fumar: SDL -> ${FUMAR_SDL_TARGET}, VMA -> ${FUMAR_VMA_TARGET}, ImGui -> fumar_imgui")
+# ImGuizmo is compiled into the same library: it includes imgui_internal.h and
+# is meaningless without ImGui, so keeping them apart would buy nothing.
+target_sources(fumar_imgui PRIVATE "${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp")
+target_include_directories(fumar_imgui SYSTEM PUBLIC "${imguizmo_SOURCE_DIR}/src")
+
+message(STATUS "fumar: SDL -> ${FUMAR_SDL_TARGET}, VMA -> ${FUMAR_VMA_TARGET}, ImGui + ImGuizmo -> fumar_imgui")

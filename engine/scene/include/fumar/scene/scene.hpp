@@ -84,8 +84,11 @@ public:
     /// World transform from the last updateWorldTransforms() call.
     const Mat4& worldTransform(NodeId id) const;
 
-    /// Visits every visible node that has geometry, with its world transform.
-    void forEachDrawable(const std::function<void(const Node&, const Mat4&)>& visit) const;
+    /// Visits every visible node that has geometry, with its id and world
+    /// transform. The id is passed because callers routinely need to know
+    /// WHICH node they are looking at - to tint the selected one, for
+    /// instance - and comparing node addresses would be fragile.
+    void forEachDrawable(const std::function<void(NodeId, const Node&, const Mat4&)>& visit) const;
 
     usize nodeCount() const;
 

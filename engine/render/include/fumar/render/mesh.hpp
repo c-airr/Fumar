@@ -36,6 +36,21 @@ struct Vertex {
     static std::array<vk::VertexInputAttributeDescription, 3> attributes();
 };
 
+/// An axis-aligned bounding box in the mesh own local space.
+///
+/// Cheap to test a ray against and cheap to compute, which is what makes it the
+/// standard first pass for picking: reject almost everything against boxes,
+/// then do exact triangle tests only on what survives. fumar stops at the box,
+/// which is accurate enough to click on an object and wrong only at the corners
+/// of very non-boxy shapes.
+struct Bounds {
+    Vec3 min{0.0f, 0.0f, 0.0f};
+    Vec3 max{0.0f, 0.0f, 0.0f};
+
+    Vec3 centre() const { return (min + max) * 0.5f; }
+    Vec3 extent() const { return max - min; }
+};
+
 /// Vertex and index buffers in device-local memory, plus the draw call.
 ///
 /// Indices matter more than they look: a cube has 8 distinct corners but 36
@@ -58,12 +73,16 @@ public:
 
     u32 indexCount() const { return m_indexCount; }
 
+    /// Local-space bounds, computed once when the mesh was built.
+    const Bounds& bounds() const { return m_bounds; }
+
     bool valid() const { return m_indexCount > 0; }
 
 private:
     rhi::Buffer m_vertexBuffer;
     rhi::Buffer m_indexBuffer;
     u32 m_indexCount = 0;
+    Bounds m_bounds;
 };
 
 /// A unit cube with correct per-face normals and UVs.
@@ -76,5 +95,14 @@ Mesh makeCube(rhi::Device& device, rhi::UploadContext& upload);
 
 /// A flat ground plane of the given half-extent, lying in the XZ plane.
 Mesh makePlane(rhi::Device& device, rhi::UploadContext& upload, f32 halfSize, f32 uvTiling = 1.0f);
+
+/// A cylinder standing on the XZ plane, centred on the origin.
+///
+/// The side is built from `segments` quads whose normals point straight out
+/// from the axis, so it shades smoothly; the caps are separate fans with flat
+/// normals, because a cap and the side meeting at an edge need different
+/// normals there - sharing them would round the rim over.
+Mesh makeCylinder(rhi::Device& device, rhi::UploadContext& upload, f32 radius, f32 height,
+                  u32 segments = 32);
 
 } // namespace fumar

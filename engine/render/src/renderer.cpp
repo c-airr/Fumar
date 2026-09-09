@@ -14,7 +14,9 @@
 #include "fumar/render/texture.hpp"
 #include "fumar/rhi/upload_context.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <vector>
 
 namespace fumar {
@@ -32,10 +34,16 @@ struct alignas(16) CameraUniforms {
     Vec4 position;
 };
 
-/// Push constants, matching the block in mesh.vert. 64 bytes, comfortably
-/// inside the 128 bytes every implementation guarantees.
+/// Push constants, matching the block in mesh.vert and mesh.frag.
+///
+/// 84 bytes used of the 128 every implementation guarantees. Worth watching:
+/// push constants are the fastest way to get per-draw data to a shader
+/// precisely because the block is tiny and lives in the command buffer, so
+/// anything that grows past the limit belongs in a uniform buffer instead.
 struct ObjectPushConstants {
-    Mat4 model;
+    Mat4 model;      // 64 bytes
+    Vec4 baseColor;  // 16 bytes
+    f32 highlight;   // 4 bytes: 0 = normal, 0.5 = hovered, 1 = selected
 };
 
 constexpr bool kValidationByDefault =
@@ -79,8 +87,8 @@ Renderer::Renderer(Window& window) : m_window(window) {
     m_swapchain = std::make_unique<rhi::Swapchain>(*m_device, m_surface, window.framebufferSize());
     m_upload = std::make_unique<rhi::UploadContext>(*m_device);
 
-    createDepthBuffer();
     createDefaultTexture();
+    createViewportTarget(m_viewportExtent);
     createDescriptors();
 
     const std::array<vk::VertexInputBindingDescription, 1> vertexBindings{Vertex::binding()};
@@ -92,13 +100,20 @@ Renderer::Renderer(Window& window) : m_window(window) {
         *m_device, rhi::GraphicsPipelineDesc{
                        .vertexShader = shaderDir / "mesh.vert.spv",
                        .fragmentShader = shaderDir / "mesh.frag.spv",
-                       .colorFormat = m_swapchain->format(),
+                       // The scene pipeline targets the off-screen image, not
+                       // the swapchain - so a change of window format never
+                       // invalidates it.
+                       .colorFormat = kSceneColorFormat,
                        .depthFormat = m_depthFormat,
                        .vertexBindings = vertexBindings,
                        .vertexAttributes = vertexAttributes,
                        .setLayouts = setLayouts,
                        .pushConstantSize = sizeof(ObjectPushConstants),
-                       .pushConstantStages = vk::ShaderStageFlagBits::eVertex,
+                       // Both stages: the vertex shader needs the model matrix,
+                       // the fragment shader needs the colour and highlight.
+                       // A range must cover every stage that reads it.
+                       .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
+                                             vk::ShaderStageFlagBits::eFragment,
                    });
 
     m_frames = std::make_unique<rhi::FrameContext>(*m_device, m_swapchain->imageCount());
@@ -125,6 +140,7 @@ Renderer::~Renderer() {
     }
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
+    m_sceneColor = rhi::Image{};
     m_sampler.reset();
     m_materialSetLayout.reset();
     m_cameraSetLayout.reset();
@@ -144,7 +160,7 @@ Renderer::~Renderer() {
     FUMAR_INFO("renderer shut down");
 }
 
-void Renderer::createDepthBuffer() {
+void Renderer::createViewportTarget(Extent2D size) {
     if (m_depthFormat == vk::Format::eUndefined) {
         // In preference order: 32-bit float depth first, then the combined
         // depth/stencil formats. One of these exists on every real GPU, but the
@@ -160,46 +176,62 @@ void Renderer::createDepthBuffer() {
         FUMAR_INFO("depth format: {}", vk::to_string(m_depthFormat));
     }
 
+    m_viewportExtent = size;
+    const vk::Extent2D extent{size.width, size.height};
+
+    m_sceneColor = rhi::Image(*m_device, rhi::ImageDesc{
+                                             .extent = extent,
+                                             .format = kSceneColorFormat,
+                                             // eSampled is the whole point: the
+                                             // interface reads this image back
+                                             // as a texture to show in a panel.
+                                             .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                                                      vk::ImageUsageFlagBits::eSampled,
+                                             .aspect = vk::ImageAspectFlagBits::eColor,
+                                         });
+
     m_depthImage = rhi::Image(*m_device, rhi::ImageDesc{
-                                             .extent = m_swapchain->extent(),
+                                             .extent = extent,
                                              .format = m_depthFormat,
                                              .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
                                              .aspect = vk::ImageAspectFlagBits::eDepth,
                                          });
 }
 
-void Renderer::createDefaultTexture() {
-    // A checkerboard rather than flat white: it makes UV mapping, filtering and
-    // texture orientation visible at a glance, which flat colour would hide.
-    constexpr u32 kSize = 64;
-    constexpr u32 kCheck = 8;
-
-    std::vector<u8> pixels(static_cast<usize>(kSize) * kSize * 4);
-    for (u32 y = 0; y < kSize; ++y) {
-        for (u32 x = 0; x < kSize; ++x) {
-            const bool light = ((x / kCheck) + (y / kCheck)) % 2 == 0;
-            const u8 value = light ? 220 : 90;
-            const usize index = (static_cast<usize>(y) * kSize + x) * 4;
-            pixels[index + 0] = value;
-            pixels[index + 1] = value;
-            pixels[index + 2] = static_cast<u8>(light ? 235 : 110);
-            pixels[index + 3] = 255;
-        }
+bool Renderer::resizeViewport(Extent2D size) {
+    // A panel can report zero size while it is being dragged or is collapsed,
+    // and rebuilding for every pixel of a drag would stall the GPU on every
+    // frame of it. Neither is worth doing.
+    if (size.width == 0 || size.height == 0 || size == m_viewportExtent) {
+        return false;
     }
 
-    m_defaultTexture =
-        rhi::Image(*m_device, rhi::ImageDesc{
-                                  .extent = vk::Extent2D{kSize, kSize},
-                                  // Srgb, so the hardware converts to linear on
-                                  // sample and the lighting maths downstream
-                                  // stays linear.
-                                  .format = vk::Format::eR8G8B8A8Srgb,
-                                  .usage = vk::ImageUsageFlagBits::eSampled |
-                                           vk::ImageUsageFlagBits::eTransferDst,
-                                  .aspect = vk::ImageAspectFlagBits::eColor,
-                              });
+    // The old images may still be referenced by frames in flight.
+    m_device->waitIdle();
+    createViewportTarget(size);
 
-    m_upload->uploadImage(m_defaultTexture, pixels.data(), pixels.size());
+    FUMAR_DEBUG("viewport target resized to {}x{}", size.width, size.height);
+    return true;
+}
+
+void Renderer::createDefaultTexture() {
+    // A single white pixel.
+    //
+    // Every material samples a texture, and one that has no texture of its own
+    // uses this: white multiplied by the material colour is the material
+    // colour. That keeps the shader branch-free, at the cost of one sample
+    // whose result is known - a trade every engine makes.
+    const std::array<u8, 4> white{255, 255, 255, 255};
+
+    m_defaultTexture = rhi::Image(*m_device, rhi::ImageDesc{
+                                                 .extent = vk::Extent2D{1, 1},
+                                                 .format = vk::Format::eR8G8B8A8Srgb,
+                                                 .usage = vk::ImageUsageFlagBits::eSampled |
+                                                          vk::ImageUsageFlagBits::eTransferDst,
+                                                 .aspect = vk::ImageAspectFlagBits::eColor,
+                                             });
+
+    m_upload->uploadImage(m_defaultTexture, white.data(), white.size());
 
     // The sampler is a separate object from the image: it describes how to READ
     // a texture (filtering, wrapping), not what is in it, so one sampler can
@@ -260,7 +292,8 @@ void Renderer::createDescriptors() {
     // a broken or untextured asset shows an obvious checkerboard instead of
     // failing to bind a descriptor.
     Material fallback;
-    fallback.name = "fallback";
+    fallback.name = "default";
+    fallback.baseColorFactor = Vec4{0.62f, 0.63f, 0.65f, 1.0f};
     fallback.descriptorSet = m_descriptorPool->allocate(*m_materialSetLayout);
     writer.image(fallback.descriptorSet, 0, m_defaultTexture.view(), *m_sampler);
     m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
@@ -276,9 +309,15 @@ MeshHandle Renderer::createPlaneMesh(f32 halfSize, f32 uvTiling) {
     return m_resources.addMesh(makePlane(*m_device, *m_upload, halfSize, uvTiling));
 }
 
-MaterialHandle Renderer::createMaterial(std::string name, const std::filesystem::path& baseColorTexture) {
+MeshHandle Renderer::createCylinderMesh(f32 radius, f32 height, u32 segments) {
+    return m_resources.addMesh(makeCylinder(*m_device, *m_upload, radius, height, segments));
+}
+
+MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
+                                        const std::filesystem::path& baseColorTexture) {
     Material material;
     material.name = std::move(name);
+    material.baseColorFactor = baseColor;
 
     vk::ImageView view = m_defaultTexture.view();
     if (!baseColorTexture.empty()) {
@@ -287,7 +326,7 @@ MaterialHandle Renderer::createMaterial(std::string name, const std::filesystem:
             material.baseColor = m_resources.addTexture(std::move(texture));
             view = m_resources.texture(material.baseColor).view();
         } else {
-            FUMAR_WARN("material '{}' falls back to the checkerboard", material.name);
+            FUMAR_WARN("material '{}' falls back to a flat colour", material.name);
         }
     }
 
@@ -313,6 +352,89 @@ NodeId Renderer::loadModel(const std::filesystem::path& path, NodeId parent) {
     return loadGltfIntoScene(path, context, m_scene, m_resources, parent);
 }
 
+namespace {
+
+/// Slab test: how far along the ray it enters and leaves an axis-aligned box.
+///
+/// For each axis the box is a pair of parallel planes; the ray is inside the
+/// box only where all three intervals overlap. Returns false when they do not,
+/// or when the overlap lies entirely behind the ray origin.
+bool intersectRayBounds(const Vec3& origin, const Vec3& direction, const Bounds& bounds, f32& outDistance) {
+    f32 tMin = 0.0f;
+    f32 tMax = 1e30f;
+
+    for (usize axis = 0; axis < 3; ++axis) {
+        const f32 d = direction[axis];
+        const f32 o = origin[axis];
+        const f32 lo = bounds.min[axis];
+        const f32 hi = bounds.max[axis];
+
+        if (std::abs(d) < 1e-8f) {
+            // Parallel to this pair of planes: either always inside them or
+            // never, and no division is possible.
+            if (o < lo || o > hi) {
+                return false;
+            }
+            continue;
+        }
+
+        f32 t1 = (lo - o) / d;
+        f32 t2 = (hi - o) / d;
+        if (t1 > t2) {
+            std::swap(t1, t2);
+        }
+
+        tMin = t1 > tMin ? t1 : tMin;
+        tMax = t2 < tMax ? t2 : tMax;
+        if (tMin > tMax) {
+            return false;
+        }
+    }
+
+    outDistance = tMin;
+    return true;
+}
+
+} // namespace
+
+NodeId Renderer::pickNode(const Ray& ray) const {
+    NodeId best = kInvalidNode;
+    f32 bestDistance = 1e30f;
+
+    m_scene.forEachDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
+        if (!m_resources.has(node.mesh)) {
+            return;
+        }
+
+        // Into the object own space, where its bounding box really is axis
+        // aligned. A direction is transformed with w = 0 so translation does
+        // not apply to it, and is deliberately left unnormalised: scaling has
+        // to affect it for the resulting distance to stay comparable.
+        const Mat4 toLocal = inverse(worldTransform);
+        const Vec3 localOrigin = xyz(toLocal * point(ray.origin));
+        const Vec3 localDirection = xyz(toLocal * direction(ray.direction));
+
+        f32 distance = 0.0f;
+        if (!intersectRayBounds(localOrigin, localDirection, m_resources.mesh(node.mesh).bounds(),
+                                distance)) {
+            return;
+        }
+
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = id;
+        }
+    });
+
+    return best;
+}
+
+void Renderer::waitIdle() const {
+    if (m_device) {
+        m_device->waitIdle();
+    }
+}
+
 vk::Format Renderer::swapchainFormat() const {
     return m_swapchain->format();
 }
@@ -328,8 +450,8 @@ bool Renderer::recreateSwapchain() {
         return false;
     }
 
-    // The depth buffer is sized to the colour attachment, so it has to follow.
-    createDepthBuffer();
+    // Nothing else follows the swapchain now: the scene draws into the
+    // off-screen target, sized by the viewport panel rather than the window.
 
     // The number of images can change with the new size, and there is one
     // presentation semaphore per image.
@@ -355,22 +477,24 @@ void Renderer::updateCameraUniforms(u32 frameIndex) {
     m_perFrame[frameIndex].cameraUniforms.write(&uniforms, sizeof(uniforms));
 }
 
-void Renderer::recordCommands(u32 imageIndex) {
-    const vk::CommandBuffer cmd = m_frames->commandBuffer();
-    const vk::Extent2D extent = m_swapchain->extent();
+void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
+    const vk::Extent2D extent{m_viewportExtent.width, m_viewportExtent.height};
 
-    // --- barriers: get both attachments into writable layouts --------------
+    // --- barriers: both attachments into writable layouts -------------------
     const std::array<vk::ImageMemoryBarrier2, 2> toAttachment{
         vk::ImageMemoryBarrier2{
-            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-            .srcAccessMask = vk::AccessFlagBits2::eNone,
+            // Waits for the fragment shader that sampled this image last frame,
+            // when the interface displayed it. Overwriting it before that read
+            // completes is exactly the hazard this barrier exists for.
+            .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
             .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
             .oldLayout = vk::ImageLayout::eUndefined,
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_swapchain->image(imageIndex),
+            .image = m_sceneColor.handle(),
             .subresourceRange = kWholeColorImage,
         },
         vk::ImageMemoryBarrier2{
@@ -395,20 +519,19 @@ void Renderer::recordCommands(u32 imageIndex) {
         .pImageMemoryBarriers = toAttachment.data(),
     });
 
-    // --- rendering ----------------------------------------------------------
     vk::ClearValue colorClear{};
-    colorClear.color.float32[0] = 0.05f;
-    colorClear.color.float32[1] = 0.06f;
-    colorClear.color.float32[2] = 0.09f;
+    colorClear.color.float32[0] = 0.055f;
+    colorClear.color.float32[1] = 0.058f;
+    colorClear.color.float32[2] = 0.065f;
     colorClear.color.float32[3] = 1.0f;
 
     vk::ClearValue depthClear{};
-    // 1.0 is the far plane in Vulkan's 0..1 depth range, so clearing to it means
-    // "nothing has been drawn here yet" and any geometry passes the eLess test.
+    // 1.0 is the far plane in Vulkan 0..1 depth, so clearing to it means
+    // nothing has been drawn here yet and any geometry passes the eLess test.
     depthClear.depthStencil.depth = 1.0f;
 
     const vk::RenderingAttachmentInfo colorAttachment{
-        .imageView = m_swapchain->imageView(imageIndex),
+        .imageView = m_sceneColor.view(),
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
@@ -419,8 +542,8 @@ void Renderer::recordCommands(u32 imageIndex) {
         .imageView = m_depthImage.view(),
         .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
-        // eDontCare: depth is scratch space for this frame only, and telling the
-        // driver we do not need it back lets it skip writing it out to memory.
+        // eDontCare: depth is scratch space for this frame only, and saying we
+        // do not need it back lets the driver skip writing it out to memory.
         .storeOp = vk::AttachmentStoreOp::eDontCare,
         .clearValue = depthClear,
     };
@@ -446,17 +569,16 @@ void Renderer::recordCommands(u32 imageIndex) {
 
     cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = extent});
 
-    // Set 0 changes once per frame, set 1 once per material. Bound in that
-    // order and left alone, which is exactly why they are separate sets.
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 0,
                            m_perFrame[m_frames->currentFrame()].cameraSet, {});
+
     // Materials are bound per drawable rather than once, because different
     // nodes use different ones. Consecutive nodes usually share a material
     // though, so the last one bound is remembered and the rebind skipped -
     // sorting the scene by material would take this further.
     vk::DescriptorSet boundMaterial;
 
-    m_scene.forEachDrawable([&](const Node& node, const Mat4& worldTransform) {
+    m_scene.forEachDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
         if (!m_resources.has(node.mesh)) {
             return;
         }
@@ -467,32 +589,107 @@ void Renderer::recordCommands(u32 imageIndex) {
             return;
         }
 
-        const vk::DescriptorSet materialSet = m_resources.material(handle).descriptorSet;
-        if (materialSet != boundMaterial) {
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 1, materialSet,
-                                   {});
-            boundMaterial = materialSet;
+        const Material& material = m_resources.material(handle);
+        if (material.descriptorSet != boundMaterial) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 1,
+                                   material.descriptorSet, {});
+            boundMaterial = material.descriptorSet;
         }
 
-        // The world transform comes straight from the scene's last update, so
+        // The world transform comes straight from the last scene update, so
         // this loop does no matrix work of its own.
-        const ObjectPushConstants push{.model = worldTransform};
-        cmd.pushConstants<ObjectPushConstants>(m_pipeline->layout(), vk::ShaderStageFlagBits::eVertex, 0,
-                                               push);
+        f32 highlight = 0.0f;
+        if (id == m_selected) {
+            highlight = 1.0f;
+        } else if (id == m_highlighted) {
+            highlight = 0.45f;
+        }
+
+        const ObjectPushConstants push{
+            .model = worldTransform,
+            .baseColor = material.baseColorFactor,
+            .highlight = highlight,
+        };
+        cmd.pushConstants<ObjectPushConstants>(
+            m_pipeline->layout(),
+            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
 
         m_resources.mesh(node.mesh).draw(cmd);
     });
 
-    // The user interface draws last, over everything, and inside the same
-    // render pass - starting a second one just for it would mean another store
-    // and load of the whole colour attachment.
+    cmd.endRendering();
+
+    // The interface samples this image in its fragment shader, so it has to be
+    // readable by the time that runs.
+    const vk::ImageMemoryBarrier2 toShaderRead{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = m_sceneColor.handle(),
+        .subresourceRange = kWholeColorImage,
+    };
+
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toShaderRead,
+    });
+}
+
+void Renderer::recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex) {
+    const vk::Extent2D extent = m_swapchain->extent();
+
+    const vk::ImageMemoryBarrier2 toColorAttachment{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = m_swapchain->image(imageIndex),
+        .subresourceRange = kWholeColorImage,
+    };
+
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toColorAttachment,
+    });
+
+    vk::ClearValue clear{};
+    clear.color.float32[0] = 0.043f;
+    clear.color.float32[1] = 0.047f;
+    clear.color.float32[2] = 0.055f;
+    clear.color.float32[3] = 1.0f;
+
+    const vk::RenderingAttachmentInfo colorAttachment{
+        .imageView = m_swapchain->imageView(imageIndex),
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = clear,
+    };
+
+    // No depth attachment: the interface is drawn back to front in submission
+    // order and has no use for depth testing.
+    cmd.beginRendering(vk::RenderingInfo{
+        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachment,
+    });
+
     if (m_overlay) {
         m_overlay(cmd);
     }
 
     cmd.endRendering();
 
-    // --- barrier: colour attachment -> presentable -------------------------
     const vk::ImageMemoryBarrier2 toPresent{
         .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
         .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
@@ -513,6 +710,16 @@ void Renderer::recordCommands(u32 imageIndex) {
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &toPresent,
     });
+}
+
+void Renderer::recordCommands(u32 imageIndex) {
+    const vk::CommandBuffer cmd = m_frames->commandBuffer();
+
+    // Two passes: the scene into the off-screen target, then the interface into
+    // the window with that target as one of its textures. They cannot share a
+    // pass, because the second reads what the first wrote.
+    recordSceneRendering(cmd);
+    recordUiRendering(cmd, imageIndex);
 }
 
 void Renderer::drawFrame() {

@@ -39,33 +39,117 @@ PFN_vkVoidFunction loadVulkanFunction(const char* name, void* userData) {
     return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(instance, name);
 }
 
+/// The editor accent: a burnt orange, used for borders, selection and anything
+/// the eye is meant to land on. Kept in one place because it appears in the
+/// interface and in the scene shader, and the two have to agree.
+constexpr ImVec4 kAccent{0.659f, 0.373f, 0.173f, 1.00f};
+
+ImVec4 withAlpha(const ImVec4& colour, float alpha) {
+    return ImVec4(colour.x, colour.y, colour.z, alpha);
+}
+
+ImVec4 scaled(const ImVec4& colour, float factor) {
+    return ImVec4(colour.x * factor, colour.y * factor, colour.z * factor, colour.w);
+}
+
 void applyStyle() {
     ImGui::StyleColorsDark();
 
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 4.0f;
-    style.FrameRounding = 3.0f;
-    style.GrabRounding = 3.0f;
-    style.TabRounding = 3.0f;
-    style.ScrollbarRounding = 3.0f;
+
+    // Rounded, with a visible border on every framed control. The border is
+    // what carries the accent colour - filling controls with it instead would
+    // be loud and would leave nothing to highlight the active one with.
+    style.WindowRounding = 5.0f;
+    style.ChildRounding = 5.0f;
+    style.FrameRounding = 5.0f;
+    style.PopupRounding = 5.0f;
+    style.GrabRounding = 4.0f;
+    style.TabRounding = 5.0f;
+    style.ScrollbarRounding = 6.0f;
+
+    style.FrameBorderSize = 1.0f;
+    style.WindowBorderSize = 1.0f;
+    style.TabBarBorderSize = 2.0f;
+
+    style.WindowPadding = ImVec2(8.0f, 8.0f);
+    style.FramePadding = ImVec2(8.0f, 4.0f);
+    style.ItemSpacing = ImVec2(8.0f, 6.0f);
+    style.IndentSpacing = 18.0f;
+    style.ScrollbarSize = 12.0f;
     style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
     style.WindowMenuButtonPosition = ImGuiDir_None;
     style.SeparatorTextBorderSize = 1.0f;
+    style.SeparatorTextPadding = ImVec2(16.0f, 4.0f);
 
-    // Slightly cooler and darker than the default, so the viewport rather than
-    // the surrounding panels is what the eye lands on.
+    // Near-black rather than black: a true black background makes every panel
+    // edge disappear and leaves nothing for shadows to sit against.
+    const ImVec4 base{0.086f, 0.086f, 0.094f, 1.00f};
+    const ImVec4 raised{0.125f, 0.125f, 0.137f, 1.00f};
+    const ImVec4 sunken{0.055f, 0.055f, 0.063f, 1.00f};
+
     ImVec4* colors = style.Colors;
-    colors[ImGuiCol_WindowBg] = ImVec4(0.09f, 0.10f, 0.12f, 1.00f);
-    colors[ImGuiCol_TitleBg] = ImVec4(0.07f, 0.08f, 0.10f, 1.00f);
-    colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.14f, 0.18f, 1.00f);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.15f, 0.17f, 0.21f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.20f, 0.23f, 0.29f, 1.00f);
-    colors[ImGuiCol_Header] = ImVec4(0.18f, 0.22f, 0.30f, 1.00f);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(0.24f, 0.30f, 0.40f, 1.00f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(0.28f, 0.36f, 0.48f, 1.00f);
-    colors[ImGuiCol_Button] = ImVec4(0.18f, 0.22f, 0.30f, 1.00f);
-    colors[ImGuiCol_Tab] = ImVec4(0.11f, 0.13f, 0.17f, 1.00f);
-    colors[ImGuiCol_TabSelected] = ImVec4(0.20f, 0.26f, 0.36f, 1.00f);
+    colors[ImGuiCol_WindowBg] = base;
+    colors[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_PopupBg] = raised;
+    colors[ImGuiCol_MenuBarBg] = sunken;
+
+    // The accent, dimmed. A full-strength border on every control would compete
+    // with the selection highlight, which is the same colour at full strength.
+    colors[ImGuiCol_Border] = withAlpha(kAccent, 0.55f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    colors[ImGuiCol_FrameBg] = raised;
+    colors[ImGuiCol_FrameBgHovered] = scaled(kAccent, 0.35f);
+    colors[ImGuiCol_FrameBgActive] = scaled(kAccent, 0.55f);
+
+    colors[ImGuiCol_TitleBg] = sunken;
+    colors[ImGuiCol_TitleBgActive] = raised;
+    colors[ImGuiCol_TitleBgCollapsed] = sunken;
+
+    colors[ImGuiCol_Button] = raised;
+    colors[ImGuiCol_ButtonHovered] = scaled(kAccent, 0.55f);
+    colors[ImGuiCol_ButtonActive] = kAccent;
+
+    colors[ImGuiCol_Header] = scaled(kAccent, 0.40f);
+    colors[ImGuiCol_HeaderHovered] = scaled(kAccent, 0.60f);
+    colors[ImGuiCol_HeaderActive] = kAccent;
+
+    colors[ImGuiCol_Tab] = sunken;
+    colors[ImGuiCol_TabHovered] = scaled(kAccent, 0.60f);
+    colors[ImGuiCol_TabSelected] = raised;
+    // The bright line under the active tab, which is where the accent reads
+    // most clearly.
+    colors[ImGuiCol_TabSelectedOverline] = kAccent;
+    colors[ImGuiCol_TabDimmed] = sunken;
+    colors[ImGuiCol_TabDimmedSelected] = base;
+    colors[ImGuiCol_TabDimmedSelectedOverline] = withAlpha(kAccent, 0.35f);
+
+    colors[ImGuiCol_CheckMark] = kAccent;
+    colors[ImGuiCol_SliderGrab] = scaled(kAccent, 0.80f);
+    colors[ImGuiCol_SliderGrabActive] = kAccent;
+    colors[ImGuiCol_ResizeGrip] = withAlpha(kAccent, 0.25f);
+    colors[ImGuiCol_ResizeGripHovered] = withAlpha(kAccent, 0.60f);
+    colors[ImGuiCol_ResizeGripActive] = kAccent;
+
+    colors[ImGuiCol_Separator] = withAlpha(kAccent, 0.35f);
+    colors[ImGuiCol_SeparatorHovered] = withAlpha(kAccent, 0.65f);
+    colors[ImGuiCol_SeparatorActive] = kAccent;
+
+    colors[ImGuiCol_DockingPreview] = withAlpha(kAccent, 0.60f);
+    colors[ImGuiCol_DockingEmptyBg] = sunken;
+
+    colors[ImGuiCol_ScrollbarBg] = sunken;
+    colors[ImGuiCol_ScrollbarGrab] = raised;
+    colors[ImGuiCol_ScrollbarGrabHovered] = scaled(kAccent, 0.55f);
+    colors[ImGuiCol_ScrollbarGrabActive] = kAccent;
+
+    colors[ImGuiCol_Text] = ImVec4(0.88f, 0.88f, 0.89f, 1.00f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.45f, 0.45f, 0.47f, 1.00f);
+    colors[ImGuiCol_TextSelectedBg] = withAlpha(kAccent, 0.45f);
+
+    colors[ImGuiCol_NavCursor] = kAccent;
+    colors[ImGuiCol_DragDropTarget] = kAccent;
 }
 
 } // namespace
@@ -180,6 +264,23 @@ void ImGuiLayer::record(vk::CommandBuffer cmd) {
     if (drawData != nullptr) {
         ImGui_ImplVulkan_RenderDrawData(drawData, cmd);
     }
+}
+
+ImTextureID ImGuiLayer::registerTexture(vk::ImageView view, vk::Sampler sampler) {
+    // The layout is what the image will be in when ImGui samples it, which the
+    // renderer guarantees with a barrier at the end of the scene pass.
+    const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+        sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return reinterpret_cast<ImTextureID>(set);
+}
+
+void ImGuiLayer::unregisterTexture(ImTextureID id) {
+    if (id == 0) {
+        return;
+    }
+    // Frees the descriptor set back to the pool, which is why the pool was
+    // created with eFreeDescriptorSet.
+    ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(id));
 }
 
 bool ImGuiLayer::wantsMouse() const {

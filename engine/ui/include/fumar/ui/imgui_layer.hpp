@@ -3,6 +3,8 @@
 #include "fumar/core/types.hpp"
 #include "fumar/rhi/vk_common.hpp"
 
+#include <imgui.h>
+
 namespace fumar {
 
 class Renderer;
@@ -38,6 +40,16 @@ public:
 
     /// Records the UI draw commands. Install with Renderer::setOverlay.
     void record(vk::CommandBuffer cmd);
+
+    /// Makes a Vulkan image displayable by ImGui::Image.
+    ///
+    /// Behind the id is a descriptor set the backend allocates and keeps. It
+    /// stays valid until unregisterTexture, so the caller must re-register
+    /// whenever the underlying image is recreated - a resized viewport, for
+    /// instance - or ImGui keeps sampling a destroyed image.
+    ImTextureID registerTexture(vk::ImageView view, vk::Sampler sampler);
+
+    void unregisterTexture(ImTextureID id);
 
     /// True while ImGui wants the mouse - hovering a panel, dragging a slider.
     /// The camera checks this so clicking in a panel does not also swing the

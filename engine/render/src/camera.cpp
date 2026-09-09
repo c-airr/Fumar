@@ -36,6 +36,27 @@ Mat4 Camera::projection(f32 aspect) const {
     return perspective(radians(fovYDegrees), aspect, nearPlane, farPlane);
 }
 
+Ray Camera::rayThrough(Vec2 normalised, f32 aspect) const {
+    // 0..1 with Y down is exactly Vulkan clip space once mapped to -1..1, which
+    // is why no Y flip appears here: the projection matrix already accounts for
+    // Vulkan pointing Y downwards.
+    const f32 clipX = normalised.x * 2.0f - 1.0f;
+    const f32 clipY = normalised.y * 2.0f - 1.0f;
+
+    const Mat4 inverseViewProjection = inverse(projection(aspect) * view());
+
+    // Two points on the ray, at the near and far planes. Both need the
+    // perspective divide, because the inverse transform produces homogeneous
+    // coordinates whose w is not 1.
+    const Vec4 nearPoint = inverseViewProjection * Vec4{clipX, clipY, 0.0f, 1.0f};
+    const Vec4 farPoint = inverseViewProjection * Vec4{clipX, clipY, 1.0f, 1.0f};
+
+    const Vec3 start = xyz(nearPoint) / nearPoint.w;
+    const Vec3 end = xyz(farPoint) / farPoint.w;
+
+    return Ray{start, normalize(end - start)};
+}
+
 void Camera::update(Window& window, f32 deltaSeconds) {
     // Holding the right mouse button grabs the cursor; Window releases it on
     // Escape. Grabbing on a held button rather than a click means there is no

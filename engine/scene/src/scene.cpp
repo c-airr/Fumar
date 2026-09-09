@@ -213,7 +213,7 @@ const Mat4& Scene::worldTransform(NodeId id) const {
     return m_worldTransforms[id];
 }
 
-void Scene::forEachDrawable(const std::function<void(const Node&, const Mat4&)>& visit) const {
+void Scene::forEachDrawable(const std::function<void(NodeId, const Node&, const Mat4&)>& visit) const {
     // Visibility is inherited, so a hidden node hides its whole subtree - which
     // means this cannot simply scan the flat array and check the flag.
     std::vector<NodeId> stack;
@@ -229,7 +229,7 @@ void Scene::forEachDrawable(const std::function<void(const Node&, const Mat4&)>&
         }
 
         if (node.mesh.valid()) {
-            visit(node, m_worldTransforms[current]);
+            visit(current, node, m_worldTransforms[current]);
         }
 
         for (NodeId child : node.children) {

@@ -60,10 +60,15 @@ public:
 
     MeshHandle createCubeMesh();
     MeshHandle createPlaneMesh(f32 halfSize, f32 uvTiling = 1.0f);
+    MeshHandle createCylinderMesh(f32 radius, f32 height, u32 segments = 32);
 
-    /// Registers a material using a texture file, falling back to the built-in
-    /// checkerboard if the file cannot be read.
-    MaterialHandle createMaterial(std::string name, const std::filesystem::path& baseColorTexture = {});
+    /// Registers a material.
+    ///
+    /// With no texture the material is a flat colour: the shader multiplies its
+    /// base colour by a 1x1 white texture, so the colour comes through
+    /// unchanged and no branch is needed in the shader.
+    MaterialHandle createMaterial(std::string name, Vec4 baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
+                                  const std::filesystem::path& baseColorTexture = {});
 
     /// Loads a glTF file into the scene, keeping its node hierarchy. Returns
     /// the node it was rooted at, or kInvalidNode on failure.
@@ -71,6 +76,14 @@ public:
 
     /// Records and submits one frame.
     void drawFrame();
+
+    /// Blocks until the GPU has finished everything submitted so far.
+    ///
+    /// Application code needs this exactly once, on shutdown, before releasing
+    /// anything the last frame might still reference. Calling it per frame
+    /// would throw away all the CPU/GPU overlap the frames-in-flight machinery
+    /// exists to provide.
+    void waitIdle() const;
 
     // --- UI integration -----------------------------------------------------
     // A user interface has to draw inside the same render pass as the scene,
@@ -83,6 +96,47 @@ public:
 
     rhi::Instance& instance() { return *m_instance; }
     rhi::Device& device() { return *m_device; }
+
+    // --- viewport target ----------------------------------------------------
+    // The scene is drawn into an off-screen image rather than straight to the
+    // window, and the interface displays that image inside a panel. That is
+    // what lets the viewport be a dockable panel of any size and position
+    // instead of being whatever the window happens to be.
+
+    /// Resizes the off-screen target. Ignored when the size is unchanged or
+    /// degenerate, since rebuilding it stalls the GPU.
+    ///
+    /// Returns true if the target was actually rebuilt, which is the caller's
+    /// cue that any descriptor pointing at the old image is now stale.
+    bool resizeViewport(Extent2D size);
+
+    vk::ImageView viewportImageView() const { return m_sceneColor.view(); }
+
+    vk::Sampler viewportSampler() const { return *m_sampler; }
+
+    Extent2D viewportExtent() const { return m_viewportExtent; }
+
+    // --- selection feedback -------------------------------------------------
+    // Drawn as a tint on the object itself rather than as an outline. An
+    // outline needs either a stencil pass or an edge-detect filter over a
+    // second render target; a tint is one float in the shader and reads just as
+    // clearly on a solid-colour scene.
+
+    /// The node shown as selected, or kInvalidNode for none.
+    void setSelected(NodeId id) { m_selected = id; }
+    NodeId selected() const { return m_selected; }
+
+    /// The node under the cursor, tinted more faintly than the selection.
+    void setHighlighted(NodeId id) { m_highlighted = id; }
+
+    /// The closest node the ray hits, or kInvalidNode.
+    ///
+    /// Tests against each mesh bounding box, transformed into that object own
+    /// space rather than transforming the box into the world - a rotated box
+    /// is no longer axis-aligned, so testing it in the world would need the
+    /// much larger box that contains it, and clicks would land on empty space
+    /// beside thin rotated objects.
+    NodeId pickNode(const Ray& ray) const;
 
     /// Colour format of the swapchain, which any pipeline drawing into it must
     /// be built for.
@@ -103,10 +157,12 @@ private:
     /// surface has no area yet - the window is minimised.
     bool recreateSwapchain();
 
-    void createDepthBuffer();
+    void createViewportTarget(Extent2D size);
     void createDefaultTexture();
     void createDescriptors();
     void updateCameraUniforms(u32 frameIndex);
+    void recordSceneRendering(vk::CommandBuffer cmd);
+    void recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex);
     void recordCommands(u32 imageIndex);
 
     Window& m_window;
@@ -130,10 +186,18 @@ private:
     vk::UniqueDescriptorSetLayout m_materialSetLayout;
     vk::UniqueSampler m_sampler;
 
-    /// Depth attachment. Rebuilt with the swapchain, since it has to match the
-    /// colour attachment pixel for pixel.
+    /// The off-screen colour and depth the scene is drawn into. Sized to the
+    /// viewport panel, not to the window.
+    rhi::Image m_sceneColor;
     rhi::Image m_depthImage;
+    Extent2D m_viewportExtent{1280, 720};
+
     vk::Format m_depthFormat = vk::Format::eUndefined;
+
+    /// Format of the off-screen colour target. Fixed rather than copied from
+    /// the swapchain, so the scene pipeline never has to be rebuilt when the
+    /// window's format changes.
+    static constexpr vk::Format kSceneColorFormat = vk::Format::eR8G8B8A8Srgb;
 
     /// Checkerboard used by materials with no texture of their own.
     rhi::Image m_defaultTexture;
@@ -151,6 +215,9 @@ private:
     ResourceRegistry m_resources;
     Camera m_camera;
     OverlayCallback m_overlay;
+
+    NodeId m_selected = kInvalidNode;
+    NodeId m_highlighted = kInvalidNode;
 
     /// Set when the swapchain no longer matches the surface. Kept as state
     /// rather than handled on the spot, because a rebuild can fail (minimised

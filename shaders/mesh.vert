@@ -15,9 +15,13 @@ layout(set = 0, binding = 0) uniform CameraData {
     vec4 position;
 } camera;
 
-// Per-object data small enough to live in the command buffer itself.
+// Per-object data, small enough to live in the command buffer itself. The
+// block must be declared identically in the fragment shader - it is one range
+// shared by both stages, not two.
 layout(push_constant) uniform PushConstants {
     mat4 model;
+    vec4 baseColor;
+    float highlight;
 } object;
 
 layout(location = 0) out vec3 vNormal;

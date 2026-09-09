@@ -7,6 +7,12 @@ namespace fumar {
 
 class Window;
 
+/// A half-line in world space: where a click goes once it leaves the screen.
+struct Ray {
+    Vec3 origin;
+    Vec3 direction; // unit length
+};
+
 /// A free-flying first-person camera.
 ///
 /// Orientation is stored as yaw and pitch in degrees rather than a matrix or a
@@ -47,6 +53,14 @@ public:
 
     /// Camera-to-clip transform, in Vulkan conventions (Y down, depth 0..1).
     Mat4 projection(f32 aspect) const;
+
+    /// Builds the world-space ray through a point on the viewport.
+    ///
+    /// `normalised` is 0..1 across the viewport with the origin at the top
+    /// left, matching how a UI reports cursor position. The maths undoes the
+    /// projection: to clip space, then through the inverse view-projection back
+    /// into the world.
+    Ray rayThrough(Vec2 normalised, f32 aspect) const;
 
     /// Applies mouse look and WASD movement for one frame.
     ///
