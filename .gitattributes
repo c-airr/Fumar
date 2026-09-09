@@ -1,0 +1,17 @@
+# Normalise line endings in the repository to LF, and check out whatever the
+# platform expects. Without this a file written on Windows and edited on Linux
+# shows up as entirely rewritten in every diff.
+* text=auto eol=lf
+
+# PowerShell and batch files must keep CRLF - some Windows hosts refuse to
+# parse them otherwise.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets: never touch these.
+*.glb binary
+*.gltf text
+*.png binary
+*.jpg binary
+*.spv binary
