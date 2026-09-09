@@ -3,12 +3,14 @@
 #include "fumar/core/types.hpp"
 #include "fumar/render/camera.hpp"
 #include "fumar/render/mesh.hpp"
-#include "fumar/render/model.hpp"
+#include "fumar/render/resources.hpp"
 #include "fumar/rhi/buffer.hpp"
 #include "fumar/rhi/image.hpp"
 #include "fumar/rhi/vk_common.hpp"
+#include "fumar/scene/scene.hpp"
 
 #include <array>
+#include <filesystem>
 #include <memory>
 
 namespace fumar {
@@ -25,13 +27,12 @@ class Swapchain;
 class UploadContext;
 } // namespace rhi
 
-/// Ties the RHI objects together into something that draws.
+/// Owns the graphics device and draws a Scene with it.
 ///
-/// Most members are unique_ptr, which looks heavier than it needs to be but
-/// buys the one thing that matters here: explicit control over construction and
-/// destruction order. Vulkan objects must be destroyed strictly inside the
-/// lifetime of whatever created them, and getting that order wrong produces a
-/// crash on exit rather than a compile error.
+/// The scene and its resources live here rather than in the application,
+/// because both need the device to exist and to outlive them. Application code
+/// reaches them through scene() and resources() and edits them directly - that
+/// is the same surface the editor will use in M4.
 class Renderer {
 public:
     explicit Renderer(Window& window);
@@ -44,11 +45,31 @@ public:
     Renderer& operator=(const Renderer&) = delete;
 
     Camera& camera() { return m_camera; }
-
     const Camera& camera() const { return m_camera; }
 
+    Scene& scene() { return m_scene; }
+    const Scene& scene() const { return m_scene; }
+
+    ResourceRegistry& resources() { return m_resources; }
+    const ResourceRegistry& resources() const { return m_resources; }
+
+    // --- content creation ---------------------------------------------------
+    // Thin wrappers that hand the device and upload context to the factories,
+    // so application code never has to hold either.
+
+    MeshHandle createCubeMesh();
+    MeshHandle createPlaneMesh(f32 halfSize, f32 uvTiling = 1.0f);
+
+    /// Registers a material using a texture file, falling back to the built-in
+    /// checkerboard if the file cannot be read.
+    MaterialHandle createMaterial(std::string name, const std::filesystem::path& baseColorTexture = {});
+
+    /// Loads a glTF file into the scene, keeping its node hierarchy. Returns
+    /// the node it was rooted at, or kInvalidNode on failure.
+    NodeId loadModel(const std::filesystem::path& path, NodeId parent = kRootNode);
+
     /// Records and submits one frame.
-    void drawFrame(f32 timeSeconds);
+    void drawFrame();
 
 private:
     /// Returns false when the swapchain could not be rebuilt because the
@@ -58,9 +79,8 @@ private:
     void createDepthBuffer();
     void createDefaultTexture();
     void createDescriptors();
-    void loadSceneAssets();
     void updateCameraUniforms(u32 frameIndex);
-    void recordCommands(u32 imageIndex, f32 timeSeconds);
+    void recordCommands(u32 imageIndex);
 
     Window& m_window;
 
@@ -88,10 +108,8 @@ private:
     rhi::Image m_depthImage;
     vk::Format m_depthFormat = vk::Format::eUndefined;
 
+    /// Checkerboard used by materials with no texture of their own.
     rhi::Image m_defaultTexture;
-
-    /// Descriptor set 1: the material. One for now, shared by everything drawn.
-    vk::DescriptorSet m_materialSet;
 
     /// Descriptor set 0 plus its uniform buffer, duplicated per frame in
     /// flight. Writing to a single buffer while the GPU reads it for the
@@ -102,13 +120,8 @@ private:
     };
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
 
-    Mesh m_cube;
-    Mesh m_ground;
-
-    /// Optional: the sandbox falls back to the procedural cubes when no model
-    /// file is present, so the engine still runs on a fresh clone.
-    Model m_model;
-
+    Scene m_scene;
+    ResourceRegistry m_resources;
     Camera m_camera;
 
     /// Set when the swapchain no longer matches the surface. Kept as state

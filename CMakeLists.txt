@@ -76,6 +76,7 @@ include(FumarDependencies)
 # The order mirrors the dependency graph: core depends on nothing, sandbox
 # depends on everything.
 add_subdirectory(engine/core)
+add_subdirectory(engine/scene)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
 add_subdirectory(engine/render)

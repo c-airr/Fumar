@@ -9,9 +9,10 @@
 
 add_library(fumar_render STATIC
     src/camera.cpp
+    src/gltf_loader.cpp
     src/mesh.cpp
-    src/model.cpp
     src/renderer.cpp
+    src/resources.cpp
     src/texture.cpp
     src/third_party_impl.cpp)
 
@@ -26,6 +27,7 @@ target_link_libraries(fumar_render
         fumar::core
         fumar::platform
         fumar::rhi
+        fumar::scene
     # PRIVATE: the glTF parser and image decoder are used only inside .cpp
     # files, so their headers stay out of everyone else's include path.
     PRIVATE

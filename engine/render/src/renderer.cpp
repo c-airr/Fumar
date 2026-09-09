@@ -10,7 +10,8 @@
 #include "fumar/rhi/instance.hpp"
 #include "fumar/rhi/pipeline.hpp"
 #include "fumar/rhi/swapchain.hpp"
-#include "fumar/render/model.hpp"
+#include "fumar/render/gltf_loader.hpp"
+#include "fumar/render/texture.hpp"
 #include "fumar/rhi/upload_context.hpp"
 
 #include <array>
@@ -102,10 +103,6 @@ Renderer::Renderer(Window& window) : m_window(window) {
 
     m_frames = std::make_unique<rhi::FrameContext>(*m_device, m_swapchain->imageCount());
 
-    m_cube = makeCube(*m_device, *m_upload);
-    m_ground = makePlane(*m_device, *m_upload, 12.0f, 12.0f);
-    loadSceneAssets();
-
     FUMAR_INFO("renderer ready");
 }
 
@@ -119,9 +116,10 @@ Renderer::~Renderer() {
     // Reverse order of creation. Spelled out because the members are a mix of
     // unique_ptr, RAII wrappers and plain handles, and only the first group
     // would order itself correctly.
-    m_model = Model{};
-    m_cube = Mesh{};
-    m_ground = Mesh{};
+    // Releases every mesh and texture the scene referenced. Must happen while
+    // the device is alive, which is why it is here and not left to the member
+    // destructors.
+    m_resources.clear();
     for (PerFrame& frame : m_perFrame) {
         frame.cameraUniforms = rhi::Buffer{};
     }
@@ -258,46 +256,61 @@ void Renderer::createDescriptors() {
         writer.buffer(frame.cameraSet, 0, frame.cameraUniforms.handle(), sizeof(CameraUniforms));
     }
 
-    m_materialSet = m_descriptorPool->allocate(*m_materialSetLayout);
-    writer.image(m_materialSet, 0, m_defaultTexture.view(), *m_sampler);
+    // The fallback material: used by anything with no material of its own, so
+    // a broken or untextured asset shows an obvious checkerboard instead of
+    // failing to bind a descriptor.
+    Material fallback;
+    fallback.name = "fallback";
+    fallback.descriptorSet = m_descriptorPool->allocate(*m_materialSetLayout);
+    writer.image(fallback.descriptorSet, 0, m_defaultTexture.view(), *m_sampler);
+    m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
 
     writer.submit(handle);
 }
 
-void Renderer::loadSceneAssets() {
-    // Assets are optional. A fresh clone has no models in it, and the engine
-    // has to run anyway - so a missing file is a log line, not a failure.
-    const std::filesystem::path assetDir = executableDirectory() / "assets";
-    if (!std::filesystem::exists(assetDir)) {
-        FUMAR_INFO("no assets directory, showing the procedural scene");
-        return;
-    }
+MeshHandle Renderer::createCubeMesh() {
+    return m_resources.addMesh(makeCube(*m_device, *m_upload));
+}
 
-    for (const auto& entry : std::filesystem::directory_iterator(assetDir)) {
-        const std::filesystem::path& file = entry.path();
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        if (file.extension() != ".glb" && file.extension() != ".gltf") {
-            continue;
-        }
+MeshHandle Renderer::createPlaneMesh(f32 halfSize, f32 uvTiling) {
+    return m_resources.addMesh(makePlane(*m_device, *m_upload, halfSize, uvTiling));
+}
 
-        const ModelLoadContext context{
-            .device = *m_device,
-            .upload = *m_upload,
-            .descriptorPool = *m_descriptorPool,
-            .materialSetLayout = *m_materialSetLayout,
-            .sampler = *m_sampler,
-            .fallbackTexture = m_defaultTexture.view(),
-        };
+MaterialHandle Renderer::createMaterial(std::string name, const std::filesystem::path& baseColorTexture) {
+    Material material;
+    material.name = std::move(name);
 
-        if (auto loaded = Model::loadGltf(file, context)) {
-            m_model = std::move(*loaded);
-            return; // one model is enough for the sandbox
+    vk::ImageView view = m_defaultTexture.view();
+    if (!baseColorTexture.empty()) {
+        rhi::Image texture = loadTextureFromFile(*m_device, *m_upload, baseColorTexture);
+        if (texture.valid()) {
+            material.baseColor = m_resources.addTexture(std::move(texture));
+            view = m_resources.texture(material.baseColor).view();
+        } else {
+            FUMAR_WARN("material '{}' falls back to the checkerboard", material.name);
         }
     }
 
-    FUMAR_INFO("no loadable model found in {}", assetDir.string());
+    material.descriptorSet = m_descriptorPool->allocate(*m_materialSetLayout);
+
+    rhi::DescriptorWriter writer;
+    writer.image(material.descriptorSet, 0, view, *m_sampler);
+    writer.submit(m_device->handle());
+
+    return m_resources.addMaterial(std::move(material));
+}
+
+NodeId Renderer::loadModel(const std::filesystem::path& path, NodeId parent) {
+    const GltfLoadContext context{
+        .device = *m_device,
+        .upload = *m_upload,
+        .descriptorPool = *m_descriptorPool,
+        .materialSetLayout = *m_materialSetLayout,
+        .sampler = *m_sampler,
+        .fallbackTexture = m_defaultTexture.view(),
+    };
+
+    return loadGltfIntoScene(path, context, m_scene, m_resources, parent);
 }
 
 bool Renderer::recreateSwapchain() {
@@ -334,7 +347,7 @@ void Renderer::updateCameraUniforms(u32 frameIndex) {
     m_perFrame[frameIndex].cameraUniforms.write(&uniforms, sizeof(uniforms));
 }
 
-void Renderer::recordCommands(u32 imageIndex, f32 timeSeconds) {
+void Renderer::recordCommands(u32 imageIndex) {
     const vk::CommandBuffer cmd = m_frames->commandBuffer();
     const vk::Extent2D extent = m_swapchain->extent();
 
@@ -429,37 +442,38 @@ void Renderer::recordCommands(u32 imageIndex, f32 timeSeconds) {
     // order and left alone, which is exactly why they are separate sets.
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 0,
                            m_perFrame[m_frames->currentFrame()].cameraSet, {});
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 1, m_materialSet, {});
+    // Materials are bound per drawable rather than once, because different
+    // nodes use different ones. Consecutive nodes usually share a material
+    // though, so the last one bound is remembered and the rebind skipped -
+    // sorting the scene by material would take this further.
+    vk::DescriptorSet boundMaterial;
 
-    const auto drawAt = [&](const Mesh& mesh, const Mat4& model) {
-        const ObjectPushConstants push{.model = model};
+    m_scene.forEachDrawable([&](const Node& node, const Mat4& worldTransform) {
+        if (!m_resources.has(node.mesh)) {
+            return;
+        }
+
+        const MaterialHandle handle =
+            m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
+        if (!m_resources.has(handle)) {
+            return;
+        }
+
+        const vk::DescriptorSet materialSet = m_resources.material(handle).descriptorSet;
+        if (materialSet != boundMaterial) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 1, materialSet,
+                                   {});
+            boundMaterial = materialSet;
+        }
+
+        // The world transform comes straight from the scene's last update, so
+        // this loop does no matrix work of its own.
+        const ObjectPushConstants push{.model = worldTransform};
         cmd.pushConstants<ObjectPushConstants>(m_pipeline->layout(), vk::ShaderStageFlagBits::eVertex, 0,
                                                push);
-        mesh.draw(cmd);
-    };
 
-    drawAt(m_ground, identity());
-
-    if (m_model.empty()) {
-        // No asset loaded: three cubes, each spinning at its own rate, so depth
-        // testing and the per-object push constant are both visibly working.
-        for (u32 i = 0; i < 3; ++i) {
-            const f32 offset = static_cast<f32>(i) * 2.5f - 2.5f;
-            const f32 spin = timeSeconds * (0.5f + static_cast<f32>(i) * 0.35f);
-            // Vec3 is an aggregate, so a single value would fill only x and
-            // leave y and z at zero - which collapses the cube to nothing.
-            const f32 size = 1.0f + static_cast<f32>(i) * 0.2f;
-            const Mat4 model = translation(Vec3{offset, 0.75f + static_cast<f32>(i) * 0.25f, 0.0f}) *
-                               rotation(Vec3{0.0f, 1.0f, 0.0f}, spin) * scaling(Vec3{size, size, size});
-            drawAt(m_cube, model);
-        }
-    } else {
-        // Model::draw rebinds descriptor set 1 per primitive for its own
-        // materials, which is why nothing else is drawn after it here.
-        const Mat4 modelTransform = translation(Vec3{0.0f, 1.2f, 0.0f}) *
-                                    rotation(Vec3{0.0f, 1.0f, 0.0f}, timeSeconds * 0.4f);
-        m_model.draw(cmd, m_pipeline->layout(), modelTransform);
-    }
+        m_resources.mesh(node.mesh).draw(cmd);
+    });
 
     cmd.endRendering();
 
@@ -486,7 +500,7 @@ void Renderer::recordCommands(u32 imageIndex, f32 timeSeconds) {
     });
 }
 
-void Renderer::drawFrame(f32 timeSeconds) {
+void Renderer::drawFrame() {
     if (m_window.minimized()) {
         return;
     }
@@ -523,10 +537,15 @@ void Renderer::drawFrame(f32 timeSeconds) {
 
     m_frames->resetFence();
 
+    // One pass over the tree, turning local transforms into world transforms.
+    // Done here rather than lazily during recording so each node is computed
+    // exactly once even when several nodes share a parent.
+    m_scene.updateWorldTransforms();
+
     updateCameraUniforms(m_frames->currentFrame());
 
     m_frames->beginCommandBuffer();
-    recordCommands(*imageIndex, timeSeconds);
+    recordCommands(*imageIndex);
     m_frames->commandBuffer().end();
 
     // --- submit -------------------------------------------------------------

@@ -11,7 +11,8 @@ add_executable(sandbox src/main.cpp)
 target_link_libraries(sandbox PRIVATE
     fumar::core
     fumar::platform
-    fumar::render)
+    fumar::render
+    fumar::scene)
 
 fumar_configure_target(sandbox)
 
