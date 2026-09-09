@@ -29,6 +29,21 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # --- project options --------------------------------------------------------
 option(FUMAR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
+# --- C runtime --------------------------------------------------------------
+# Link the C and C++ runtimes statically on Windows.
+#
+# The default is the DLL runtime, which means the executable needs the Visual
+# C++ redistributable installed - and in a debug build it needs the DEBUG
+# redistributable, which only ships with Visual Studio and cannot legally be
+# distributed at all. Static linking makes the binary self-contained at the
+# cost of a few hundred kilobytes.
+#
+# This has to be set before any target is created, and every target in the
+# build (including SDL) must agree - mixing static and dynamic runtimes in one
+# process gives two separate heaps and crashes when memory allocated by one is
+# freed by the other.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # --- artifact layout --------------------------------------------------------
 # All executables land in one directory, with the shaders/ folder holding the
 # compiled .spv files right next to them.
@@ -65,5 +80,16 @@ add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
 add_subdirectory(engine/render)
 add_subdirectory(sandbox)
+
+# --- distribution -----------------------------------------------------------
+# `cmake --install build/<preset> --prefix dist` produces a folder that can be
+# copied to another machine and run: the executable, the compiled shaders and
+# whatever assets exist, and nothing else.
+install(TARGETS sandbox RUNTIME DESTINATION .)
+# FILES_MATCHING keeps the .d dependency files glslc leaves behind out of the
+# distribution - they are a build artifact, useless at runtime.
+install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/" DESTINATION shaders
+        FILES_MATCHING PATTERN "*.spv")
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/" DESTINATION assets OPTIONAL)
 
 message(STATUS "fumar ${PROJECT_VERSION} | ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} | ${CMAKE_BUILD_TYPE}")

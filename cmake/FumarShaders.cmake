@@ -7,6 +7,20 @@
 #  .cpp file does.
 # ============================================================================
 
+# Flags are resolved once, at configure time, rather than with a generator
+# expression per command. A genex like $<$<CONFIG:Debug>:-g> does NOT disappear
+# in other configurations - it collapses to an empty argument, which glslc then
+# treats as a second input file and refuses with "linking multiple files is not
+# supported yet". Plain CMake variables have no such trap.
+set(FUMAR_GLSLC_FLAGS --target-env=vulkan1.3 -c)
+if(CMAKE_BUILD_TYPE MATCHES "[Dd]ebug")
+    # -g keeps the GLSL source in the SPIR-V so RenderDoc and friends can show
+    # it; -O0 stops the optimiser from reordering it out of recognition.
+    list(APPEND FUMAR_GLSLC_FLAGS -g -O0)
+else()
+    list(APPEND FUMAR_GLSLC_FLAGS -O)
+endif()
+
 if(NOT Vulkan_GLSLC_EXECUTABLE)
     message(FATAL_ERROR
         "fumar: glslc not found. Install the Vulkan SDK and make sure the "
@@ -44,8 +58,7 @@ function(fumar_add_shaders TARGET)
             OUTPUT "${spv}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${out_dir}"
             COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
-                    --target-env=vulkan1.3
-                    $<$<CONFIG:Debug>:-g>
+                    ${FUMAR_GLSLC_FLAGS}
                     -MD -MF "${spv}.d"
                     -o "${spv}"
                     "${shader_abs}"

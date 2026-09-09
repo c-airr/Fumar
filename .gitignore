@@ -31,3 +31,6 @@ Thumbs.db
 
 # downloaded sample assets, not ours to redistribute
 assets/
+
+# distribution output
+dist/
