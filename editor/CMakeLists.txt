@@ -7,6 +7,7 @@
 # ---------------------------------------------------------------------------
 
 add_executable(fumar_editor
+    src/history.cpp
     src/main.cpp
     src/panels.cpp)
 
@@ -32,6 +33,17 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/assets")
         COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
                 "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:fumar_editor>/assets"
         COMMENT "copying assets")
+endif()
+
+# The interface fonts, from ImGui's own misc/fonts directory.
+if(EXISTS "${FUMAR_IMGUI_FONT_DIR}")
+    add_custom_command(TARGET fumar_editor POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:fumar_editor>/fonts"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${FUMAR_IMGUI_FONT_DIR}/Roboto-Medium.ttf"
+                "${FUMAR_IMGUI_FONT_DIR}/Cousine-Regular.ttf"
+                "$<TARGET_FILE_DIR:fumar_editor>/fonts"
+        COMMENT "copying interface fonts")
 endif()
 
 # Lua sources are mirrored next to the executable, where ScriptEngine looks for

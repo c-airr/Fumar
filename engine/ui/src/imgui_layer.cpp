@@ -13,6 +13,8 @@
 #include <imgui_impl_vulkan.h>
 
 #include <array>
+#include <cmath>
+#include <filesystem>
 #include <string>
 
 // SDL_Event is needed to hand events to ImGui's backend, and nothing else here
@@ -51,6 +53,70 @@ ImVec4 withAlpha(const ImVec4& colour, float alpha) {
 ImVec4 scaled(const ImVec4& colour, float factor) {
     return ImVec4(colour.x * factor, colour.y * factor, colour.z * factor, colour.w);
 }
+
+/// One channel from sRGB to linear, the exact piecewise transfer function
+/// rather than the pow(2.2) approximation - the two differ most in the dark
+/// values, which is precisely where an almost-black interface lives.
+f32 srgbChannelToLinear(f32 value) {
+    return value <= 0.04045f ? value / 12.92f
+                             : std::pow((value + 0.055f) / 1.055f, 2.4f);
+}
+
+/// Why every interface colour goes through this.
+///
+/// The window is presented through a swapchain in an _SRGB format, which means
+/// the hardware applies the sRGB transfer function to whatever a shader writes.
+/// That is exactly right for the 3D scene, which is rendered in linear light
+/// and tone mapped - but interface colours are picked by eye, in the sRGB
+/// numbers a colour picker shows. Writing 0.086 straight out and letting the
+/// hardware encode it produces 0.33 on screen: the near-black theme comes out
+/// mid-grey and the whole editor looks washed out.
+///
+/// Converting here undoes that, so the number written in the palette is the
+/// number that appears. Alpha is not a colour and is left alone.
+ImVec4 toLinear(const ImVec4& srgb) {
+    return ImVec4(srgbChannelToLinear(srgb.x), srgbChannelToLinear(srgb.y),
+                  srgbChannelToLinear(srgb.z), srgb.w);
+}
+
+/// Loads the interface font.
+///
+/// Dear ImGui's built-in font is a 13-pixel bitmap from 2005. It is there so
+/// that a first run shows SOMETHING, not because anyone should ship it. Roboto
+/// comes from ImGui's own misc/fonts directory - already on disk as part of the
+/// dependency - and is copied beside the executable at build time.
+///
+/// Both loads are allowed to fail: a missing font falls back to the built-in
+/// one rather than refusing to start.
+void loadFonts(ImGuiIO& io, const std::filesystem::path& fontDirectory) {
+    const auto load = [&](const char* file, f32 size) -> ImFont* {
+        const std::filesystem::path path = fontDirectory / file;
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec)) {
+            FUMAR_WARN("font '{}' not found, falling back to the built-in one", path.string());
+            return nullptr;
+        }
+        return io.Fonts->AddFontFromFileTTF(path.string().c_str(), size);
+    };
+
+    if (ImFont* ui = load("Roboto-Medium.ttf", 16.0f)) {
+        io.FontDefault = ui;
+    }
+
+    // A second face, monospaced, for anything where columns have to line up:
+    // script source, numbers in the statistics panel. Registered here so panels
+    // can reach it through io.Fonts->Fonts[1] without loading it themselves.
+    load("Cousine-Regular.ttf", 15.0f);
+}
+
+} // namespace
+
+ImVec4 uiColor(f32 red, f32 green, f32 blue, f32 alpha) {
+    return ImVec4(srgbChannelToLinear(red), srgbChannelToLinear(green), srgbChannelToLinear(blue),
+                  alpha);
+}
+
+namespace {
 
 void applyStyle() {
     ImGui::StyleColorsDark();
@@ -150,6 +216,13 @@ void applyStyle() {
 
     colors[ImGuiCol_NavCursor] = kAccent;
     colors[ImGuiCol_DragDropTarget] = kAccent;
+
+    // Last, and applied to everything at once: see toLinear above. Doing it
+    // here rather than at each assignment keeps the palette readable as the
+    // sRGB values it was designed in.
+    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+        colors[i] = toLinear(colors[i]);
+    }
 }
 
 } // namespace
@@ -175,6 +248,7 @@ ImGuiLayer::ImGuiLayer(Window& window, Renderer& renderer) : m_renderer(renderer
     iniPath = (executableDirectory() / "fumar_editor.ini").string();
     io.IniFilename = iniPath.c_str();
 
+    loadFonts(io, executableDirectory() / "fonts");
     applyStyle();
 
     ImGui_ImplSDL3_InitForVulkan(window.handle());

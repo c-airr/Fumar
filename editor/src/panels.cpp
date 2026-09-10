@@ -4,6 +4,7 @@
 #include "fumar/platform/paths.hpp"
 #include "fumar/render/renderer.hpp"
 #include "fumar/script/script_engine.hpp"
+#include "fumar/ui/imgui_layer.hpp"
 
 #include <ImGuizmo.h>
 #include <imgui.h>
@@ -20,7 +21,13 @@
 namespace fumar {
 namespace {
 
-constexpr ImVec4 kAccent{0.659f, 0.373f, 0.173f, 1.00f};
+// Every colour named here goes through uiColor: the window is presented in an
+// sRGB format, so a value written straight out comes back lighter than it was
+// picked. See fumar/ui/imgui_layer.hpp.
+const ImVec4 kAccent = uiColor(0.659f, 0.373f, 0.173f);
+const ImVec4 kAccentBright = uiColor(1.0f, 0.72f, 0.45f);
+const ImVec4 kError = uiColor(1.0f, 0.45f, 0.35f);
+const ImVec4 kOk = uiColor(0.55f, 0.85f, 0.45f);
 
 /// Degrees from a quaternion, for display and editing.
 ///
@@ -52,7 +59,7 @@ Quat fromEulerDegrees(const Vec3& euler) {
 bool toolButton(const char* label, bool active, const char* tooltip) {
     if (active) {
         ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.72f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, kAccentBright);
     }
 
     const bool pressed = ImGui::Button(label);
@@ -89,23 +96,30 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
     // nullptr and reusing the original id docks against a parent, which
     // silently leaves the window floating.
     ImGuiID remainder = dockspaceId;
-    ImGuiID leftTop = ImGui::DockBuilderSplitNode(remainder, ImGuiDir_Left, 0.26f, nullptr, &remainder);
-    const ImGuiID leftBottom =
-        ImGui::DockBuilderSplitNode(leftTop, ImGuiDir_Down, 0.45f, nullptr, &leftTop);
 
-    // The viewport takes the top of the right-hand area, details the bottom.
-    ImGuiID viewport = remainder;
-    const ImGuiID details = ImGui::DockBuilderSplitNode(viewport, ImGuiDir_Down, 0.32f, nullptr, &viewport);
+    // The right-hand column first: what the scene contains, and what the
+    // selected thing is. Splitting it off before anything else means the
+    // viewport ends up with whatever is left, which is how it should be.
+    ImGuiID rightTop = ImGui::DockBuilderSplitNode(remainder, ImGuiDir_Right, 0.24f, nullptr,
+                                                   &remainder);
+    const ImGuiID rightBottom =
+        ImGui::DockBuilderSplitNode(rightTop, ImGuiDir_Down, 0.58f, nullptr, &rightTop);
 
-    ImGui::DockBuilderDockWindow("World Outliner", leftTop);
+    // Then a strip along the bottom of what remains, under the viewport.
+    const ImGuiID bottom =
+        ImGui::DockBuilderSplitNode(remainder, ImGuiDir_Down, 0.30f, nullptr, &remainder);
+
+    ImGui::DockBuilderDockWindow("World Outliner", rightTop);
+    ImGui::DockBuilderDockWindow("Details", rightBottom);
+
     // Docked in reverse order of interest: the last one to arrive is the tab
     // that opens, and Content is what you reach for most.
-    ImGui::DockBuilderDockWindow("Statistics", leftBottom);
-    ImGui::DockBuilderDockWindow("Scripts", leftBottom);
-    ImGui::DockBuilderDockWindow("Content", leftBottom);
-    ImGui::DockBuilderDockWindow("Viewport", viewport);
-    ImGui::DockBuilderDockWindow("World", details);
-    ImGui::DockBuilderDockWindow("Details", details);
+    ImGui::DockBuilderDockWindow("Statistics", bottom);
+    ImGui::DockBuilderDockWindow("Scripts", bottom);
+    ImGui::DockBuilderDockWindow("Content", bottom);
+
+    // Everything not carved off above.
+    ImGui::DockBuilderDockWindow("Viewport", remainder);
 
     ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -131,9 +145,9 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
 
     const bool tint = hidden || id == state.hovered;
     if (hidden) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.47f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, uiColor(0.45f, 0.45f, 0.47f));
     } else if (id == state.hovered) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.72f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, kAccentBright);
     }
 
     // The pointer-shaped id is what keeps ImGui per-row state attached to the
@@ -187,15 +201,18 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
     }
 
     if (addChildRequested) {
+        state.history.record(scene, state.selected);
         state.selected = scene.createNode("node", id);
     }
     if (duplicateRequested) {
+        state.history.record(scene, state.selected);
         const NodeId copy = scene.duplicateNode(id);
         if (copy != kInvalidNode) {
             state.selected = copy;
         }
     }
     if (destroyRequested) {
+        state.history.record(scene, state.selected);
         if (state.selected == id) {
             state.selected = kInvalidNode;
         }
@@ -269,10 +286,37 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
             ImGui::EndMenu();
         }
 
+        // Edit exists mostly to advertise the shortcuts. Every entry is
+        // reachable from the keyboard, and a menu is where people look to find
+        // out which key does it.
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, state.history.canUndo())) {
+                state.undoRequested = true;
+            }
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, state.history.canRedo())) {
+                state.redoRequested = true;
+            }
+            ImGui::Separator();
+
+            const bool hasSelection = state.selected != kInvalidNode;
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false, hasSelection)) {
+                state.copyRequested = true;
+            }
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false, !state.clipboard.empty())) {
+                state.pasteRequested = true;
+            }
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, hasSelection)) {
+                state.duplicateRequested = true;
+            }
+            if (ImGui::MenuItem("Delete", "Del", false, hasSelection)) {
+                state.deleteRequested = true;
+            }
+            ImGui::EndMenu();
+        }
+
         if (ImGui::BeginMenu("Window")) {
             ImGui::MenuItem("World Outliner", nullptr, &state.showOutliner);
             ImGui::MenuItem("Details", nullptr, &state.showDetails);
-            ImGui::MenuItem("World", nullptr, &state.showWorld);
             ImGui::MenuItem("Content", nullptr, &state.showContent);
             ImGui::MenuItem("Scripts", nullptr, &state.showScripts);
             ImGui::MenuItem("Statistics", nullptr, &state.showStats);
@@ -295,7 +339,7 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
 
         if (state.saveFlashSeconds > 0.0f) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "saved");
+            ImGui::TextColored(kOk, "saved");
         }
 
         const char* hint =
@@ -374,7 +418,7 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
 
     if (!scripts.errors().empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%zu error(s)", scripts.errors().size());
+        ImGui::TextColored(kError, "%zu error(s)", scripts.errors().size());
     }
 
     ImGui::EndChild();
@@ -451,9 +495,19 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
 
         const f32 snapVector[3]{snapValue, snapValue, snapValue};
 
+        const bool wasUsing = ImGuizmo::IsUsing();
+
         if (ImGuizmo::Manipulate(&view.columns[0].x, &projection.columns[0].x, operation, mode,
                                  &world.columns[0].x, nullptr,
                                  state.snapEnabled ? snapVector : nullptr)) {
+            // Recorded on the FRAME THE DRAG BEGINS, not while it continues.
+            // A gizmo pull fires this every frame it moves, and one undo step
+            // per frame would mean fifty presses of Ctrl+Z to take back one
+            // drag - which is not undo, it is a rewind.
+            if (!wasUsing) {
+                state.history.record(scene, state.selected);
+            }
+
             const Mat4 local = inverse(parentWorld) * world;
             scene.node(state.selected).transform = Transform::fromMatrix(local);
         }
@@ -475,6 +529,7 @@ void drawOutlinerPanel(EditorState& state, Scene& scene) {
 
     if (ImGui::Begin("World Outliner", &state.showOutliner)) {
         if (ImGui::Button("Add empty")) {
+            state.history.record(scene, state.selected);
             state.selected = scene.createNode("node");
         }
         ImGui::SameLine();
@@ -507,13 +562,28 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
     }
 
     if (ImGui::Begin("Details", &state.showDetails)) {
+        // With nothing selected this is where the world itself is edited. An
+        // inspector showing "select something" is a panel-sized apology.
         if (state.selected == kInvalidNode || !scene.isAlive(state.selected)) {
-            ImGui::TextDisabled("Select an object to see its properties.");
+            ImGui::TextDisabled("World");
+            ImGui::Spacing();
+            drawWorldSettings(renderer);
             ImGui::End();
             return;
         }
 
         Node& node = scene.node(state.selected);
+
+        // Called after a widget to take an undo step at the moment editing
+        // STARTS. IsItemActivated fires on the frame the widget is first
+        // grabbed, before any value has moved, so what gets recorded is the
+        // state to come back to - and a drag that spans fifty frames still
+        // costs exactly one step.
+        const auto recordOnEdit = [&] {
+            if (ImGui::IsItemActivated()) {
+                state.history.record(scene, state.selected);
+            }
+        };
 
         // A fixed-size buffer rather than binding std::string directly: ImGui
         // text fields write into raw memory, and a string would have to be
@@ -523,12 +593,16 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) {
             node.name = nameBuffer;
         }
+        recordOnEdit();
 
-        ImGui::Checkbox("Visible", &node.visible);
+        if (ImGui::Checkbox("Visible", &node.visible)) {
+            state.history.record(scene, state.selected);
+        }
 
         ImGui::SeparatorText("Transform");
 
         ImGui::DragFloat3("Location", &node.transform.position.x, 0.02f);
+        recordOnEdit();
 
         // Rotation round-trips through Euler angles for editing. Written back
         // only when touched, so an untouched quaternion never loses precision
@@ -537,10 +611,13 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         if (ImGui::DragFloat3("Rotation", &euler.x, 0.5f)) {
             node.transform.rotation = fromEulerDegrees(euler);
         }
+        recordOnEdit();
 
         ImGui::DragFloat3("Scale", &node.transform.scale.x, 0.01f, 0.001f, 1000.0f);
+        recordOnEdit();
 
         if (ImGui::Button("Reset transform")) {
+            state.history.record(scene, state.selected);
             node.transform = Transform{};
         }
 
@@ -585,10 +662,12 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         const std::string current = node.script.empty() ? "(none)" : node.script;
         if (ImGui::BeginCombo("Script", current.c_str())) {
             if (ImGui::Selectable("(none)", node.script.empty())) {
+                state.history.record(scene, state.selected);
                 node.script.clear();
             }
             for (const std::string& name : scripts.scriptNames()) {
                 if (ImGui::Selectable(name.c_str(), node.script == name)) {
+                    state.history.record(scene, state.selected);
                     node.script = name;
                 }
             }
@@ -596,7 +675,7 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         }
 
         if (!node.script.empty() && !scripts.has(node.script)) {
-            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "'%s' is not compiled",
+            ImGui::TextColored(kError, "'%s' is not compiled",
                                node.script.c_str());
         }
 
@@ -608,12 +687,8 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
     ImGui::End();
 }
 
-void drawWorldPanel(EditorState& state, Renderer& renderer) {
-    if (!state.showWorld) {
-        return;
-    }
-
-    if (ImGui::Begin("World", &state.showWorld)) {
+void drawWorldSettings(Renderer& renderer) {
+    {
         Environment& env = renderer.environment();
 
         // Four points on the same set of dials, not four different renderers.
@@ -726,7 +801,6 @@ void drawWorldPanel(EditorState& state, Renderer& renderer) {
             ImGui::TextColored(kAccent, "below the horizon");
         }
     }
-    ImGui::End();
 }
 
 void drawContentPanel(EditorState& state, Renderer& renderer) {
@@ -756,6 +830,7 @@ void drawContentPanel(EditorState& state, Renderer& renderer) {
         // Spawned in front of the camera rather than at the origin, so a new
         // object appears where you are looking instead of somewhere off screen.
         const auto place = [&](const char* name, MeshHandle mesh, MaterialHandle material) {
+            state.history.record(scene, state.selected);
             const NodeId id = scene.createNode(name);
             Node& node = scene.node(id);
             node.mesh = mesh;
@@ -876,7 +951,7 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts) {
 
             // Wrapped, because a Lua error carries a file and line and is
             // routinely wider than the panel.
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.35f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, kError);
             for (const ScriptError& error : scripts.errors()) {
                 ImGui::TextWrapped("%s: %s", error.script.c_str(), error.message.c_str());
             }

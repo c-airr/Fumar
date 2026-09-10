@@ -113,6 +113,14 @@ public:
 
     bool relativeMouse() const;
 
+    /// Whether this window is the one receiving keyboard input.
+    ///
+    /// Worth checking before acting on any key or button: the OS keeps
+    /// reporting the physical state of the mouse and keyboard whether or not
+    /// this window is in front, so an editor that does not ask will happily fly
+    /// its camera while you are typing in another application.
+    bool hasFocus() const;
+
     bool shouldClose() const { return m_shouldClose; }
 
     /// A minimised window has a zero-sized framebuffer, which Vulkan rejects,

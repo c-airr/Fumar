@@ -16,29 +16,54 @@
 // Rebuilt each frame, because objects move.
 layout(set = 0, binding = 1) uniform accelerationStructureEXT sceneStructure;
 
-/// How many rays are spent on each. Four is enough that a soft edge reads as an
-/// edge rather than as noise, and cheap enough not to matter: at this
-/// resolution it is a few million rays a frame, which is a fraction of what the
-/// hardware is built for.
-const int kShadowSamples = 8;
-const int kOcclusionSamples = 16;
-
-/// One pseudo-random number from a pixel coordinate.
+/// How many rays each question is worth.
 ///
-/// Deliberately a function of position only, with nothing from the frame
-/// counter in it: the noise pattern is then identical every frame, so what is
-/// left reads as texture rather than as flicker. Mixing time in would look
-/// better only with temporal accumulation to average it out.
-float hash12(vec2 p) {
-    vec3 q = fract(vec3(p.xyx) * 0.1031);
-    q += dot(q, q.yzx + 33.33);
-    return fract((q.x + q.y) * q.z);
+/// These are low for ray tracing, and they can be because the samples are
+/// ARRANGED rather than scattered - see vogelDisc below. Sixteen random rays
+/// look worse than eight evenly spread ones.
+const int kShadowSamples = 8;
+const int kOcclusionSamples = 12;
+
+/// One pseudo-random number from a point in the WORLD.
+///
+/// Not from gl_FragCoord, and that distinction is the whole reason this
+/// function takes a position. Seeded from the pixel, the sampling pattern
+/// belongs to the screen: turn the camera and every surface slides underneath a
+/// noise pattern that stays where it is, so the speckle along a shadow edge
+/// appears to crawl across the objects rather than sit on them. Seeded from the
+/// surface point, the pattern is glued to the geometry and moves with it - the
+/// grain that is left reads as texture on the object instead of as dirt on the
+/// lens.
+///
+/// The position is scaled up first. Neighbouring pixels are only thousandths of
+/// a unit apart on a nearby surface, and a hash fed inputs that close returns
+/// values that are close, which turns fine grain into slow blotches.
+float hash13(vec3 position) {
+    vec3 p = fract(position * 137.13 * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
 }
 
-/// Two of them, decorrelated. Using hash12 twice with nearby inputs gives
-/// values that are related, which shows up as structure in the sampling.
-vec2 hash22(vec2 p) {
-    return vec2(hash12(p), hash12(p + vec2(37.13, 71.79)));
+/// Evenly spaced points on a disc, from a Vogel spiral.
+///
+/// This replaces random sampling and is most of why the noise went away. Random
+/// points clump: with eight of them, some regions of the sun's disc get three
+/// samples and others none, and that imbalance IS the speckle. A Vogel spiral -
+/// each point turned by the golden angle from the last - spreads them as evenly
+/// as points can be spread, and the only randomness left is one rotation for
+/// the whole set, which decorrelates neighbouring pixels without unbalancing
+/// any of them.
+///
+/// The same eight rays, arranged rather than scattered.
+vec2 vogelDisc(int index, int count, float rotation) {
+    // sqrt keeps the points evenly spread by AREA rather than by radius - a
+    // disc has more room further out, so without it they crowd the centre.
+    const float radius = sqrt((float(index) + 0.5) / float(count));
+
+    // 2.39996 radians: the golden angle, the turn that never lines points up
+    // into spokes however many of them there are.
+    const float theta = float(index) * 2.39996323 + rotation;
+    return vec2(cos(theta), sin(theta)) * radius;
 }
 
 /// Any pair of axes perpendicular to n. Which pair does not matter, only that
@@ -109,17 +134,13 @@ float sunVisibility(vec3 position, vec3 normal, float nDotL) {
     // distance along the ray, so the angle it subtends is its arctangent.
     const float spread = tan(max(frame.sunAngularRadius, 0.0001));
 
+    // One random number for the whole set: which way the spiral is turned.
+    const float rotation = hash13(position) * 6.2831853;
+
     float visible = 0.0;
     for (int i = 0; i < kShadowSamples; ++i) {
-        const vec2 rnd = hash22(gl_FragCoord.xy + vec2(float(i) * 17.0, float(i) * 29.0));
-
-        // sqrt on the radius is what spreads points evenly over the disc. Using
-        // the raw value clusters them in the middle, because a disc has more
-        // area further out.
-        const float angle = rnd.x * 6.2831853;
-        const float radius = spread * sqrt(rnd.y);
-        const vec3 direction =
-            normalize(sun + (tangent * cos(angle) + bitangent * sin(angle)) * radius);
+        const vec2 offset = vogelDisc(i, kShadowSamples, rotation) * spread;
+        const vec3 direction = normalize(sun + tangent * offset.x + bitangent * offset.y);
 
         // A large finite distance rather than infinity: the sun is outside the
         // scene, so anything the ray can reach is a caster.
@@ -149,20 +170,21 @@ float ambientOcclusion(vec3 position, vec3 normal) {
     vec3 bitangent;
     orthonormalBasis(normal, tangent, bitangent);
 
+    // Offset from the shadow rays' rotation, so the two sets do not line up and
+    // reinforce each other's pattern.
+    const float rotation = hash13(position + vec3(17.0)) * 6.2831853;
+
     float open = 0.0;
     for (int i = 0; i < kOcclusionSamples; ++i) {
-        const vec2 rnd = hash22(gl_FragCoord.xy + vec2(float(i) * 11.0, float(i) * 23.0));
-
-        // Cosine-weighted: more samples where the surface receives more light,
-        // which is what makes the average of the results the right answer
-        // without weighting each one afterwards.
-        const float angle = rnd.x * 6.2831853;
-        const float radius = sqrt(rnd.y);
-        const float height = sqrt(max(1.0 - rnd.y, 0.0));
+        // A disc point lifted onto the hemisphere. Projecting an evenly spread
+        // disc this way gives a COSINE-weighted distribution: denser near the
+        // normal, which is where light matters most, and exactly the weighting
+        // that makes the plain average of the results the right answer.
+        const vec2 disc = vogelDisc(i, kOcclusionSamples, rotation);
+        const float height = sqrt(max(1.0 - dot(disc, disc), 0.0));
 
         const vec3 direction =
-            normalize(tangent * cos(angle) * radius + bitangent * sin(angle) * radius +
-                      normal * height);
+            normalize(tangent * disc.x + bitangent * disc.y + normal * height);
 
         open += anyHit(origin, direction, 0.0, frame.occlusionRadius) ? 0.0 : 1.0;
     }

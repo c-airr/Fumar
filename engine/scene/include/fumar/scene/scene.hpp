@@ -113,11 +113,17 @@ public:
     /// `depth` starts at 0 for the root's children.
     void traverse(const std::function<void(NodeId, u32 depth)>& visit) const;
 
+    /// `base`, or `base` with a numeric suffix if that name is taken.
+    ///
+    /// Public because anything that ADDS nodes wants it - pasting, importing -
+    /// not just the duplicate button. Two identical rows in the outliner are
+    /// not an error, just impossible to tell apart.
+    std::string uniqueName(const std::string& base) const;
+
 private:
     void destroyRecursive(NodeId id);
     void detachFromParent(NodeId id);
     NodeId duplicateInto(NodeId source, NodeId parent);
-    std::string uniqueName(const std::string& base) const;
 
     // Parallel arrays keyed by NodeId. A slot map rather than a vector of
     // nodes, so ids stay stable when other nodes are destroyed - an editor

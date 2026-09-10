@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <utility>
 #include <format>
 
 using namespace fumar;
@@ -121,48 +122,113 @@ void createStarterScene(Renderer& renderer) {
 }
 
 /// Keyboard shortcuts that apply when no text field has focus.
-void handleShortcuts(EditorState& state, Scene& scene) {
+/// Keyboard shortcuts that apply when no text field has focus.
+///
+/// `navigating` is true while the camera is being flown. The tool shortcuts are
+/// the letters WASD sit on top of, so without that check, holding right mouse
+/// and pressing W to fly forward also swaps the gizmo to Move. Every editor
+/// with a fly camera has to make this distinction; the mouse button is what
+/// makes it.
+void handleShortcuts(EditorState& state, bool navigating) {
     if (ImGui::GetIO().WantTextInput) {
         return;
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
-        state.gizmoMode = GizmoMode::Select;
-    }
-    if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
-        state.gizmoMode = GizmoMode::Translate;
-    }
-    if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
-        state.gizmoMode = GizmoMode::Rotate;
-    }
-    if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
-        state.gizmoMode = GizmoMode::Scale;
+    if (!navigating) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
+            state.gizmoMode = GizmoMode::Select;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_W, false)) {
+            state.gizmoMode = GizmoMode::Translate;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+            state.gizmoMode = GizmoMode::Rotate;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+            state.gizmoMode = GizmoMode::Scale;
+        }
     }
 
-    // Ctrl+D duplicates, matching every other editor. The copy is selected
-    // immediately, so the gizmo is already on it and it can be dragged off the
-    // original without another click.
-    //
     // Written as a modifier check plus a key press rather than with
     // IsKeyChordPressed: chords go through ImGui shortcut routing, which asks
     // which window owns the shortcut, and a global editor binding owned by no
     // particular panel is exactly the case that routing declines to deliver.
-    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) &&
-        state.selected != kInvalidNode && scene.isAlive(state.selected)) {
+    const bool ctrl = ImGui::GetIO().KeyCtrl;
+    const bool shift = ImGui::GetIO().KeyShift;
+
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+        // Ctrl+Shift+Z redoes as well as Ctrl+Y: both conventions are in wide
+        // use and supporting one but not the other only ever annoys somebody.
+        (shift ? state.redoRequested : state.undoRequested) = true;
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+        state.redoRequested = true;
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+        state.copyRequested = true;
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) {
+        state.pasteRequested = true;
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
+        state.duplicateRequested = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+        state.deleteRequested = true;
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        state.selected = kInvalidNode;
+    }
+}
+
+/// Carries out whatever the menu or the keyboard asked for.
+///
+/// Run between frames, never during one: undo and paste both destroy and create
+/// nodes, and the panels have already been described from the tree as it was.
+void applyEditActions(EditorState& state, Scene& scene) {
+    const bool hasSelection = state.selected != kInvalidNode && scene.isAlive(state.selected);
+
+    if (std::exchange(state.copyRequested, false) && hasSelection) {
+        state.clipboard = captureSubtree(scene, state.selected);
+        FUMAR_DEBUG("copied {} node(s)", state.clipboard.nodes.size());
+    }
+
+    if (std::exchange(state.pasteRequested, false) && !state.clipboard.empty()) {
+        state.history.record(scene, state.selected);
+        const NodeId pasted = pasteInto(scene, state.clipboard, kRootNode);
+        if (pasted != kInvalidNode) {
+            state.selected = pasted;
+        }
+    }
+
+    // The copy lands in exactly the same place as the original and is selected
+    // immediately, so the gizmo is already on it and it can be dragged off
+    // without another click.
+    if (std::exchange(state.duplicateRequested, false) && hasSelection) {
+        state.history.record(scene, state.selected);
         const NodeId copy = scene.duplicateNode(state.selected);
         if (copy != kInvalidNode) {
             state.selected = copy;
         }
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && state.selected != kInvalidNode &&
-        scene.isAlive(state.selected)) {
+    if (std::exchange(state.deleteRequested, false) && hasSelection) {
+        state.history.record(scene, state.selected);
         scene.destroyNode(state.selected);
         state.selected = kInvalidNode;
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        state.selected = kInvalidNode;
+    NodeId restored = kInvalidNode;
+    if (std::exchange(state.undoRequested, false) &&
+        state.history.undo(scene, state.selected, restored)) {
+        state.selected = restored;
+    }
+
+    restored = kInvalidNode;
+    if (std::exchange(state.redoRequested, false) &&
+        state.history.redo(scene, state.selected, restored)) {
+        state.selected = restored;
     }
 }
 
@@ -268,7 +334,6 @@ int main() {
         drawViewportPanel(state, renderer, scripts);
         drawOutlinerPanel(state, renderer.scene());
         drawDetailsPanel(state, renderer.scene(), renderer, scripts);
-        drawWorldPanel(state, renderer);
         drawContentPanel(state, renderer);
         drawScriptsPanel(state, scripts);
         drawStatsPanel(state, renderer.scene(), renderer);
@@ -279,7 +344,11 @@ int main() {
             ImGui::ShowDemoWindow(&state.showImGuiDemo);
         }
 
-        handleShortcuts(state, renderer.scene());
+        // Held right mouse means the camera is being flown, which is what
+        // stops WASD from doubling as the tool shortcuts.
+        handleShortcuts(state, window.hasFocus() &&
+                                   (window.mouseButtonDown(MouseButton::Right) ||
+                                    window.relativeMouse()));
 
         // F5 recompiles, the way every editor with a build step does it.
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
@@ -306,9 +375,13 @@ int main() {
         // panel never moves the view. Once the cursor is captured the check is
         // skipped, because in that mode ImGui no longer receives meaningful
         // positions and would report the cursor as being nowhere.
+        // hasFocus first, and it is not a detail: the OS reports the physical
+        // state of the mouse whichever window is in front, so without it the
+        // camera flies around while you are clicking in a browser behind it.
         const bool cameraActive =
-            window.relativeMouse() ||
-            (state.viewportHovered && window.mouseButtonDown(MouseButton::Right));
+            window.hasFocus() &&
+            (window.relativeMouse() ||
+             (state.viewportHovered && window.mouseButtonDown(MouseButton::Right)));
 
         if (cameraActive) {
             renderer.camera().update(window, deltaSeconds);
@@ -321,6 +394,12 @@ int main() {
 
         ui.endFrame();
         renderer.drawFrame();
+
+        // --- edits ------------------------------------------------------------
+        // Between frames, for the same reason the file actions below are:
+        // undo and paste destroy and create nodes, and the panels have already
+        // described the tree as it was.
+        applyEditActions(state, renderer.scene());
 
         // --- dropped files ----------------------------------------------------
         // Handled after the frame for the same reason the file actions are:
@@ -357,6 +436,14 @@ int main() {
                 state.scenePath = state.openPath;
                 state.selected = kInvalidNode;
                 state.hovered = kInvalidNode;
+
+                // Both hold mesh and material handles, which are indices into
+                // a registry the load has just replaced. Undoing into the old
+                // scene would rebuild it with whatever now sits at those
+                // indices - a different mesh, or none.
+                state.history.clear();
+                state.clipboard = SceneSnapshot{};
+
                 scripts.restart();
             }
         }
@@ -368,6 +455,8 @@ int main() {
             state.scenePath.clear();
             state.selected = kInvalidNode;
             state.hovered = kInvalidNode;
+            state.history.clear();
+            state.clipboard = SceneSnapshot{};
             scripts.restart();
         }
     }

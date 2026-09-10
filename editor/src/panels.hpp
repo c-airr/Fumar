@@ -4,6 +4,8 @@
 #include "fumar/core/types.hpp"
 #include "fumar/scene/scene.hpp"
 
+#include "history.hpp"
+
 #include <imgui.h>
 
 #include <filesystem>
@@ -32,6 +34,12 @@ enum class GizmoMode : u8 {
 struct EditorState {
     NodeId selected = kInvalidNode;
 
+    /// Undo, redo, and the clipboard - all three are the same mechanism, a
+    /// snapshot of the scene taken before a change. Lives here so any panel can
+    /// record a step without the history being threaded through every call.
+    History history;
+    SceneSnapshot clipboard;
+
     /// The node under the cursor in the viewport, refreshed by picking each
     /// frame. Purely visual feedback.
     NodeId hovered = kInvalidNode;
@@ -55,7 +63,6 @@ struct EditorState {
     bool scriptsRunning = false;
 
     bool showOutliner = true;
-    bool showWorld = true;
     bool showScripts = true;
     bool showDetails = true;
     bool showContent = true;
@@ -68,6 +75,18 @@ struct EditorState {
 
     /// Set from the menu to rebuild the default panel arrangement.
     bool resetLayoutRequested = false;
+
+    // --- edit actions -------------------------------------------------------
+    // Raised by the menu or by a shortcut and acted on in one place afterwards,
+    // rather than performed where they are triggered. Undo and paste both
+    // destroy and create nodes, and doing that while the outliner is halfway
+    // through describing the tree would leave ImGui holding freed strings.
+    bool undoRequested = false;
+    bool redoRequested = false;
+    bool copyRequested = false;
+    bool pasteRequested = false;
+    bool duplicateRequested = false;
+    bool deleteRequested = false;
 
     // --- scene file ---------------------------------------------------------
 
@@ -121,9 +140,11 @@ void drawOutlinerPanel(EditorState& state, Scene& scene);
 void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
                       const ScriptEngine& scripts);
 
-/// The sun, the sky and the exposure - everything that lights the scene
-/// without being in it.
-void drawWorldPanel(EditorState& state, Renderer& renderer);
+/// The sun, the sky and the exposure. Drawn INSIDE the details panel when
+/// nothing is selected, rather than as a panel of its own: an inspector with
+/// nothing to inspect is wasted space, and the world is what you are looking at
+/// when you are not looking at an object.
+void drawWorldSettings(Renderer& renderer);
 
 /// Meshes and materials in the project, and buttons to place them.
 void drawContentPanel(EditorState& state, Renderer& renderer);

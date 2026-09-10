@@ -155,6 +155,13 @@ target_include_directories(fumar_imgui SYSTEM PUBLIC
     "${imgui_SOURCE_DIR}"
     "${imgui_SOURCE_DIR}/backends")
 
+# ImGui ships a handful of open-licensed fonts in misc/fonts, meant exactly for
+# this - its built-in font is a 13-pixel bitmap intended to prove the library
+# runs, not to be shipped. Exported so the executables can copy the two we use
+# beside themselves at build time, with no new dependency and nothing to
+# download.
+set(FUMAR_IMGUI_FONT_DIR "${imgui_SOURCE_DIR}/misc/fonts" CACHE INTERNAL "")
+
 target_link_libraries(fumar_imgui
     PUBLIC Vulkan::Headers
     PRIVATE ${FUMAR_SDL_TARGET})

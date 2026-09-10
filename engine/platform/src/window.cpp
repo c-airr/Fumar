@@ -240,6 +240,10 @@ bool Window::relativeMouse() const {
     return m_window != nullptr && SDL_GetWindowRelativeMouseMode(m_window);
 }
 
+bool Window::hasFocus() const {
+    return m_window != nullptr && (SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+
 std::vector<std::string> Window::consumeDroppedFiles() {
     return std::exchange(m_droppedFiles, {});
 }

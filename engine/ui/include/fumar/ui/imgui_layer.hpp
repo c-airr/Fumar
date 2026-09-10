@@ -20,6 +20,16 @@ class Window;
 /// Lives in its own module rather than in the renderer, because the renderer
 /// has no business knowing what a window or a button is - it only accepts a
 /// callback that records extra draw commands.
+/// An interface colour, converted from the sRGB values a colour picker shows
+/// into what the sRGB swapchain needs.
+///
+/// Every colour the editor names has to go through this. The window is
+/// presented in an _SRGB format, so the hardware applies the sRGB curve to
+/// whatever is written: pass 0.086 straight through and 0.33 appears on screen.
+/// The theme itself is converted wholesale inside the layer; this is for the
+/// handful of colours panels name directly.
+ImVec4 uiColor(f32 red, f32 green, f32 blue, f32 alpha = 1.0f);
+
 class ImGuiLayer {
 public:
     ImGuiLayer(Window& window, Renderer& renderer);
