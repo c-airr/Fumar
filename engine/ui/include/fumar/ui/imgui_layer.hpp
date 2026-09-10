@@ -38,6 +38,20 @@ public:
     ImGuiLayer(const ImGuiLayer&) = delete;
     ImGuiLayer& operator=(const ImGuiLayer&) = delete;
 
+    /// Hands the mouse over to the application, or takes it back.
+    ///
+    /// Must be called while the cursor is captured for a fly camera or a
+    /// first-person script, and it is not optional: ImGui's SDL backend sets
+    /// the cursor shape every single frame, and one of the things it does is
+    /// call SDL_ShowCursor(). Relative mouse mode hides the cursor; the backend
+    /// then shows it again a millisecond later. The result is a cursor that
+    /// blinks and drifts instead of disappearing, which is exactly what it
+    /// looks like when two pieces of code disagree about who owns the pointer.
+    ///
+    /// Also stops ImGui reacting to mouse positions, which in relative mode are
+    /// no longer anywhere in particular.
+    void setInputCaptured(bool captured);
+
     /// Starts a UI frame. Widget calls go between this and endFrame().
     void beginFrame();
 

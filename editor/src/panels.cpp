@@ -524,6 +524,22 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &state.snapEnabled);
 
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+
+    // Placing things belongs where you are looking, not in a panel on the far
+    // side of the window. A menu rather than a row of buttons: the list of what
+    // can be placed only grows, and a toolbar that grows with it stops being a
+    // toolbar.
+    if (toolButton("Place", ImGui::IsPopupOpen("##place_menu"), "Add an object to the scene")) {
+        ImGui::OpenPopup("##place_menu");
+    }
+    if (ImGui::BeginPopup("##place_menu")) {
+        drawSpawnMenuItems(state, renderer);
+        ImGui::EndPopup();
+    }
+
     if (state.gizmoMode == GizmoMode::Scale) {
         ImGui::SameLine();
         ImGui::TextDisabled(ImGui::GetIO().KeyShift ? "| uniform" : "| shift: uniform");
@@ -1025,27 +1041,9 @@ void drawContentPanel(EditorState& state, Renderer& renderer) {
         return;
     }
 
+    // What the project HAS, rather than what can be created - creating moved to
+    // the Place menu in the viewport toolbar, where you are already looking.
     if (ImGui::Begin("Content", &state.showContent)) {
-        ImGui::SeparatorText("Place");
-
-        if (ImGui::Button("Cube", ImVec2(-1.0f, 0.0f))) {
-            spawn(state, renderer, SpawnKind::Cube);
-        }
-        if (ImGui::Button("Cylinder", ImVec2(-1.0f, 0.0f))) {
-            spawn(state, renderer, SpawnKind::Cylinder);
-        }
-        if (ImGui::Button("Plane", ImVec2(-1.0f, 0.0f))) {
-            spawn(state, renderer, SpawnKind::Plane);
-        }
-        if (ImGui::Button("Point light", ImVec2(-1.0f, 0.0f))) {
-            spawn(state, renderer, SpawnKind::PointLight);
-        }
-        if (ImGui::Button("Spot light", ImVec2(-1.0f, 0.0f))) {
-            spawn(state, renderer, SpawnKind::SpotLight);
-        }
-
-        ImGui::SeparatorText("Import");
-
         // Everything importable sitting next to the executable. Dragging a file
         // onto the window does the same thing; this is for what is already
         // there.

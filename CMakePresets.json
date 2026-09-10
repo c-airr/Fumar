@@ -48,6 +48,23 @@
     },
 
     {
+      "name": "windows-arm64-release",
+      "displayName": "Windows ARM64 Release (MSVC)",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      },
+      "vendor": {
+        "fumar": "Deliberately does NOT name a compiler, unlike the presets above. On Windows on ARM the guaranteed toolchain is MSVC cl, which CMake picks up from the vcvars environment; naming clang-cl would fail on an image that does not ship LLVM for ARM64. Building this one with a different compiler than the x64 job is a feature, not an accident - it is the only thing exercising the MSVC branch of cmake/FumarWarnings.cmake."
+      }
+    },
+
+    {
       "name": "linux-base",
       "hidden": true,
       "inherits": "base",
@@ -82,6 +99,7 @@
   "buildPresets": [
     { "name": "windows-debug",   "configurePreset": "windows-debug" },
     { "name": "windows-release", "configurePreset": "windows-release" },
+    { "name": "windows-arm64-release", "configurePreset": "windows-arm64-release" },
     { "name": "linux-debug",     "configurePreset": "linux-debug" },
     { "name": "linux-release",   "configurePreset": "linux-release" }
   ]

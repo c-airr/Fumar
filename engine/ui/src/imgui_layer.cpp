@@ -323,6 +323,22 @@ ImGuiLayer::~ImGuiLayer() {
     FUMAR_INFO("imgui shut down");
 }
 
+void ImGuiLayer::setInputCaptured(bool captured) {
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Both flags, for two different halves of the same problem: one stops the
+    // backend touching the cursor, the other stops ImGui believing the
+    // positions it is being told about.
+    constexpr ImGuiConfigFlags kCaptureFlags =
+        ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
+
+    if (captured) {
+        io.ConfigFlags |= kCaptureFlags;
+    } else {
+        io.ConfigFlags &= ~kCaptureFlags;
+    }
+}
+
 void ImGuiLayer::beginFrame() {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();

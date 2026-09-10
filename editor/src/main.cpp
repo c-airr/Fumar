@@ -377,6 +377,11 @@ int main() {
         }
 
         // --- interface ------------------------------------------------------
+        // Before the frame is started, because ImGui reads these flags during
+        // NewFrame. While the cursor is captured the interface must not touch
+        // it: see ImGuiLayer::setInputCaptured.
+        ui.setInputCaptured(window.relativeMouse());
+
         ui.beginFrame();
         ImGuizmo::BeginFrame();
 
@@ -454,7 +459,11 @@ int main() {
                 // A first-person script needs continuous mouse movement, which
                 // only exists once the cursor is captured. Escape releases it -
                 // Window handles that - so there is always a way out.
-                if (window.hasFocus() && !window.relativeMouse() && state.viewportHovered) {
+                // Not gated on the cursor being over the viewport: once it is
+                // captured there is no meaningful cursor position any more, so
+                // asking whether it is over anything would answer differently
+                // every frame and the capture would flicker on and off.
+                if (window.hasFocus() && !window.relativeMouse()) {
                     window.setRelativeMouse(true);
                 }
             }
