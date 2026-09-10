@@ -1,1 +1,87 @@
-soon
+# fumar
+
+> A 3D Vulkan engine built with AI because I had some spare limit left and wanted to see how far we could push it.
+
+The idea behind this is simple: test whether an AI can actually build and maintain a complex, low-level C++ repository from scratch. At the same time, I'm learning C++ myself and wanted to see how engine architecture, linking, build systems, and modern Vulkan actually work under the hood — without copy-pasting outdated 10-year-old tutorials or hiding behind ready-made black boxes.
+
+### Tech Stack
+
+- **Standard:** C++20
+- **Compiler:** `clang-cl` (Windows), `clang` (Linux)
+- **Build system:** CMake ≥ 3.25 + Ninja + `CMakePresets.json`
+- **Dependencies:** FetchContent
+- **Window / Input:** SDL3 (abstracted behind `fumar::Window`)
+- **Graphics:** Vulkan 1.3 + `dynamic_rendering` + `synchronization2` (no legacy render pass / framebuffer boilerplate)
+- **Vulkan API:** `vulkan.hpp` (RAII)
+- **Vulkan Loader:** `VULKAN_HPP_DEFAULT_DISPATCHER` (dynamically loaded via SDL3, zero static linking to `vulkan-1.lib`)
+- **GPU Memory:** VMA (Vulkan Memory Allocator, C API)
+- **Math:** Custom math in `fumar_core` (~400 lines, no GLM surprises)
+- **Shaders:** GLSL → SPIR-V via `glslc` (integrated CMake build step)
+- **Scripting:** LuaJIT (handcrafted bindings on `lua_State*` + FFI) and native C++
+- **Platforms:** Windows + Linux (native)
+
+### Goals & Features
+
+- [x] Working hardware Ray Tracing (RT shadows, ambient occlusion, reflections)
+- [x] UE5-inspired dark editor theme with `#A85F2C` amber accents
+- [x] Dual scripting: LuaJIT + dynamic C++
+- [x] Standard engine stuff: drag & drop asset import, scene outliner, details panel, transform gizmos
+- [ ] In-engine mesh tools: basic modeling, cutting, merging shapes
+- [ ] Exporting standalone games to `.exe`
+
+### How to build & run (Windows)
+
+```powershell
+# Build
+.\scripts\dev.ps1 cmake --build --preset windows-debug
+
+# Run editor
+.\build\windows-debug\bin\fumar_editor.exe
+```
+
+**Controls:** Hold `Right Mouse Button` + `WASD` to fly around the viewport, `W` for move gizmo, `Ctrl+D` to duplicate, `Escape` to free the cursor.
+
+---
+
+# fumar (PL)
+
+> Silnik graficzny 3D w Vulkanie stworzony z AI, bo zostało mi trochę limitu i chciałem sprawdzić, co z tego wyjdzie.
+
+Zadaniem tego projektu jest sprawdzenie, czy AI jest w ogóle w stanie pracować na takim repozytorium od zera. Zostało mi trochę limitu i nie wiedziałem jak go sensownie wykorzystać, więc wpadłem na pomysł zrobienia silnika. Przy okazji sam uczę się C++ i chcę zobaczyć jak od kuchni wygląda budowa, linkowanie, architektura i nowoczesny Vulkan – bez klepania starych boilerplate'ów i gotowych bibliotek, które robią magię w tle.
+
+### Stack techniczny
+
+- **Standard:** C++20
+- **Kompilator:** `clang-cl` (Windows), `clang` (Linux)
+- **Build system:** CMake ≥ 3.25 + Ninja + `CMakePresets.json`
+- **Zależności:** FetchContent
+- **Okno / input:** SDL3 (schowane za `fumar::Window`)
+- **Grafika:** Vulkan 1.3 + `dynamic_rendering` + `synchronization2` (bez przestarzałego syfu z VkRenderPass i VkFramebuffer)
+- **Vulkan API:** `vulkan.hpp` (RAII)
+- **Loader Vulkana:** `VULKAN_HPP_DEFAULT_DISPATCHER` (dynamiczne symbole przez loader SDL3, brak linkowania do `vulkan-1.lib`)
+- **Pamięć GPU:** VMA (Vulkan Memory Allocator, C API)
+- **Matematyka:** własna implementacja w `fumar_core` (~400 linii, zamiast GLM i jego pułapek)
+- **Shadery:** GLSL → SPIR-V przez `glslc` w CMake
+- **Skryptowanie:** LuaJIT (ręczne bindingi na `lua_State*` + FFI) oraz natywny C++
+- **Platformy:** Windows + Linux (natywnie)
+
+### Docelowy stan silnika
+
+- [x] Działający Ray Tracing (cienie RT, ambient occlusion, odbicia)
+- [x] Edytor z klimatem UE5 (ciemny motyw z akcentem `#A85F2C`)
+- [x] Kod pisany w: LuaJIT oraz C++ (z szybkim przeładowaniem)
+- [x] Standardowe rzeczy: drag & drop, import assetów, outliner, inspektor, gizma
+- [ ] Lekkie modelowanie w silniku: wcinanie, łączenie, modyfikowanie brył
+- [ ] Być może export gotowej gry do `.exe`
+
+### Jak odpalić (Windows)
+
+```powershell
+# Zbuduj
+.\scripts\dev.ps1 cmake --build --preset windows-debug
+
+# Odpal edytor
+.\build\windows-debug\bin\fumar_editor.exe
+```
+
+**Sterowanie:** Trzymaj `PPM` + `WASD` żeby latać po scenie, `W` do przesuwania obiektów, `Ctrl+D` duplikacja, `Escape` uwalnia kursor.
