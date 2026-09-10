@@ -72,6 +72,11 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     return *this;
 }
 
+vk::DeviceAddress Buffer::deviceAddress() const {
+    FUMAR_VERIFY_MSG(m_buffer, "deviceAddress() on an empty buffer");
+    return m_device->handle().getBufferAddress(vk::BufferDeviceAddressInfo{.buffer = m_buffer});
+}
+
 void Buffer::write(const void* data, usize bytes, usize offset) {
     FUMAR_VERIFY_MSG(m_mapped != nullptr, "write() on a buffer that is not host-visible");
     FUMAR_VERIFY_MSG(offset + bytes <= m_size, "write of {} bytes at offset {} overruns a {} byte buffer",

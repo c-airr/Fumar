@@ -119,6 +119,9 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         {"ground", toJson(env.groundColor)},
         {"sky_intensity", env.skyIntensity},
         {"exposure", env.exposure},
+        {"shadow_strength", env.shadowStrength},
+        {"occlusion_strength", env.occlusionStrength},
+        {"occlusion_radius", env.occlusionRadius},
     };
 
     // --- meshes -------------------------------------------------------------
@@ -400,6 +403,9 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         env.groundColor = vec3From(source.value("ground", Json::array()), env.groundColor);
         env.skyIntensity = source.value("sky_intensity", env.skyIntensity);
         env.exposure = source.value("exposure", env.exposure);
+        env.shadowStrength = source.value("shadow_strength", env.shadowStrength);
+        env.occlusionStrength = source.value("occlusion_strength", env.occlusionStrength);
+        env.occlusionRadius = source.value("occlusion_radius", env.occlusionRadius);
         renderer.environment() = env;
     }
 

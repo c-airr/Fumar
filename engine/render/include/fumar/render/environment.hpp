@@ -58,6 +58,22 @@ struct Environment {
     /// cloud, where light arrives from everywhere and nothing casts a shadow.
     f32 skyIntensity = 0.55f;
 
+    // --- ray tracing --------------------------------------------------------
+    // Ignored when the GPU cannot trace rays. Kept in the scene file either
+    // way, so a scene set up on a machine with ray tracing does not lose its
+    // settings by being opened on one without.
+
+    /// 0 leaves the scene unshadowed, 1 is what the rays actually report.
+    f32 shadowStrength = 1.0f;
+
+    /// How much the ambient term is darkened where the sky is blocked. This is
+    /// the difference between an object standing on the ground and one
+    /// hovering just above it.
+    f32 occlusionStrength = 0.9f;
+
+    /// Reach of the occlusion rays, in world units.
+    f32 occlusionRadius = 1.6f;
+
     // --- the camera ---------------------------------------------------------
 
     /// Multiplies the image before tone mapping. A property of the camera, not

@@ -87,6 +87,30 @@ DescriptorWriter& DescriptorWriter::image(vk::DescriptorSet set, u32 binding, vk
     return *this;
 }
 
+DescriptorWriter& DescriptorWriter::accelerationStructure(vk::DescriptorSet set, u32 binding,
+                                                          vk::AccelerationStructureKHR structure) {
+    // The handle is stored separately because the chained struct points at an
+    // ARRAY of handles, not at one - so something has to own that array for as
+    // long as the write is pending.
+    const vk::AccelerationStructureKHR& stored = m_structures.emplace_back(structure);
+
+    const vk::WriteDescriptorSetAccelerationStructureKHR& chained =
+        m_structureWrites.emplace_back(vk::WriteDescriptorSetAccelerationStructureKHR{
+            .accelerationStructureCount = 1,
+            .pAccelerationStructures = &stored,
+        });
+
+    m_writes.push_back(vk::WriteDescriptorSet{
+        .pNext = &chained,
+        .dstSet = set,
+        .dstBinding = binding,
+        .dstArrayElement = 0,
+        .descriptorCount = 1,
+        .descriptorType = vk::DescriptorType::eAccelerationStructureKHR,
+    });
+    return *this;
+}
+
 void DescriptorWriter::submit(vk::Device device) {
     if (m_writes.empty()) {
         return;

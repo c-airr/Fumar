@@ -48,6 +48,22 @@ layout(set = 0, binding = 0) uniform FrameData {
     /// Multiplies the whole image before tone mapping - the camera's shutter,
     /// not a property of the scene.
     float exposure;
+
+    /// How far ray traced shadows are taken. 0 disables them entirely, 1 is
+    /// physically what the rays report. Anything in between lifts the shadows,
+    /// which is a lie, but a useful one while placing objects.
+    float shadowStrength;
+
+    float occlusionStrength;
+
+    /// How far the occlusion rays reach, in world units. Short: this is about
+    /// contact and creases, not distant geometry.
+    float occlusionRadius;
+
+    /// Padding, so the block ends on a 16-byte boundary the way std140 expects.
+    /// Named rather than left implicit because the C++ struct has to carry it
+    /// too, and an unnamed gap is a gap somebody eventually fills wrongly.
+    float _padding;
 } frame;
 
 /// World-space direction the given normalised device coordinate looks along.

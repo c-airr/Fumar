@@ -65,6 +65,19 @@ public:
     /// so anything drawing lines has to cope with it being false.
     bool wideLinesSupported() const { return m_wideLinesSupported; }
 
+    /// Whether the GPU can trace rays against an acceleration structure.
+    ///
+    /// Checked rather than required, and everything that uses it has a path for
+    /// false. Ray tracing needs hardware from 2018 onwards; an engine that
+    /// refused to start without it would refuse to start on most laptops.
+    ///
+    /// Specifically this is VK_KHR_ray_query - tracing from an ordinary
+    /// fragment shader - rather than VK_KHR_ray_tracing_pipeline, which
+    /// replaces the whole pipeline with ray generation, miss and hit shaders
+    /// and needs a shader binding table to go with them. Ray query is the far
+    /// smaller step: it drops into the shading already being done.
+    bool rayTracingSupported() const { return m_rayTracingSupported; }
+
     /// Returns the first candidate format the GPU supports with the requested
     /// features, or eUndefined if none qualify.
     ///
@@ -87,6 +100,7 @@ private:
     QueueFamilies m_queueFamilies;
 
     bool m_wideLinesSupported = false;
+    bool m_rayTracingSupported = false;
 
     vk::UniqueDevice m_device;
     vk::Queue m_graphicsQueue;

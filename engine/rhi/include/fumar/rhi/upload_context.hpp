@@ -38,6 +38,12 @@ public:
     /// staging buffer is released as soon as the copy completes.
     Buffer createDeviceBuffer(const void* data, usize bytes, vk::BufferUsageFlags usage);
 
+    /// The device this uploads to. Exposed because callers sometimes need to
+    /// ask what it can do - whether to add ray tracing usage flags to a buffer,
+    /// for instance - and threading a second reference through every call site
+    /// would be worse.
+    Device& device() { return m_device; }
+
     /// Fills an image from raw pixels and leaves it in eShaderReadOnlyOptimal,
     /// ready to sample.
     void uploadImage(Image& image, const void* pixels, usize bytes);

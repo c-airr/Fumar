@@ -58,6 +58,14 @@ public:
     /// memcpy into a host-visible buffer. Asserts on device-local memory.
     void write(const void* data, usize bytes, usize offset = 0);
 
+    /// The buffer's address in the GPU's own address space.
+    ///
+    /// Descriptors are the usual way a shader reaches a buffer, but an
+    /// acceleration structure build is not a shader - it is a fixed-function
+    /// unit handed raw addresses for the vertices, indices and scratch space.
+    /// Requires the buffer to have been created with eShaderDeviceAddress.
+    vk::DeviceAddress deviceAddress() const;
+
     bool valid() const { return static_cast<bool>(m_buffer); }
 
 private:

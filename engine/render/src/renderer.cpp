@@ -48,6 +48,10 @@ struct alignas(16) FrameUniforms {
     f32 sunAngularRadius;
     f32 skyIntensity;
     f32 exposure;
+    f32 shadowStrength;
+    f32 occlusionStrength;
+    f32 occlusionRadius;
+    f32 padding;
 };
 
 /// Push constants, matching the block in shaders/object.glsl.
@@ -114,10 +118,20 @@ Renderer::Renderer(Window& window) : m_window(window) {
     const std::array<vk::DescriptorSetLayout, 2> setLayouts{*m_cameraSetLayout, *m_materialSetLayout};
 
     const std::filesystem::path shaderDir = executableDirectory() / "shaders";
+
+    // Same shading, two builds of it: the ray query variant traces for shadows
+    // and occlusion, the plain one assumes everything is lit and open. Choosing
+    // between compiled shaders rather than branching inside one keeps the
+    // fallback free of any cost, and is the only option anyway - an extension
+    // has to be declared when the shader is compiled, not when it runs.
+    const std::filesystem::path meshFragment = m_device->rayTracingSupported()
+                                                   ? shaderDir / "mesh_rq.frag.spv"
+                                                   : shaderDir / "mesh.frag.spv";
+
     m_pipeline = std::make_unique<rhi::GraphicsPipeline>(
         *m_device, rhi::GraphicsPipelineDesc{
                        .vertexShader = shaderDir / "mesh.vert.spv",
-                       .fragmentShader = shaderDir / "mesh.frag.spv",
+                       .fragmentShader = meshFragment,
                        // The scene pipeline targets the off-screen HDR image,
                        // not the swapchain - so a change of window format never
                        // invalidates it.
@@ -225,6 +239,7 @@ Renderer::~Renderer() {
     m_resources.clear();
     for (PerFrame& frame : m_perFrame) {
         frame.cameraUniforms = rhi::Buffer{};
+        frame.topLevel = rhi::TopLevelStructure{};
     }
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
@@ -360,11 +375,19 @@ void Renderer::createDescriptors() {
 
     // Both stages: the vertex shader needs the matrices, the fragment shader
     // needs the sun and sky. A binding is only visible to the stages named here.
-    m_cameraSetLayout = rhi::DescriptorSetLayoutBuilder()
-                            .binding(0, vk::DescriptorType::eUniformBuffer,
-                                     vk::ShaderStageFlagBits::eVertex |
-                                         vk::ShaderStageFlagBits::eFragment)
-                            .build(handle);
+    rhi::DescriptorSetLayoutBuilder frameLayout;
+    frameLayout.binding(0, vk::DescriptorType::eUniformBuffer,
+                        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment);
+
+    // Only declared when the GPU can trace: the descriptor TYPE itself comes
+    // from VK_KHR_acceleration_structure, so naming it without the extension
+    // enabled is invalid. This is why there are two builds of the mesh fragment
+    // shader rather than one that branches.
+    if (m_device->rayTracingSupported()) {
+        frameLayout.binding(1, vk::DescriptorType::eAccelerationStructureKHR,
+                            vk::ShaderStageFlagBits::eFragment);
+    }
+    m_cameraSetLayout = frameLayout.build(handle);
 
     m_materialSetLayout = rhi::DescriptorSetLayoutBuilder()
                               .binding(0, vk::DescriptorType::eCombinedImageSampler,
@@ -379,11 +402,15 @@ void Renderer::createDescriptors() {
     // Plus one image set the renderer keeps for itself: the tone mapping pass
     // reads the HDR target through a descriptor just like any material.
     constexpr u32 kInternalImageSets = 1;
-    const std::array<vk::DescriptorPoolSize, 2> poolSizes{
+    std::vector<vk::DescriptorPoolSize> poolSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                kMaterialBudget + kInternalImageSets},
     };
+    if (m_device->rayTracingSupported()) {
+        poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eAccelerationStructureKHR,
+                                                   rhi::kFramesInFlight});
+    }
     m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
         *m_device, rhi::kFramesInFlight + kMaterialBudget + kInternalImageSets, poolSizes);
 
@@ -490,6 +517,15 @@ void Renderer::resetScene() {
 
     m_scene = Scene{};
     m_resources.clear();
+
+    // The instance list still points at bottom level structures belonging to
+    // the meshes just released. Nothing traces against them before the next
+    // frame rebuilds it, but a stale handle already written into a descriptor
+    // would outlive them, so both are dropped here.
+    for (PerFrame& frame : m_perFrame) {
+        frame.topLevel = rhi::TopLevelStructure{};
+        frame.writtenStructure = nullptr;
+    }
 
     // Frees every descriptor set at once - including the camera sets, which is
     // why they are reallocated immediately afterwards.
@@ -629,6 +665,10 @@ NodeId Renderer::pickNode(const Ray& ray) const {
     return best;
 }
 
+bool Renderer::rayTracingSupported() const {
+    return m_device->rayTracingSupported();
+}
+
 void Renderer::waitIdle() const {
     if (m_device) {
         m_device->waitIdle();
@@ -691,11 +731,66 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         .sunAngularRadius = radians(env.sunAngularRadiusDegrees),
         .skyIntensity = env.skyIntensity,
         .exposure = env.exposure,
+        // Zeroed rather than branched on in the shader when the GPU cannot
+        // trace: the ray tracing functions are already compiled out there, and
+        // leaving a live value in the buffer would be misleading to read back.
+        .shadowStrength = m_device->rayTracingSupported() ? env.shadowStrength : 0.0f,
+        .occlusionStrength = m_device->rayTracingSupported() ? env.occlusionStrength : 0.0f,
+        .occlusionRadius = env.occlusionRadius,
+        .padding = 0.0f,
     };
 
     // A plain memcpy into persistently mapped memory. No fence is needed: this
     // slot's previous frame was already waited on before we got here.
     m_perFrame[frameIndex].cameraUniforms.write(&uniforms, sizeof(uniforms));
+}
+
+void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex) {
+    if (!m_device->rayTracingSupported()) {
+        return;
+    }
+
+    PerFrame& frame = m_perFrame[frameIndex];
+
+    // One entry per drawable: which mesh, and where it is. The bottom level
+    // structures hold the triangles; this holds nothing but a matrix and a
+    // pointer to one, which is why rebuilding it every frame is affordable and
+    // rebuilding the meshes would not be.
+    m_instances.clear();
+    m_scene.forEachDrawable([&](NodeId, const Node& node, const Mat4& worldTransform) {
+        if (!m_resources.has(node.mesh)) {
+            return;
+        }
+        const rhi::BottomLevelStructure& blas = m_resources.mesh(node.mesh).accelerationStructure();
+        if (!blas.valid()) {
+            return;
+        }
+
+        vk::AccelerationStructureInstanceKHR instance{};
+        instance.transform = rhi::toTransformMatrix(&worldTransform.columns[0].x);
+
+        // Hit by every ray whose mask overlaps this one. A single mask is
+        // enough for now; separate bits would let shadow rays ignore something
+        // that camera rays still see, glass being the usual example.
+        instance.mask = 0xFF;
+        instance.flags =
+            static_cast<u32>(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
+        instance.accelerationStructureReference = blas.deviceAddress();
+
+        m_instances.push_back(instance);
+    });
+
+    frame.topLevel.record(*m_device, cmd, m_instances);
+
+    // Reallocating the structure invalidates the descriptor pointing at it.
+    // record() waits for the device before it does that, so writing here is
+    // safe - and it only happens when the handle actually changed.
+    if (frame.topLevel.handle() != frame.writtenStructure) {
+        rhi::DescriptorWriter writer;
+        writer.accelerationStructure(frame.cameraSet, 1, frame.topLevel.handle());
+        writer.submit(m_device->handle());
+        frame.writtenStructure = frame.topLevel.handle();
+    }
 }
 
 void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
@@ -1091,6 +1186,10 @@ void Renderer::recordCommands(u32 imageIndex) {
     // exactly why they cannot be merged. The scene goes into the HDR target,
     // the tone mapper turns that into a displayable image, and the interface
     // draws into the window with that image as one of its textures.
+    // Before anything is drawn: the rays traced while shading need this
+    // frame's picture of the scene to already exist.
+    recordAccelerationStructure(cmd, m_frames->currentFrame());
+
     recordSceneRendering(cmd);
     recordTonemap(cmd);
     recordUiRendering(cmd, imageIndex);

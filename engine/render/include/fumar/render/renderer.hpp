@@ -5,6 +5,7 @@
 #include "fumar/render/environment.hpp"
 #include "fumar/render/mesh.hpp"
 #include "fumar/render/resources.hpp"
+#include "fumar/rhi/acceleration_structure.hpp"
 #include "fumar/rhi/buffer.hpp"
 #include "fumar/rhi/image.hpp"
 #include "fumar/rhi/vk_common.hpp"
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace fumar {
 
@@ -100,6 +102,11 @@ public:
 
     /// Records and submits one frame.
     void drawFrame();
+
+    /// Whether the GPU can trace rays, which decides whether shadows and
+    /// ambient occlusion exist at all. Exposed so the interface can say so
+    /// rather than leaving the sliders looking broken.
+    bool rayTracingSupported() const;
 
     /// Blocks until the GPU has finished everything submitted so far.
     ///
@@ -190,6 +197,11 @@ private:
     void createDescriptors();
     void allocateDescriptorSets();
     void updateFrameUniforms(u32 frameIndex);
+
+    /// Rebuilds this frame's picture of where everything is, for the rays to
+    /// trace against. Recorded before the scene pass, into the same command
+    /// buffer.
+    void recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex);
     void recordSceneRendering(vk::CommandBuffer cmd);
     void recordTonemap(vk::CommandBuffer cmd);
     void recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex);
@@ -266,8 +278,23 @@ private:
     struct PerFrame {
         rhi::Buffer cameraUniforms;
         vk::DescriptorSet cameraSet;
+
+        /// This frame's copy of the scene, as the ray tracing hardware sees it.
+        /// One per frame in flight, because the GPU may still be tracing
+        /// against the previous frame's while this one is rebuilt.
+        rhi::TopLevelStructure topLevel;
+
+        /// The handle currently written into cameraSet. Compared against the
+        /// live one so the descriptor is only rewritten when the structure was
+        /// actually reallocated, which is rare.
+        vk::AccelerationStructureKHR writtenStructure;
     };
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
+
+    /// Rebuilt every frame from the scene. A member rather than a local so the
+    /// allocation is reused instead of being made and freed sixty times a
+    /// second.
+    std::vector<vk::AccelerationStructureInstanceKHR> m_instances;
 
     Scene m_scene;
     ResourceRegistry m_resources;

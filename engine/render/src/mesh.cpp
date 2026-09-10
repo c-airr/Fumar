@@ -59,11 +59,31 @@ Mesh::Mesh(rhi::Device& device, rhi::UploadContext& upload, std::span<const Vert
         m_bounds.max = max(m_bounds.max, vertex.position);
     }
 
+    // The extra usage flags are only legal once the bufferDeviceAddress
+    // feature is on, which Device only enables when it also enabled ray
+    // tracing. Asking for them unconditionally would be a validation error on
+    // every GPU that cannot trace.
+    vk::BufferUsageFlags extra;
+    if (device.rayTracingSupported()) {
+        extra = vk::BufferUsageFlagBits::eShaderDeviceAddress |
+                vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
+    }
+
     m_vertexBuffer = upload.createDeviceBuffer(vertices.data(), vertices.size_bytes(),
-                                               vk::BufferUsageFlagBits::eVertexBuffer);
+                                               vk::BufferUsageFlagBits::eVertexBuffer | extra);
     m_indexBuffer = upload.createDeviceBuffer(indices.data(), indices.size_bytes(),
-                                              vk::BufferUsageFlagBits::eIndexBuffer);
-    (void)device;
+                                              vk::BufferUsageFlagBits::eIndexBuffer | extra);
+
+    if (device.rayTracingSupported()) {
+        m_blas = rhi::BottomLevelStructure(device, upload,
+                                           rhi::BlasGeometry{
+                                               .vertices = m_vertexBuffer.deviceAddress(),
+                                               .indices = m_indexBuffer.deviceAddress(),
+                                               .vertexCount = static_cast<u32>(vertices.size()),
+                                               .indexCount = m_indexCount,
+                                               .vertexStride = sizeof(Vertex),
+                                           });
+    }
 }
 
 void Mesh::draw(vk::CommandBuffer cmd) const {

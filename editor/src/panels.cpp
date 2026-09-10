@@ -684,6 +684,29 @@ void drawWorldPanel(EditorState& state, Renderer& renderer) {
         }
         ImGui::DragFloat("Sky intensity", &env.skyIntensity, 0.01f, 0.0f, 8.0f);
 
+        ImGui::SeparatorText("Ray tracing");
+        if (renderer.rayTracingSupported()) {
+            ImGui::SliderFloat("Shadows", &env.shadowStrength, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Rays traced from each lit pixel towards the sun.\n"
+                                  "Their softness comes from Sun size above: the sun\n"
+                                  "is a disc, not a point, which is why real shadows\n"
+                                  "blur the further they fall from what casts them.");
+            }
+
+            ImGui::SliderFloat("Occlusion", &env.occlusionStrength, 0.0f, 1.0f);
+            ImGui::DragFloat("Occlusion reach", &env.occlusionRadius, 0.02f, 0.05f, 20.0f, "%.2f m");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("How far the occlusion rays look for something\n"
+                                  "blocking the sky. Short values darken creases and\n"
+                                  "contact points; long ones start doing the sun\n"
+                                  "shadow's job, badly.");
+            }
+        } else {
+            ImGui::TextDisabled("This GPU has no VK_KHR_ray_query.");
+            ImGui::TextDisabled("Shadows and occlusion are unavailable.");
+        }
+
         ImGui::SeparatorText("Camera");
         ImGui::DragFloat("Exposure", &env.exposure, 0.005f, 0.01f, 8.0f);
         if (ImGui::IsItemHovered()) {

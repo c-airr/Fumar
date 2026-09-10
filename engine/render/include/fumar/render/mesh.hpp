@@ -2,6 +2,7 @@
 
 #include "fumar/core/math.hpp"
 #include "fumar/core/types.hpp"
+#include "fumar/rhi/acceleration_structure.hpp"
 #include "fumar/rhi/buffer.hpp"
 #include "fumar/rhi/vk_common.hpp"
 
@@ -76,11 +77,20 @@ public:
     /// Local-space bounds, computed once when the mesh was built.
     const Bounds& bounds() const { return m_bounds; }
 
+    /// This mesh's triangles as the ray tracing hardware sees them, or an
+    /// invalid structure when the GPU cannot trace rays.
+    ///
+    /// Built alongside the vertex and index buffers, from the same data. It
+    /// describes the mesh in its OWN space, so one is enough however many times
+    /// the mesh appears in the scene.
+    const rhi::BottomLevelStructure& accelerationStructure() const { return m_blas; }
+
     bool valid() const { return m_indexCount > 0; }
 
 private:
     rhi::Buffer m_vertexBuffer;
     rhi::Buffer m_indexBuffer;
+    rhi::BottomLevelStructure m_blas;
     u32 m_indexCount = 0;
     Bounds m_bounds;
 };

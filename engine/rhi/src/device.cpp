@@ -18,6 +18,48 @@ const std::vector<const char*> kRequiredDeviceExtensions{
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
+/// Requested when present, never required.
+///
+/// deferred_host_operations is not used directly - it is a dependency
+/// acceleration_structure declares, and the validation layers reject enabling
+/// one without the other. The rest of what ray tracing needs (buffer device
+/// addresses, descriptor indexing) is already core in Vulkan 1.2, so it is
+/// switched on as a feature below rather than listed here.
+const std::vector<const char*> kRayTracingExtensions{
+    VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+    VK_KHR_RAY_QUERY_EXTENSION_NAME,
+    VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+};
+
+/// True when the GPU has every ray tracing extension AND the features inside
+/// them. Both halves matter: a driver can expose the extension and still report
+/// the feature as unsupported.
+bool supportsRayTracing(vk::PhysicalDevice device) {
+    const auto available = device.enumerateDeviceExtensionProperties();
+    for (const char* wanted : kRayTracingExtensions) {
+        const bool found = std::any_of(available.begin(), available.end(),
+                                       [wanted](const vk::ExtensionProperties& ext) {
+                                           return std::string_view(ext.extensionName.data()) == wanted;
+                                       });
+        if (!found) {
+            return false;
+        }
+    }
+
+    const auto chain = device.getFeatures2<vk::PhysicalDeviceFeatures2,
+                                           vk::PhysicalDeviceVulkan12Features,
+                                           vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+                                           vk::PhysicalDeviceRayQueryFeaturesKHR>();
+
+    // bufferDeviceAddress is what makes the rest possible: an acceleration
+    // structure build is handed the ADDRESSES of the vertex, index and scratch
+    // buffers, not descriptors bound to them.
+    return chain.get<vk::PhysicalDeviceVulkan12Features>().bufferDeviceAddress == VK_TRUE &&
+           chain.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure ==
+               VK_TRUE &&
+           chain.get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery == VK_TRUE;
+}
+
 QueueFamilies findQueueFamilies(vk::PhysicalDevice device, vk::SurfaceKHR surface) {
     QueueFamilies families;
 
@@ -192,6 +234,35 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
     features10.fillModeNonSolid = VK_TRUE;
     features10.wideLines = m_wideLinesSupported ? VK_TRUE : VK_FALSE;
 
+    // --- optional: ray tracing ----------------------------------------------
+    // These three structs are linked into the chain only when the GPU can
+    // actually do it. They are declared out here rather than inside the branch
+    // because the chain holds POINTERS to them - a struct that went out of
+    // scope before createDevice would leave a dangling pNext.
+    m_rayTracingSupported = supportsRayTracing(m_physicalDevice);
+
+    vk::PhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+        .rayQuery = VK_TRUE,
+    };
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelerationFeatures{
+        .pNext = &rayQueryFeatures,
+        .accelerationStructure = VK_TRUE,
+    };
+    vk::PhysicalDeviceVulkan12Features features12{
+        .pNext = &accelerationFeatures,
+        .bufferDeviceAddress = VK_TRUE,
+    };
+
+    if (m_rayTracingSupported) {
+        features13.pNext = &features12;
+    }
+
+    std::vector<const char*> extensions = kRequiredDeviceExtensions;
+    if (m_rayTracingSupported) {
+        extensions.insert(extensions.end(), kRayTracingExtensions.begin(),
+                          kRayTracingExtensions.end());
+    }
+
     const vk::PhysicalDeviceFeatures2 features2{
         .pNext = &features13,
         .features = features10,
@@ -203,8 +274,8 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
         .pNext = &features2,
         .queueCreateInfoCount = static_cast<u32>(queueInfos.size()),
         .pQueueCreateInfos = queueInfos.data(),
-        .enabledExtensionCount = static_cast<u32>(kRequiredDeviceExtensions.size()),
-        .ppEnabledExtensionNames = kRequiredDeviceExtensions.data(),
+        .enabledExtensionCount = static_cast<u32>(extensions.size()),
+        .ppEnabledExtensionNames = extensions.data(),
     };
 
     m_device = m_physicalDevice.createDeviceUnique(createInfo);
@@ -232,9 +303,22 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
     allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
     allocatorInfo.pVulkanFunctions = &vulkanFunctions;
 
+    // Without this flag VMA does not pass VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS
+    // through, and every attempt to take a buffer's address fails - which is
+    // every acceleration structure build.
+    if (m_rayTracingSupported) {
+        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
+
     const VkResult result = vmaCreateAllocator(&allocatorInfo, &m_allocator);
     FUMAR_VERIFY_MSG(result == VK_SUCCESS, "vmaCreateAllocator failed with {}",
                      vk::to_string(static_cast<vk::Result>(result)));
+
+    if (m_rayTracingSupported) {
+        FUMAR_INFO("ray query available - hardware ray tracing enabled");
+    } else {
+        FUMAR_WARN("no VK_KHR_ray_query on this GPU - falling back to raster-only shading");
+    }
 
     FUMAR_INFO("logical device and memory allocator ready");
 }

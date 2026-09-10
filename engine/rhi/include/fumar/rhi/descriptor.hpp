@@ -70,6 +70,15 @@ public:
     DescriptorWriter& image(vk::DescriptorSet set, u32 binding, vk::ImageView view, vk::Sampler sampler,
                             vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal);
 
+    /// Points a binding at an acceleration structure.
+    ///
+    /// This one does not go through a VkDescriptorBufferInfo or ImageInfo at
+    /// all: the handle is passed through a struct chained into the write's
+    /// pNext, which is how every descriptor type added after Vulkan 1.0 is
+    /// written. descriptorCount still has to be set on the write itself.
+    DescriptorWriter& accelerationStructure(vk::DescriptorSet set, u32 binding,
+                                            vk::AccelerationStructureKHR structure);
+
     void submit(vk::Device device);
 
 private:
@@ -78,6 +87,8 @@ private:
     // vector.
     std::deque<vk::DescriptorBufferInfo> m_bufferInfos;
     std::deque<vk::DescriptorImageInfo> m_imageInfos;
+    std::deque<vk::AccelerationStructureKHR> m_structures;
+    std::deque<vk::WriteDescriptorSetAccelerationStructureKHR> m_structureWrites;
     std::vector<vk::WriteDescriptorSet> m_writes;
 };
 

@@ -8,6 +8,7 @@
 # ---------------------------------------------------------------------------
 
 add_library(fumar_rhi STATIC
+    src/acceleration_structure.cpp
     src/buffer.cpp
     src/descriptor.cpp
     src/device.cpp
