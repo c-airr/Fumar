@@ -1,6 +1,7 @@
 #include "panels.hpp"
 
 #include "fumar/core/math.hpp"
+#include "fumar/platform/paths.hpp"
 #include "fumar/render/renderer.hpp"
 #include "fumar/script/script_engine.hpp"
 
@@ -97,9 +98,11 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
     const ImGuiID details = ImGui::DockBuilderSplitNode(viewport, ImGuiDir_Down, 0.32f, nullptr, &viewport);
 
     ImGui::DockBuilderDockWindow("World Outliner", leftTop);
-    ImGui::DockBuilderDockWindow("Content", leftBottom);
-    ImGui::DockBuilderDockWindow("Scripts", leftBottom);
+    // Docked in reverse order of interest: the last one to arrive is the tab
+    // that opens, and Content is what you reach for most.
     ImGui::DockBuilderDockWindow("Statistics", leftBottom);
+    ImGui::DockBuilderDockWindow("Scripts", leftBottom);
+    ImGui::DockBuilderDockWindow("Content", leftBottom);
     ImGui::DockBuilderDockWindow("Viewport", viewport);
     ImGui::DockBuilderDockWindow("Details", details);
 
@@ -637,7 +640,40 @@ void drawContentPanel(EditorState& state, Renderer& renderer) {
             place("Plane", planeMesh, stoneMaterial);
         }
 
-        ImGui::SeparatorText("Assets");
+        ImGui::SeparatorText("Import");
+
+        // Everything importable sitting next to the executable. Dragging a file
+        // onto the window does the same thing; this is for what is already
+        // there.
+        const std::filesystem::path assetDir = executableDirectory() / "assets";
+        std::error_code ec;
+        bool anyListed = false;
+
+        if (std::filesystem::exists(assetDir, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(assetDir, ec)) {
+                if (!entry.is_regular_file() || !Renderer::isImportable(entry.path())) {
+                    continue;
+                }
+                anyListed = true;
+
+                if (ImGui::Selectable(entry.path().filename().string().c_str())) {
+                    const NodeId imported = renderer.importAsset(entry.path());
+                    if (imported != kInvalidNode) {
+                        state.selected = imported;
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Click to import");
+                }
+            }
+        }
+
+        if (!anyListed) {
+            ImGui::TextDisabled("Drop a .glb or an image onto the window,");
+            ImGui::TextDisabled("or put one in assets/ next to the editor.");
+        }
+
+        ImGui::SeparatorText("Loaded");
         ImGui::Text("Meshes: %zu", renderer.resources().meshCount());
         ImGui::Text("Materials: %zu", renderer.resources().materialCount());
         ImGui::Text("Textures: %zu", renderer.resources().textureCount());

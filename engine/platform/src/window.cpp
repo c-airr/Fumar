@@ -167,6 +167,14 @@ void Window::pumpEvents() {
             m_resized = true;
             break;
 
+        case SDL_EVENT_DROP_FILE:
+            // The string belongs to SDL and is freed once this event is
+            // handled, so it is copied rather than kept.
+            if (event.drop.data != nullptr) {
+                m_droppedFiles.emplace_back(event.drop.data);
+            }
+            break;
+
         case SDL_EVENT_MOUSE_MOTION:
             // Several motion events can arrive per frame; summing them keeps
             // fast mouse movement from being clipped to the last one.
@@ -230,6 +238,10 @@ void Window::setRelativeMouse(bool enabled) {
 
 bool Window::relativeMouse() const {
     return m_window != nullptr && SDL_GetWindowRelativeMouseMode(m_window);
+}
+
+std::vector<std::string> Window::consumeDroppedFiles() {
+    return std::exchange(m_droppedFiles, {});
 }
 
 bool Window::consumeResized() {

@@ -86,6 +86,13 @@ public:
     /// to draw and spinning would burn a core for nothing.
     void waitEvents(u32 timeoutMs);
 
+    /// Files dropped onto the window since the last call, and clears the list.
+    ///
+    /// Queued rather than delivered through a callback, because dropping a file
+    /// usually means loading it, and loading it means rebuilding the scene -
+    /// which must not happen in the middle of pumping the event queue.
+    std::vector<std::string> consumeDroppedFiles();
+
     /// True while the key is held. Level-triggered, which is what continuous
     /// movement wants; a key press as a one-off event would need its own edge
     /// detection.
@@ -147,6 +154,7 @@ private:
     bool m_resized = false;
     Vec2 m_mouseDelta;
     EventHook m_eventHook;
+    std::vector<std::string> m_droppedFiles;
 };
 
 } // namespace fumar

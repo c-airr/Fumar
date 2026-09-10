@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <string>
 #include <vector>
 
 namespace fumar {
@@ -337,6 +339,52 @@ void Renderer::allocateDescriptorSets() {
     m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
 
     writer.submit(m_device->handle());
+}
+
+namespace {
+
+/// Lowercased extension, so ".GLB" and ".glb" are the same thing.
+std::string lowerExtension(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension;
+}
+
+} // namespace
+
+bool Renderer::isImportable(const std::filesystem::path& path) {
+    const std::string extension = lowerExtension(path);
+    return extension == ".gltf" || extension == ".glb" || extension == ".png" ||
+           extension == ".jpg" || extension == ".jpeg" || extension == ".tga" ||
+           extension == ".bmp";
+}
+
+NodeId Renderer::importAsset(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        FUMAR_WARN("cannot import '{}': no such file", path.string());
+        return kInvalidNode;
+    }
+
+    const std::string extension = lowerExtension(path);
+
+    if (extension == ".gltf" || extension == ".glb") {
+        const NodeId root = loadModel(path);
+        if (root != kInvalidNode) {
+            // Dropped in front of the camera rather than at the origin, so it
+            // lands where you were looking.
+            m_scene.node(root).transform.position = m_camera.position + m_camera.forward() * 6.0f;
+        }
+        return root;
+    }
+
+    // An image is a material, not geometry: there is nothing to place, but
+    // there is now something to assign in the Details panel.
+    const MaterialHandle material =
+        createMaterial(path.stem().string(), Vec4{1.0f, 1.0f, 1.0f, 1.0f}, path);
+    FUMAR_INFO("imported texture '{}' as material #{}", path.filename().string(), material.index);
+    return kInvalidNode;
 }
 
 void Renderer::resetScene() {

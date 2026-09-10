@@ -74,6 +74,17 @@ public:
     /// the node it was rooted at, or kInvalidNode on failure.
     NodeId loadModel(const std::filesystem::path& path, NodeId parent = kRootNode);
 
+    /// Imports whatever a path points at.
+    ///
+    /// A model becomes nodes in the scene; an image becomes a material named
+    /// after the file, ready to assign. Returns the node a model was rooted at,
+    /// or kInvalidNode for anything else - including an image, which produces a
+    /// material rather than geometry.
+    NodeId importAsset(const std::filesystem::path& path);
+
+    /// True for a file extension the importer recognises.
+    static bool isImportable(const std::filesystem::path& path);
+
     /// Empties the scene and releases every mesh, texture and material.
     ///
     /// Also resets the descriptor pool, which frees the camera sets along with

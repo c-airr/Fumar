@@ -308,6 +308,21 @@ int main() {
         ui.endFrame();
         renderer.drawFrame();
 
+        // --- dropped files ----------------------------------------------------
+        // Handled after the frame for the same reason the file actions are:
+        // importing adds nodes, and the panels have already been described.
+        for (const std::string& dropped : window.consumeDroppedFiles()) {
+            const std::filesystem::path path(dropped);
+            if (!Renderer::isImportable(path)) {
+                FUMAR_WARN("ignoring dropped file '{}': unsupported type", path.filename().string());
+                continue;
+            }
+            const NodeId imported = renderer.importAsset(path);
+            if (imported != kInvalidNode) {
+                state.selected = imported;
+            }
+        }
+
         // --- scene file actions ----------------------------------------------
         // Deferred to after the frame on purpose: loading replaces the very
         // nodes the panels were describing, and destroying them mid-frame would
