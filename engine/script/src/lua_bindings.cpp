@@ -17,6 +17,7 @@ namespace {
 
 constexpr const char* kNodeMetatable = "fumar.Node";
 constexpr const char* kSceneRegistryKey = "fumar.activeScene";
+constexpr const char* kContextRegistryKey = "fumar.activeContext";
 
 /// The node id carried by a Lua node handle.
 ///
@@ -27,6 +28,13 @@ constexpr const char* kSceneRegistryKey = "fumar.activeScene";
 struct NodeHandle {
     NodeId id;
 };
+
+ScriptContext* contextOrNull(lua_State* lua) {
+    lua_getfield(lua, LUA_REGISTRYINDEX, kContextRegistryKey);
+    auto* context = static_cast<ScriptContext*>(lua_touserdata(lua, -1));
+    lua_pop(lua, 1);
+    return context;
+}
 
 Scene* sceneOrNull(lua_State* lua) {
     lua_getfield(lua, LUA_REGISTRYINDEX, kSceneRegistryKey);
@@ -250,10 +258,105 @@ int fumarFind(lua_State* lua) {
     return 1;
 }
 
+// --- input ------------------------------------------------------------------
+
+/// fumar.key("w") - true while that key is held.
+///
+/// Level triggered rather than edge triggered, which is what continuous
+/// movement wants. A script needing "was just pressed" compares against what it
+/// saw last frame, which it has to keep anyway.
+int fumarKey(lua_State* lua) {
+    const char* name = luaL_checkstring(lua, 1);
+    const ScriptContext* context = contextOrNull(lua);
+
+    lua_pushboolean(lua, context != nullptr && context->input.down(scriptKeyFromName(name)));
+    return 1;
+}
+
+/// fumar.mouse_delta() -> dx, dy, in pixels since the last frame.
+int fumarMouseDelta(lua_State* lua) {
+    const ScriptContext* context = contextOrNull(lua);
+    const Vec2 delta = context != nullptr ? context->input.mouseDelta : Vec2{};
+    lua_pushnumber(lua, static_cast<lua_Number>(delta.x));
+    lua_pushnumber(lua, static_cast<lua_Number>(delta.y));
+    return 2;
+}
+
+// --- camera -----------------------------------------------------------------
+
+/// fumar.camera() -> x, y, z, yaw, pitch
+int fumarCamera(lua_State* lua) {
+    const ScriptContext* context = contextOrNull(lua);
+    if (context == nullptr) {
+        return 0;
+    }
+    lua_pushnumber(lua, static_cast<lua_Number>(context->camera.position.x));
+    lua_pushnumber(lua, static_cast<lua_Number>(context->camera.position.y));
+    lua_pushnumber(lua, static_cast<lua_Number>(context->camera.position.z));
+    lua_pushnumber(lua, static_cast<lua_Number>(context->camera.yaw));
+    lua_pushnumber(lua, static_cast<lua_Number>(context->camera.pitch));
+    return 5;
+}
+
+/// fumar.set_camera(x, y, z, yaw, pitch)
+///
+/// Writing to it is what claims it: the application only copies the result back
+/// when a script has actually touched it, so the editor's own fly camera keeps
+/// working in every scene where nothing wants the view.
+int fumarSetCamera(lua_State* lua) {
+    ScriptContext* context = contextOrNull(lua);
+    if (context == nullptr) {
+        return 0;
+    }
+    context->camera.position = Vec3{static_cast<f32>(luaL_checknumber(lua, 1)),
+                                    static_cast<f32>(luaL_checknumber(lua, 2)),
+                                    static_cast<f32>(luaL_checknumber(lua, 3))};
+    context->camera.yaw = static_cast<f32>(luaL_optnumber(lua, 4, static_cast<lua_Number>(context->camera.yaw)));
+    context->camera.pitch = static_cast<f32>(luaL_optnumber(lua, 5, static_cast<lua_Number>(context->camera.pitch)));
+    context->camera.controlled = true;
+    return 0;
+}
+
+// --- raycast ----------------------------------------------------------------
+
+/// fumar.raycast(ox, oy, oz, dx, dy, dz, [maxDistance]) -> distance or nil
+///
+/// The distance to the nearest thing the ray hits. This is how a script finds
+/// the floor under a character, or a wall in front of one, without the engine
+/// having a physics system: the geometry is already there to be asked.
+int fumarRaycast(lua_State* lua) {
+    const ScriptContext* context = contextOrNull(lua);
+    if (context == nullptr || !context->raycast) {
+        lua_pushnil(lua);
+        return 1;
+    }
+
+    const Vec3 origin{static_cast<f32>(luaL_checknumber(lua, 1)),
+                      static_cast<f32>(luaL_checknumber(lua, 2)),
+                      static_cast<f32>(luaL_checknumber(lua, 3))};
+    const Vec3 direction{static_cast<f32>(luaL_checknumber(lua, 4)),
+                         static_cast<f32>(luaL_checknumber(lua, 5)),
+                         static_cast<f32>(luaL_checknumber(lua, 6))};
+    const auto maxDistance = static_cast<f32>(luaL_optnumber(lua, 7, 1000.0));
+
+    const f32 distance = context->raycast(origin, normalize(direction), maxDistance);
+    if (distance < 0.0f) {
+        lua_pushnil(lua);
+    } else {
+        lua_pushnumber(lua, static_cast<lua_Number>(distance));
+    }
+    return 1;
+}
+
 const luaL_Reg kFumarFunctions[] = {
     {"log", fumarLog},
     {"warn", fumarWarn},
     {"find", fumarFind},
+    {"key", fumarKey},
+    {"mouse_delta", fumarMouseDelta},
+    {"camera", fumarCamera},
+    {"set_camera", fumarSetCamera},
+    {"raycast", fumarRaycast},
     {nullptr, nullptr},
 };
 
@@ -282,6 +385,11 @@ void registerBindings(lua_State* lua) {
 void setActiveScene(lua_State* lua, Scene* scene) {
     lua_pushlightuserdata(lua, scene);
     lua_setfield(lua, LUA_REGISTRYINDEX, kSceneRegistryKey);
+}
+
+void setActiveContext(lua_State* lua, ScriptContext* context) {
+    lua_pushlightuserdata(lua, context);
+    lua_setfield(lua, LUA_REGISTRYINDEX, kContextRegistryKey);
 }
 
 Scene* activeScene(lua_State* lua) {

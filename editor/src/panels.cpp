@@ -1,5 +1,6 @@
 #include "panels.hpp"
 
+#include "fumar/core/log.hpp"
 #include "fumar/core/math.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/render/renderer.hpp"
@@ -12,8 +13,10 @@
 // is the only way to arrange panels from code rather than by dragging them.
 #include <imgui_internal.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -63,6 +66,11 @@ enum class SpawnKind : u8 {
     Plane,
     PointLight,
     SpotLight,
+
+    /// A cube with player.lua on it. Not an engine type - there is no such
+    /// thing as a player in fumar - just the one object people always want
+    /// first, made in one click instead of four.
+    Player,
 };
 
 /// Creates one, in front of the camera, and selects it.
@@ -98,6 +106,7 @@ NodeId spawn(EditorState& state, Renderer& renderer, SpawnKind kind) {
     case SpawnKind::Plane: name = "Plane"; break;
     case SpawnKind::PointLight: name = "Point Light"; break;
     case SpawnKind::SpotLight: name = "Spot Light"; break;
+    case SpawnKind::Player: name = "Player"; break;
     }
 
     const NodeId id = scene.createNode(name);
@@ -130,6 +139,17 @@ NodeId spawn(EditorState& state, Renderer& renderer, SpawnKind kind) {
         // at the camera that made it, which lights nothing and looks broken.
         node.transform.rotation = fromAxisAngle(Vec3{1.0f, 0.0f, 0.0f}, radians(-90.0f));
         break;
+    case SpawnKind::Player:
+        node.mesh = cubeMesh;
+        node.material = stoneMaterial;
+
+        // Roughly person-shaped, and standing on the ground rather than
+        // half-buried in it: the script raycasts downwards from the node's
+        // origin, so the origin has to be at the feet.
+        node.transform.scale = Vec3{0.6f, 1.7f, 0.6f};
+        node.transform.position.y = 0.85f;
+        node.script = "player";
+        break;
     }
 
     state.selected = id;
@@ -157,6 +177,13 @@ void drawSpawnMenuItems(EditorState& state, Renderer& renderer) {
     }
     if (ImGui::MenuItem("Spot light")) {
         spawn(state, renderer, SpawnKind::SpotLight);
+    }
+    ImGui::SeparatorText("Gameplay");
+    if (ImGui::MenuItem("Player")) {
+        spawn(state, renderer, SpawnKind::Player);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("A box with player.lua attached. Press Play and walk around.");
     }
 }
 
@@ -217,11 +244,10 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow("World Outliner", rightTop);
     ImGui::DockBuilderDockWindow("Details", rightBottom);
 
-    // Docked in reverse order of interest: the last one to arrive is the tab
-    // that opens, and Content is what you reach for most.
-    ImGui::DockBuilderDockWindow("Statistics", bottom);
-    ImGui::DockBuilderDockWindow("Scripts", bottom);
+    // Tab order, left to right.
     ImGui::DockBuilderDockWindow("Content", bottom);
+    ImGui::DockBuilderDockWindow("Scripts", bottom);
+    ImGui::DockBuilderDockWindow("Statistics", bottom);
 
     // Everything not carved off above.
     ImGui::DockBuilderDockWindow("Viewport", remainder);
@@ -351,6 +377,7 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
     if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr || state.resetLayoutRequested) {
         state.resetLayoutRequested = false;
         buildDefaultLayout(dockspaceId);
+        state.focusContentFrames = 3;
     }
 
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
@@ -1079,28 +1106,165 @@ void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& rend
     ImGui::End();
 }
 
+namespace {
+
+/// A starting point for a new script, rather than an empty file.
+///
+/// An empty buffer is a worse blank page than it looks: the two function names
+/// the engine calls are not guessable, and nothing about a .lua file says which
+/// they are. This is documentation that happens to run.
+constexpr const char* kScriptTemplate = R"(-- Called once, the first time this node updates after Play or a recompile.
+function on_start(node)
+    fumar.log("hello from " .. node:name())
+end
+
+-- Called every frame. dt is seconds since the last one, so multiplying by it
+-- keeps the speed the same whatever the frame rate.
+function on_update(node, dt)
+    local x, y, z = node:position()
+    node:set_position(x, y, z)
+end
+)";
+
+void loadScriptIntoBuffer(EditorState& state, const ScriptEngine& scripts,
+                          const std::string& name) {
+    state.openScript = name;
+    state.scriptDirty = false;
+    std::fill(state.scriptBuffer.begin(), state.scriptBuffer.end(), '\0');
+
+    std::ifstream file(scripts.directory() / (name + ".lua"), std::ios::binary);
+    if (!file) {
+        return;
+    }
+
+    const std::string text((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+
+    // Truncated rather than refused: showing most of an oversized file and
+    // saying so beats an editor that will not open it at all.
+    const usize copied = std::min(text.size(), state.scriptBuffer.size() - 1);
+    std::copy_n(text.begin(), copied, state.scriptBuffer.begin());
+    if (copied < text.size()) {
+        FUMAR_WARN("script '{}' is longer than the editor buffer and was truncated", name);
+    }
+}
+
+bool saveScriptFromBuffer(EditorState& state, const ScriptEngine& scripts) {
+    if (state.openScript.empty()) {
+        return false;
+    }
+
+    std::ofstream file(scripts.directory() / (state.openScript + ".lua"), std::ios::binary);
+    if (!file) {
+        FUMAR_ERROR("could not write script '{}'", state.openScript);
+        return false;
+    }
+
+    file << state.scriptBuffer.data();
+    state.scriptDirty = false;
+    return true;
+}
+
+} // namespace
+
 void drawScriptsPanel(EditorState& state, ScriptEngine& scripts) {
     if (!state.showScripts) {
         return;
     }
 
     if (ImGui::Begin("Scripts", &state.showScripts)) {
-        if (ImGui::Button("Compile", ImVec2(-1.0f, 0.0f))) {
-            scripts.compileAll();
+        // --- the file list --------------------------------------------------
+        ImGui::BeginChild("##script_list", ImVec2(200.0f, 0.0f), ImGuiChildFlags_ResizeX);
+
+        ImGui::SetNextItemWidth(-1.0f);
+        char nameBuffer[64];
+        std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", state.newScriptName.c_str());
+        if (ImGui::InputTextWithHint("##new_script", "new script name", nameBuffer,
+                                     sizeof(nameBuffer))) {
+            state.newScriptName = nameBuffer;
         }
 
-        ImGui::TextDisabled("%s", scripts.directory().string().c_str());
+        const bool canCreate = !state.newScriptName.empty();
+        ImGui::BeginDisabled(!canCreate);
+        if (ImGui::Button("Create", ImVec2(-1.0f, 0.0f)) && canCreate) {
+            const std::filesystem::path path =
+                scripts.directory() / (state.newScriptName + ".lua");
+
+            std::error_code ec;
+            if (std::filesystem::exists(path, ec)) {
+                FUMAR_WARN("script '{}' already exists", state.newScriptName);
+            } else {
+                std::filesystem::create_directories(scripts.directory(), ec);
+                std::ofstream(path, std::ios::binary) << kScriptTemplate;
+
+                // Compiled straight away, so the new script is immediately
+                // selectable in the details panel instead of only after
+                // somebody remembers to press Compile.
+                scripts.compileAll();
+                loadScriptIntoBuffer(state, scripts, state.newScriptName);
+                state.newScriptName.clear();
+            }
+        }
+        ImGui::EndDisabled();
+
         ImGui::Separator();
 
         if (scripts.scriptNames().empty()) {
-            ImGui::TextDisabled("No scripts. Drop a .lua file in the folder above");
-            ImGui::TextDisabled("and press Compile.");
+            ImGui::TextDisabled("No scripts yet.");
         }
-
         for (const std::string& name : scripts.scriptNames()) {
-            ImGui::BulletText("%s", name.c_str());
+            if (ImGui::Selectable(name.c_str(), state.openScript == name)) {
+                loadScriptIntoBuffer(state, scripts, name);
+            }
         }
 
+        ImGui::EndChild();
+        ImGui::SameLine();
+
+        // --- the text ---------------------------------------------------------
+        ImGui::BeginChild("##script_text", ImVec2(0.0f, 0.0f));
+
+        if (state.openScript.empty()) {
+            ImGui::TextDisabled("Select a script on the left, or create one.");
+            ImGui::Spacing();
+            ImGui::TextDisabled("A script declares on_start(node) and on_update(node, dt).");
+            ImGui::TextDisabled("Attach it to an object in Details, then press Play.");
+        } else {
+            if (ImGui::Button("Save")) {
+                saveScriptFromBuffer(state, scripts);
+                scripts.compileAll();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Compile all")) {
+                scripts.compileAll();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s.lua%s", state.openScript.c_str(),
+                                state.scriptDirty ? "  *unsaved*" : "");
+
+            // Monospaced, because source code is the one place where columns
+            // lining up carries meaning. Loaded alongside the interface font in
+            // engine/ui/src/imgui_layer.cpp.
+            ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+            const bool mono = atlas->Fonts.Size > 1;
+            if (mono) {
+                ImGui::PushFont(atlas->Fonts[1], 0.0f);
+            }
+
+            if (ImGui::InputTextMultiline("##script_source", state.scriptBuffer.data(),
+                                          state.scriptBuffer.size(), ImVec2(-1.0f, -1.0f),
+                                          ImGuiInputTextFlags_AllowTabInput)) {
+                state.scriptDirty = true;
+            }
+
+            if (mono) {
+                ImGui::PopFont();
+            }
+        }
+
+        ImGui::EndChild();
+
+        // --- errors -----------------------------------------------------------
         if (!scripts.errors().empty()) {
             ImGui::SeparatorText("Errors");
 

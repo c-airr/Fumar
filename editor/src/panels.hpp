@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace fumar {
 
@@ -76,6 +77,15 @@ struct EditorState {
     /// Set from the menu to rebuild the default panel arrangement.
     bool resetLayoutRequested = false;
 
+    /// Frames left to keep asking for Content to be the open tab.
+    ///
+    /// Which tab of a docked group is in front is decided by which window was
+    /// focused last, and on a fresh layout that is simply whichever panel calls
+    /// Begin() last. Asking for a few frames after the layout is built is what
+    /// makes the choice deliberate; one frame is not enough, because the
+    /// docking node is still settling.
+    i32 focusContentFrames = 0;
+
     // --- edit actions -------------------------------------------------------
     // Raised by the menu or by a shortcut and acted on in one place afterwards,
     // rather than performed where they are triggered. Undo and paste both
@@ -104,6 +114,27 @@ struct EditorState {
 
     /// Shown briefly after a save, so the action is visibly acknowledged.
     f32 saveFlashSeconds = 0.0f;
+
+    // --- script editor ------------------------------------------------------
+
+    /// The script file open in the editor, or empty for none.
+    std::string openScript;
+
+    /// Its text, edited in place.
+    ///
+    /// A fixed buffer rather than a std::string bound through ImGui's resize
+    /// callback. Scripts are source files - a long one is a few thousand
+    /// characters - so the ceiling is never reached in practice, and this is
+    /// one less moving part in a text field that is already the most stateful
+    /// widget in the editor.
+    static constexpr usize kScriptBufferSize = 32 * 1024;
+    std::vector<char> scriptBuffer = std::vector<char>(kScriptBufferSize, '\0');
+
+    /// True once the text differs from what is on disk.
+    bool scriptDirty = false;
+
+    /// Name being typed into the "new script" field.
+    std::string newScriptName;
 
     // --- viewport ----------------------------------------------------------
 

@@ -169,6 +169,19 @@ public:
     /// beside thin rotated objects.
     NodeId pickNode(const Ray& ray) const;
 
+    /// Distance to the nearest geometry the ray hits, or a negative number for
+    /// a miss.
+    ///
+    /// The same bounding-box test picking uses, answering a different question:
+    /// picking wants to know WHICH object, this wants to know HOW FAR. Scripts
+    /// use it to find the floor under a character, which is how walking works
+    /// without a physics engine.
+    ///
+    /// Bounding boxes, not triangles - so a ray can land on the empty corner of
+    /// a box around a sphere. Exact enough for standing on a block, not exact
+    /// enough for a bullet.
+    f32 raycast(const Ray& ray, f32 maxDistance = 1000.0f) const;
+
     /// Colour format of the swapchain, which any pipeline drawing into it must
     /// be built for.
     vk::Format swapchainFormat() const;

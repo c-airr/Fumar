@@ -197,12 +197,13 @@ u32 ScriptEngine::compileAll() {
     return compiled;
 }
 
-void ScriptEngine::update(Scene& scene, f32 deltaSeconds) {
+void ScriptEngine::update(Scene& scene, ScriptContext& context, f32 deltaSeconds) {
     if (m_state->names.empty()) {
         return;
     }
 
     script::setActiveScene(m_state->lua, &scene);
+    script::setActiveContext(m_state->lua, &context);
 
     // Collected first rather than walked directly, because a script is free to
     // create or delete nodes and that would invalidate an iteration in progress.
@@ -233,6 +234,7 @@ void ScriptEngine::update(Scene& scene, f32 deltaSeconds) {
 
     // Cleared so nothing can reach a scene pointer outside an update.
     script::setActiveScene(m_state->lua, nullptr);
+    script::setActiveContext(m_state->lua, nullptr);
 }
 
 void ScriptEngine::restart() {

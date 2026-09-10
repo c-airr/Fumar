@@ -132,6 +132,36 @@ void createStarterScene(Renderer& renderer) {
                renderer.resources().meshCount(), renderer.resources().materialCount());
 }
 
+/// Copies the keyboard and mouse into the form scripts see them in.
+///
+/// A translation rather than a passthrough: fumar_script does not depend on the
+/// platform layer, so it declares its own small set of keys and this is where
+/// the two meet. Anything a script asks about that is not here simply reads as
+/// not pressed.
+void fillScriptInput(ScriptInput& input, const Window& window) {
+    const auto set = [&](ScriptKey key, bool held) {
+        input.held[static_cast<usize>(key)] = held;
+    };
+
+    set(ScriptKey::W, window.keyDown(Key::W));
+    set(ScriptKey::A, window.keyDown(Key::A));
+    set(ScriptKey::S, window.keyDown(Key::S));
+    set(ScriptKey::D, window.keyDown(Key::D));
+    set(ScriptKey::Q, window.keyDown(Key::Q));
+    set(ScriptKey::E, window.keyDown(Key::E));
+    set(ScriptKey::Space, window.keyDown(Key::Space));
+    set(ScriptKey::Shift, window.keyDown(Key::LeftShift));
+    set(ScriptKey::Control, window.keyDown(Key::LeftControl));
+    set(ScriptKey::Up, window.keyDown(Key::Up));
+    set(ScriptKey::Down, window.keyDown(Key::Down));
+    set(ScriptKey::Left, window.keyDown(Key::Left));
+    set(ScriptKey::Right, window.keyDown(Key::Right));
+    set(ScriptKey::MouseLeft, window.mouseButtonDown(MouseButton::Left));
+    set(ScriptKey::MouseRight, window.mouseButtonDown(MouseButton::Right));
+
+    input.mouseDelta = window.mouseDelta();
+}
+
 /// Keyboard shortcuts that apply when no text field has focus.
 /// Keyboard shortcuts that apply when no text field has focus.
 ///
@@ -303,6 +333,10 @@ int main() {
     const std::filesystem::path sceneDirectory = executableDirectory() / "scenes";
 
     EditorState state;
+
+    // Rebuilt each frame except for the camera, which a script may keep
+    // adjusting across frames - so it lives out here rather than in the loop.
+    ScriptContext scriptContext;
     state.viewportTexture = ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
 
     auto lastFrameTime = Clock::now();
@@ -345,9 +379,20 @@ int main() {
         drawViewportPanel(state, renderer, scripts);
         drawOutlinerPanel(state, renderer);
         drawDetailsPanel(state, renderer.scene(), renderer, scripts);
+        // The order here becomes the order of the tabs along the bottom.
         drawContentPanel(state, renderer);
         drawScriptsPanel(state, scripts);
         drawStatsPanel(state, renderer.scene(), renderer);
+
+        // Which of them is in FRONT is a separate question, decided by whichever
+        // was focused last - so on a fresh layout it would be Statistics purely
+        // because it is drawn last. Asked for explicitly instead, and only for
+        // the first few frames after the layout is built, so it never fights
+        // the user clicking a different tab afterwards.
+        if (state.focusContentFrames > 0) {
+            --state.focusContentFrames;
+            ImGui::SetWindowFocus("Content");
+        }
 
         if (state.showImGuiDemo) {
             // Reachable from the Window menu: the fastest reference for what a
@@ -377,8 +422,40 @@ int main() {
 
         // Scripts run only while playing, so an object being positioned by hand
         // does not fight a script moving it.
+        bool scriptDrivesCamera = false;
         if (state.scriptsRunning) {
-            scripts.update(renderer.scene(), deltaSeconds);
+            fillScriptInput(scriptContext.input, window);
+
+            // The camera goes in as it is and comes back out only if a script
+            // wrote to it, so a scene where nothing wants the view leaves the
+            // editor's own fly camera alone.
+            scriptContext.camera.position = renderer.camera().position;
+            scriptContext.camera.yaw = renderer.camera().yaw;
+            scriptContext.camera.pitch = renderer.camera().pitch;
+            scriptContext.camera.controlled = false;
+
+            scriptContext.raycast = [&renderer](Vec3 origin, Vec3 rayDirection, f32 maxDistance) {
+                return renderer.raycast(Ray{origin, rayDirection}, maxDistance);
+            };
+
+            scripts.update(renderer.scene(), scriptContext, deltaSeconds);
+
+            if (scriptContext.camera.controlled) {
+                scriptDrivesCamera = true;
+                renderer.camera().position = scriptContext.camera.position;
+                renderer.camera().yaw = scriptContext.camera.yaw;
+                renderer.camera().pitch = scriptContext.camera.pitch;
+
+                // A first-person script needs continuous mouse movement, which
+                // only exists once the cursor is captured. Escape releases it -
+                // Window handles that - so there is always a way out.
+                if (window.hasFocus() && !window.relativeMouse() && state.viewportHovered) {
+                    window.setRelativeMouse(true);
+                }
+            }
+        } else if (window.relativeMouse()) {
+            // Leaving play mode hands the cursor back.
+            window.setRelativeMouse(false);
         }
 
         // --- camera ---------------------------------------------------------
@@ -389,8 +466,11 @@ int main() {
         // hasFocus first, and it is not a detail: the OS reports the physical
         // state of the mouse whichever window is in front, so without it the
         // camera flies around while you are clicking in a browser behind it.
+        // Not while a script owns the view: two things writing the camera in
+        // the same frame means whichever runs last wins, which looks like the
+        // controls fighting each other.
         const bool cameraActive =
-            window.hasFocus() &&
+            !scriptDrivesCamera && window.hasFocus() &&
             (window.relativeMouse() ||
              (state.viewportHovered && window.mouseButtonDown(MouseButton::Right)));
 

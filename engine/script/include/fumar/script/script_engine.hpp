@@ -2,6 +2,7 @@
 
 #include "fumar/core/types.hpp"
 #include "fumar/scene/scene.hpp"
+#include "fumar/script/script_context.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -51,7 +52,12 @@ public:
 
     /// Runs on_start for nodes that have not had it yet, then on_update for
     /// every node with a script.
-    void update(Scene& scene, f32 deltaSeconds);
+    ///
+    /// The context carries everything outside the scene a script can reach -
+    /// input, the camera, a way to trace a ray. It is passed by reference and
+    /// read back afterwards, because a script may write to the camera and the
+    /// caller needs to know whether it did.
+    void update(Scene& scene, ScriptContext& context, f32 deltaSeconds);
 
     /// Forgets which nodes have already started, so on_start runs again on the
     /// next update. Used when entering play mode or after a recompile.

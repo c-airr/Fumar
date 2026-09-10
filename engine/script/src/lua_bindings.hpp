@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fumar/scene/scene.hpp"
+#include "fumar/script/script_context.hpp"
 
 struct lua_State;
 
@@ -17,6 +18,12 @@ void registerBindings(lua_State* lua);
 void setActiveScene(lua_State* lua, Scene* scene);
 
 Scene* activeScene(lua_State* lua);
+
+/// Points the bindings at the input, camera and raycast for this frame.
+///
+/// Same reasoning as setActiveScene: installed once, changed every frame. Set
+/// to null outside an update so nothing can reach a stale pointer.
+void setActiveContext(lua_State* lua, ScriptContext* context);
 
 /// Pushes a node handle onto the stack as Lua userdata.
 void pushNode(lua_State* lua, NodeId id);

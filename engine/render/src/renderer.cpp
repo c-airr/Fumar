@@ -657,6 +657,38 @@ bool intersectRayBounds(const Vec3& origin, const Vec3& direction, const Bounds&
 
 } // namespace
 
+f32 Renderer::raycast(const Ray& ray, f32 maxDistance) const {
+    f32 nearest = maxDistance;
+    bool hit = false;
+
+    m_scene.forEachDrawable([&](NodeId, const Node& node, const Mat4& worldTransform) {
+        if (!m_resources.has(node.mesh)) {
+            return;
+        }
+
+        // Into the object own space, where its bounding box really is axis
+        // aligned. The direction is deliberately left unnormalised after the
+        // transform: scaling has to affect it for the distance that comes back
+        // to be in world units.
+        const Mat4 toLocal = inverse(worldTransform);
+        const Vec3 localOrigin = xyz(toLocal * point(ray.origin));
+        const Vec3 localDirection = xyz(toLocal * direction(ray.direction));
+
+        f32 distance = 0.0f;
+        if (!intersectRayBounds(localOrigin, localDirection, m_resources.mesh(node.mesh).bounds(),
+                                distance)) {
+            return;
+        }
+
+        if (distance >= 0.0f && distance < nearest) {
+            nearest = distance;
+            hit = true;
+        }
+    });
+
+    return hit ? nearest : -1.0f;
+}
+
 NodeId Renderer::pickNode(const Ray& ray) const {
     NodeId best = kInvalidNode;
     f32 bestDistance = 1e30f;

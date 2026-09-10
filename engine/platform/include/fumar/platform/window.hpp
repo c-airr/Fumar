@@ -32,6 +32,10 @@ enum class Key : u8 {
     LeftShift,
     LeftControl,
     Escape,
+    Up,
+    Down,
+    Left,
+    Right,
     Count,
 };
 

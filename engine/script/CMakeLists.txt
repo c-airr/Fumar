@@ -8,6 +8,7 @@
 
 add_library(fumar_script STATIC
     src/lua_bindings.cpp
+    src/script_context.cpp
     src/script_engine.cpp)
 
 add_library(fumar::script ALIAS fumar_script)
