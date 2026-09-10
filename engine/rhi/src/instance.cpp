@@ -42,20 +42,50 @@ log::Level severityToLogLevel(vk::DebugUtilsMessageSeverityFlagBitsEXT severity)
     }
 }
 
+/// The parameter types vulkan.hpp expects the debug callback to take.
+///
+/// This is the one place where the two vulkan.hpp generations we build against
+/// disagree. The Windows SDK 1.4 header declares the callback pointer in terms
+/// of its own wrappers (`vk::DebugUtilsMessageSeverityFlagBitsEXT`,
+/// `vk::DebugUtilsMessageTypeFlagsEXT`); the header shipped by Ubuntu declares
+/// it with the plain C types. Writing the function either way compiles on one
+/// machine and fails on the other, and casting the function pointer to fit is
+/// worse still: calling a function through an incompatible pointer type is
+/// undefined behaviour, and clang says so.
+///
+/// So instead of naming the types, we ask the header what they are. The
+/// specialisation takes the pointer type apart into its parameters - including
+/// the calling convention baked into VKAPI_PTR, which is part of the type on
+/// Windows - and the callback below is declared from the pieces. Whatever the
+/// header wants, that is exactly what gets defined.
+template <typename Pfn>
+struct MessengerCallbackTraits;
+
+template <typename Result, typename Severity, typename Types, typename Data, typename User>
+struct MessengerCallbackTraits<Result (VKAPI_PTR*)(Severity, Types, Data, User)> {
+    using SeverityArg = Severity;
+    using TypesArg = Types;
+    using DataArg = Data;
+};
+
+using MessengerTraits =
+    MessengerCallbackTraits<decltype(vk::DebugUtilsMessengerCreateInfoEXT{}.pfnUserCallback)>;
+
 /// Called by the validation layers for every message they produce.
 ///
 /// VKAPI_ATTR/VKAPI_CALL pin the calling convention: this function is invoked
 /// from the driver, so it has to match what the driver expects rather than
 /// whatever the compiler would pick by default.
-///
-/// The parameters are the vk:: types rather than the raw C ones, because
-/// vulkan.hpp declares PFN_DebugUtilsMessengerCallbackEXT in terms of its own
-/// enums and flag wrappers. Handing it a C-typed function is a type error, not
-/// something that silently converts.
-VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
-                                             vk::DebugUtilsMessageTypeFlagsEXT types,
-                                             const vk::DebugUtilsMessengerCallbackDataEXT* data,
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(MessengerTraits::SeverityArg rawSeverity,
+                                             MessengerTraits::TypesArg rawTypes,
+                                             MessengerTraits::DataArg data,
                                              void* /*userData*/) {
+    // On the newer header these casts are the identity; on the older one they
+    // wrap the raw values. vk::Flags is a uint32_t and the enum is its
+    // underlying type, so either way this is a relabelling, not a conversion.
+    const auto severity = static_cast<vk::DebugUtilsMessageSeverityFlagBitsEXT>(rawSeverity);
+    const auto types = static_cast<vk::DebugUtilsMessageTypeFlagsEXT>(rawTypes);
+
     const auto level = severityToLogLevel(severity);
     if (log::enabled(level) && data != nullptr) {
         const auto typeString = vk::to_string(types);
