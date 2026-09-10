@@ -490,7 +490,11 @@ int main() {
 
         if (cameraActive) {
             renderer.camera().update(window, deltaSeconds);
-        } else if (window.relativeMouse()) {
+        } else if (!scriptDrivesCamera && window.relativeMouse()) {
+            // Must not release here while a script owns the view: that path
+            // captures the cursor just above, and clearing it again in the same
+            // frame left relative mode flickering - cursor visible (often grey)
+            // and free to leave the window instead of staying locked.
             window.setRelativeMouse(false);
         }
 
