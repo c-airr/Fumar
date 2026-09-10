@@ -10,6 +10,7 @@ namespace fumar {
 
 class ImGuiLayer;
 class Renderer;
+class ScriptEngine;
 class Window;
 
 /// What the gizmo in the viewport does when dragged.
@@ -45,7 +46,13 @@ struct EditorState {
     f32 rotateSnap = 15.0f;
     f32 scaleSnap = 0.1f;
 
+    /// Whether scripts run. Off by default so opening the editor does not
+    /// immediately start moving things around, which would make placing an
+    /// object by hand impossible.
+    bool scriptsRunning = false;
+
     bool showOutliner = true;
+    bool showScripts = true;
     bool showDetails = true;
     bool showContent = true;
     bool showStats = true;
@@ -78,18 +85,22 @@ struct EditorState {
 void drawDockspace(EditorState& state);
 
 /// The scene image, the toolbar and the gizmo.
-void drawViewportPanel(EditorState& state, Renderer& renderer);
+void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts);
 
 /// The scene tree. Click to select, right-click for actions.
 void drawOutlinerPanel(EditorState& state, Scene& scene);
 
 /// Properties of whatever is selected.
-void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer);
+void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer,
+                      const ScriptEngine& scripts);
 
 /// Meshes and materials in the project, and buttons to place them.
 void drawContentPanel(EditorState& state, Renderer& renderer);
 
 /// Frame timing and scene counts.
 void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& renderer);
+
+/// The script list, the Compile button and any compile errors.
+void drawScriptsPanel(EditorState& state, ScriptEngine& scripts);
 
 } // namespace fumar

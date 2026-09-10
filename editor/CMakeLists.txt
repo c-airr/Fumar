@@ -15,6 +15,7 @@ target_link_libraries(fumar_editor PRIVATE
     fumar::platform
     fumar::render
     fumar::scene
+    fumar::script
     fumar::ui)
 
 fumar_configure_target(fumar_editor)
@@ -31,4 +32,15 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/assets")
         COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
                 "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:fumar_editor>/assets"
         COMMENT "copying assets")
+endif()
+
+# Lua sources are mirrored next to the executable, where ScriptEngine looks for
+# them. Copied rather than referenced in place so a built editor is
+# self-contained - and copy_directory_if_different means editing a script and
+# rebuilding picks it up without a full copy.
+if(EXISTS "${CMAKE_SOURCE_DIR}/lua")
+    add_custom_command(TARGET fumar_editor POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
+                "${CMAKE_SOURCE_DIR}/lua" "$<TARGET_FILE_DIR:fumar_editor>/scripts"
+        COMMENT "copying lua scripts")
 endif()

@@ -2,6 +2,7 @@
 
 #include "fumar/core/math.hpp"
 #include "fumar/render/renderer.hpp"
+#include "fumar/script/script_engine.hpp"
 
 #include <ImGuizmo.h>
 #include <imgui.h>
@@ -11,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace fumar {
@@ -95,6 +97,7 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
 
     ImGui::DockBuilderDockWindow("World Outliner", leftTop);
     ImGui::DockBuilderDockWindow("Content", leftBottom);
+    ImGui::DockBuilderDockWindow("Scripts", leftBottom);
     ImGui::DockBuilderDockWindow("Statistics", leftBottom);
     ImGui::DockBuilderDockWindow("Viewport", viewport);
     ImGui::DockBuilderDockWindow("Details", details);
@@ -230,6 +233,7 @@ void drawDockspace(EditorState& state) {
             ImGui::MenuItem("World Outliner", nullptr, &state.showOutliner);
             ImGui::MenuItem("Details", nullptr, &state.showDetails);
             ImGui::MenuItem("Content", nullptr, &state.showContent);
+            ImGui::MenuItem("Scripts", nullptr, &state.showScripts);
             ImGui::MenuItem("Statistics", nullptr, &state.showStats);
             ImGui::Separator();
             if (ImGui::MenuItem("Reset layout")) {
@@ -240,7 +244,7 @@ void drawDockspace(EditorState& state) {
         }
 
         const char* hint =
-            "right mouse: look   |   WASD: move   |   Q W E R: tools   |   Ctrl+D: duplicate   |   Del: delete";
+            "right mouse: look  |  WASD: move  |  Q W E R: tools  |  Ctrl+D: duplicate  |  F5: compile";
         const f32 hintWidth = ImGui::CalcTextSize(hint).x;
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() - hintWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
         ImGui::TextDisabled("%s", hint);
@@ -251,7 +255,7 @@ void drawDockspace(EditorState& state) {
     ImGui::End();
 }
 
-void drawViewportPanel(EditorState& state, Renderer& renderer) {
+void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts) {
     // No padding: the scene image should meet the panel edge, the way a
     // viewport does in every editor.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -292,6 +296,30 @@ void drawViewportPanel(EditorState& state, Renderer& renderer) {
     if (state.gizmoMode == GizmoMode::Scale) {
         ImGui::SameLine();
         ImGui::TextDisabled(ImGui::GetIO().KeyShift ? "| uniform" : "| shift: uniform");
+    }
+
+    // Compile and Play sit at the right end of the toolbar, the way a build
+    // button does in every editor.
+    const f32 rightGroupWidth = 190.0f;
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - rightGroupWidth + ImGui::GetCursorPosX());
+
+    if (toolButton("Compile", false, "Recompile every script (F5)")) {
+        scripts.compileAll();
+    }
+    ImGui::SameLine();
+
+    if (toolButton(state.scriptsRunning ? "Stop" : "Play", state.scriptsRunning,
+                   "Run the scripts attached to nodes")) {
+        state.scriptsRunning = !state.scriptsRunning;
+        if (state.scriptsRunning) {
+            // Fresh run: on_start fires again for everything.
+            scripts.restart();
+        }
+    }
+
+    if (!scripts.errors().empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%zu error(s)", scripts.errors().size());
     }
 
     ImGui::EndChild();
@@ -417,7 +445,8 @@ void drawOutlinerPanel(EditorState& state, Scene& scene) {
     ImGui::End();
 }
 
-void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer) {
+void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer,
+                      const ScriptEngine& scripts) {
     if (!state.showDetails) {
         return;
     }
@@ -481,6 +510,28 @@ void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer
                                ImVec2(ImGui::GetContentRegionAvail().x, 18.0f));
         } else {
             ImGui::TextDisabled("Material: default");
+        }
+
+        ImGui::SeparatorText("Script");
+
+        // A combo over what actually compiled, rather than a free text field:
+        // a typo in a script name would otherwise fail silently at runtime.
+        const std::string current = node.script.empty() ? "(none)" : node.script;
+        if (ImGui::BeginCombo("Script", current.c_str())) {
+            if (ImGui::Selectable("(none)", node.script.empty())) {
+                node.script.clear();
+            }
+            for (const std::string& name : scripts.scriptNames()) {
+                if (ImGui::Selectable(name.c_str(), node.script == name)) {
+                    node.script = name;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (!node.script.empty() && !scripts.has(node.script)) {
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "'%s' is not compiled",
+                               node.script.c_str());
         }
 
         ImGui::SeparatorText("Hierarchy");
@@ -574,6 +625,43 @@ void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& rend
                     static_cast<f64>(camera.position.y), static_cast<f64>(camera.position.z));
         ImGui::Text("Yaw / pitch: %.1f / %.1f", static_cast<f64>(camera.yaw),
                     static_cast<f64>(camera.pitch));
+    }
+    ImGui::End();
+}
+
+void drawScriptsPanel(EditorState& state, ScriptEngine& scripts) {
+    if (!state.showScripts) {
+        return;
+    }
+
+    if (ImGui::Begin("Scripts", &state.showScripts)) {
+        if (ImGui::Button("Compile", ImVec2(-1.0f, 0.0f))) {
+            scripts.compileAll();
+        }
+
+        ImGui::TextDisabled("%s", scripts.directory().string().c_str());
+        ImGui::Separator();
+
+        if (scripts.scriptNames().empty()) {
+            ImGui::TextDisabled("No scripts. Drop a .lua file in the folder above");
+            ImGui::TextDisabled("and press Compile.");
+        }
+
+        for (const std::string& name : scripts.scriptNames()) {
+            ImGui::BulletText("%s", name.c_str());
+        }
+
+        if (!scripts.errors().empty()) {
+            ImGui::SeparatorText("Errors");
+
+            // Wrapped, because a Lua error carries a file and line and is
+            // routinely wider than the panel.
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.35f, 1.0f));
+            for (const ScriptError& error : scripts.errors()) {
+                ImGui::TextWrapped("%s: %s", error.script.c_str(), error.message.c_str());
+            }
+            ImGui::PopStyleColor();
+        }
     }
     ImGui::End();
 }

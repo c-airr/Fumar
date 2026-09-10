@@ -41,6 +41,13 @@ struct Node {
     /// Hides the node and everything under it. Kept separate from destruction
     /// so an editor can toggle it without losing the node.
     bool visible = true;
+
+    /// Name of the Lua script driving this node, or empty for none.
+    ///
+    /// A name rather than a pointer or a compiled chunk: the scene has to stay
+    /// free of the scripting runtime so it can be saved, loaded and tested
+    /// without one, and a name is what survives being written to a file.
+    std::string script;
 };
 
 /// A tree of nodes, with no knowledge of graphics.

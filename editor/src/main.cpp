@@ -7,6 +7,7 @@
 #include "fumar/platform/window.hpp"
 #include "fumar/render/renderer.hpp"
 #include "fumar/scene/scene.hpp"
+#include "fumar/script/script_engine.hpp"
 #include "fumar/ui/imgui_layer.hpp"
 
 #include <ImGuizmo.h>
@@ -50,6 +51,8 @@ void createStarterScene(Renderer& renderer) {
     const NodeId pillar = scene.createNode("Pillar");
     scene.node(pillar).mesh = cylinderMesh;
     scene.node(pillar).material = pillarMaterial;
+    // Wired up so a fresh editor has something to press Play on.
+    scene.node(pillar).script = "spin";
     // Half its height plus a hair: sitting the bottom cap exactly on the floor
     // plane makes the two surfaces coplanar, and the depth test then picks
     // between them per pixel - the flickering black patch known as z-fighting.
@@ -84,6 +87,11 @@ void createStarterScene(Renderer& renderer) {
         node.transform.position = block.position;
         node.transform.scale = block.scale;
         node.transform.rotation = fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, radians(block.yawDegrees));
+    }
+
+    // One block bobs, so Play visibly does two different things at once.
+    if (scene.isAlive(blocks) && !scene.node(blocks).children.empty()) {
+        scene.node(scene.node(blocks).children.front()).script = "bob";
     }
 
     const std::filesystem::path modelPath = executableDirectory() / "assets" / "DamagedHelmet.glb";
@@ -187,6 +195,11 @@ int main() {
     Renderer renderer(window);
     ImGuiLayer ui(window, renderer);
 
+    // Scripts live next to the executable, beside the assets. Compiled once at
+    // startup so anything already written is available immediately.
+    ScriptEngine scripts(executableDirectory() / "scripts");
+    scripts.compileAll();
+
     // The renderer records this after the scene, into the window - the scene
     // itself goes to an off-screen image that the viewport panel displays.
     renderer.setOverlay([&ui](vk::CommandBuffer cmd) { ui.record(cmd); });
@@ -236,10 +249,11 @@ int main() {
         ImGuizmo::BeginFrame();
 
         drawDockspace(state);
-        drawViewportPanel(state, renderer);
+        drawViewportPanel(state, renderer, scripts);
         drawOutlinerPanel(state, renderer.scene());
-        drawDetailsPanel(state, renderer.scene(), renderer);
+        drawDetailsPanel(state, renderer.scene(), renderer, scripts);
         drawContentPanel(state, renderer);
+        drawScriptsPanel(state, scripts);
         drawStatsPanel(state, renderer.scene(), renderer);
 
         if (state.showImGuiDemo) {
@@ -249,6 +263,17 @@ int main() {
         }
 
         handleShortcuts(state, renderer.scene());
+
+        // F5 recompiles, the way every editor with a build step does it.
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
+            scripts.compileAll();
+        }
+
+        // Scripts run only while playing, so an object being positioned by hand
+        // does not fight a script moving it.
+        if (state.scriptsRunning) {
+            scripts.update(renderer.scene(), deltaSeconds);
+        }
 
         // --- camera ---------------------------------------------------------
         // Flying is allowed only from inside the viewport, so dragging in a

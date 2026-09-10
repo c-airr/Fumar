@@ -182,12 +182,14 @@ NodeId Scene::duplicateInto(NodeId source, NodeId parent) {
     const MeshHandle mesh = m_nodes[source].mesh;
     const MaterialHandle material = m_nodes[source].material;
     const bool visible = m_nodes[source].visible;
+    const std::string script = m_nodes[source].script;
 
     const NodeId copy = createNode(name, parent);
     m_nodes[copy].transform = transform;
     m_nodes[copy].mesh = mesh;
     m_nodes[copy].material = material;
     m_nodes[copy].visible = visible;
+    m_nodes[copy].script = script;
 
     // Meshes and materials are shared rather than copied: they are referenced
     // by handle, so a duplicated object costs one node and no GPU memory.

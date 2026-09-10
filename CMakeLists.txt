@@ -71,6 +71,7 @@ include(FumarWarnings)
 include(FumarShaders)
 include(FumarVulkan)
 include(FumarDependencies)
+include(FumarLuaJIT)
 
 # --- shaders ----------------------------------------------------------------
 # Compiled once, into a target both executables depend on. Declaring them per
@@ -89,6 +90,7 @@ add_subdirectory(engine/scene)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
 add_subdirectory(engine/render)
+add_subdirectory(engine/script)
 add_subdirectory(engine/ui)
 add_subdirectory(sandbox)
 add_subdirectory(editor)
@@ -103,5 +105,6 @@ install(TARGETS fumar_editor sandbox RUNTIME DESTINATION .)
 install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/" DESTINATION shaders
         FILES_MATCHING PATTERN "*.spv")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/" DESTINATION assets OPTIONAL)
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/lua/" DESTINATION scripts OPTIONAL)
 
 message(STATUS "fumar ${PROJECT_VERSION} | ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} | ${CMAKE_BUILD_TYPE}")
