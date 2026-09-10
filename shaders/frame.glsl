@@ -86,6 +86,16 @@ layout(set = 0, binding = 0) uniform FrameData {
     /// contact and creases, not distant geometry.
     float occlusionRadius;
 
+    /// How much of a traced reflection is used, against the sky-only
+    /// approximation. 0 turns ray traced reflections off entirely.
+    float reflectionStrength;
+
+    /// Above this roughness a reflection is too blurred for one ray to sample
+    /// usefully, so the sky gradient is used instead.
+    float reflectionRoughnessLimit;
+
+    float _padding;
+
     /// How many entries of `lights` below are real. The rest are stale and
     /// must not be read - the array is a fixed size, the scene is not.
     int lightCount;

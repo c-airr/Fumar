@@ -308,6 +308,12 @@ private:
         /// live one so the descriptor is only rewritten when the structure was
         /// actually reallocated, which is rare.
         vk::AccelerationStructureKHR writtenStructure;
+
+        /// One record per instance in the top level structure, in the same
+        /// order: where its geometry lives and what it is made of. A ray that
+        /// hits instance N looks up entry N here, which is the only way it can
+        /// find out what it hit.
+        rhi::Buffer instanceData;
     };
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
 
@@ -315,6 +321,23 @@ private:
     /// allocation is reused instead of being made and freed sixty times a
     /// second.
     std::vector<vk::AccelerationStructureInstanceKHR> m_instances;
+
+    /// One entry per instance, in the same order, matching InstanceRecord in
+    /// shaders/raytrace.glsl exactly.
+    ///
+    /// Read through GL_EXT_scalar_block_layout, which is why the members can be
+    /// packed like this instead of every one being padded out to sixteen bytes
+    /// the way std140 would. A ray that lands on instance N reads entry N to
+    /// find out what it hit - without it, a hit is a distance and nothing else.
+    struct InstanceRecord {
+        vk::DeviceAddress vertices;
+        vk::DeviceAddress indices;
+        Vec4 baseColor;
+        f32 metallic;
+        f32 roughness;
+        f32 padding[2];
+    };
+    std::vector<InstanceRecord> m_instanceRecords;
 
     Scene m_scene;
     ResourceRegistry m_resources;

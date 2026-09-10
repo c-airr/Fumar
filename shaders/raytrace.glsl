@@ -16,6 +16,41 @@
 // Rebuilt each frame, because objects move.
 layout(set = 0, binding = 1) uniform accelerationStructureEXT sceneStructure;
 
+/// A vertex, laid out exactly as fumar::Vertex in engine/render/include/
+/// fumar/render/mesh.hpp. Nothing checks that they agree.
+struct RayVertex {
+    vec3 position;
+    vec3 normal;
+    vec2 uv;
+};
+
+// Two pointers, in the C sense. Given an address, these say how to read what is
+// there - which is how a ray reaches the vertices of a mesh nobody bound.
+layout(buffer_reference, scalar) readonly buffer VertexBuffer {
+    RayVertex vertices[];
+};
+layout(buffer_reference, scalar) readonly buffer IndexBuffer {
+    uint indices[];
+};
+
+/// What one instance in the scene is, and where its geometry lives.
+struct InstanceRecord {
+    uint64_t vertexAddress;
+    uint64_t indexAddress;
+    vec4 baseColor;
+    float metallic;
+    float roughness;
+    float padding0;
+    float padding1;
+};
+
+/// Indexed by the custom index carried on each instance. This is the whole
+/// reason a hit means anything: without it a ray reports a distance and a
+/// triangle number, and no way at all to find out what it struck.
+layout(set = 0, binding = 2, scalar) readonly buffer InstanceBuffer {
+    InstanceRecord instanceRecords[];
+};
+
 /// How many rays each question is worth.
 ///
 /// These are low for ray tracing, and they can be because the samples are
@@ -196,6 +231,90 @@ float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sour
     return mix(1.0, visible / float(samples), frame.shadowStrength);
 }
 
+/// What the scene looks like along a ray: the colour that comes back.
+///
+/// One bounce, and only one. The surface it lands on is lit by the sun and the
+/// sky, with a shadow ray of its own, but anything reflected IN that surface is
+/// not traced further - a mirror facing a mirror shows sky, not a corridor.
+/// Each extra bounce multiplies the cost and, outside of a hall of mirrors,
+/// changes very little.
+vec3 traceReflection(vec3 origin, vec3 rayDirection) {
+    rayQueryEXT query;
+
+    // No TerminateOnFirstHit here, unlike a shadow ray: this one has to find the
+    // NEAREST surface, not merely establish that something is in the way.
+    rayQueryInitializeEXT(query, sceneStructure, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01,
+                          rayDirection, 400.0);
+
+    // The loop the shadow rays do not need. Traversal reports candidate hits
+    // and the shader decides; with opaque geometry there is nothing to decide,
+    // so this simply runs to completion.
+    while (rayQueryProceedEXT(query)) {
+    }
+
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        // Nothing there: the reflection is of the sky, sun included. A mirror
+        // should show the sun.
+        return skyWithSun(rayDirection);
+    }
+
+    const int instanceIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+    const int primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+    const vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+    const float distance = rayQueryGetIntersectionTEXT(query, true);
+
+    const InstanceRecord record = instanceRecords[instanceIndex];
+
+    VertexBuffer vertexBuffer = VertexBuffer(record.vertexAddress);
+    IndexBuffer indexBuffer = IndexBuffer(record.indexAddress);
+
+    // Three indices per triangle, and the primitive index counts triangles.
+    const uint i0 = indexBuffer.indices[primitiveIndex * 3 + 0];
+    const uint i1 = indexBuffer.indices[primitiveIndex * 3 + 1];
+    const uint i2 = indexBuffer.indices[primitiveIndex * 3 + 2];
+
+    // Barycentrics come back as two numbers; the third is what is left of one.
+    // They weight the three corners, which is exactly how the rasteriser
+    // interpolates - done here by hand because nothing rasterised this.
+    const vec3 weights = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x,
+                              barycentrics.y);
+
+    const vec3 localNormal = normalize(vertexBuffer.vertices[i0].normal * weights.x +
+                                       vertexBuffer.vertices[i1].normal * weights.y +
+                                       vertexBuffer.vertices[i2].normal * weights.z);
+
+    // Into world space. The 3x4 matrix the query returns drops the bottom row,
+    // which a direction does not need anyway. This ignores non-uniform scale -
+    // the inverse transpose would be correct - which shows only on a stretched
+    // curved surface seen in a reflection.
+    const mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(query, true);
+    vec3 normal = normalize(mat3(objectToWorld) * localNormal);
+
+    // Two-sided: a ray can land on the back of a triangle, and a normal facing
+    // away from it would light the surface from behind.
+    if (dot(normal, rayDirection) > 0.0) {
+        normal = -normal;
+    }
+
+    const vec3 hitPoint = origin + rayDirection * distance;
+    const vec3 albedo = record.baseColor.rgb;
+
+    // Lambert rather than the full reflectance model. What is being computed is
+    // a reflection of a surface, at whatever size that reflection appears on
+    // screen - the specular highlight of a reflected object is not something
+    // anyone can see, and it would cost as much as the direct shading does.
+    const vec3 sun = normalize(frame.sunDirection.xyz);
+    const float nDotL = max(dot(normal, sun), 0.0);
+
+    vec3 lit = skyIrradiance(normal) * albedo;
+    if (nDotL > 0.0) {
+        const float shadow = anyHit(hitPoint + normal * 0.01, sun, 0.0, 2000.0) ? 0.0 : 1.0;
+        lit += albedo * frame.sunColor.rgb * frame.sunIntensity * nDotL * shadow / 3.14159265;
+    }
+
+    return lit;
+}
+
 /// How open the sky is above this point, sampled over a short distance.
 ///
 /// The ambient term assumes light arrives from the entire sky. Under a table,
@@ -247,6 +366,12 @@ float sunVisibility(vec3 position, vec3 normal, float nDotL) {
 float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
                       float nDotL) {
     return 1.0;
+}
+
+vec3 traceReflection(vec3 origin, vec3 rayDirection) {
+    // Without ray tracing the only thing that can be reflected is the sky, which
+    // is exactly what the analytic version was already doing.
+    return skyWithSun(rayDirection);
 }
 
 float ambientOcclusion(vec3 position, vec3 normal) {

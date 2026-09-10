@@ -53,7 +53,12 @@ void createStarterScene(Renderer& renderer) {
     // pillar is smooth enough to show where the sun is.
     renderer.resources().material(floorMaterial).roughness = 0.85f;
     renderer.resources().material(blockMaterial).roughness = 0.55f;
-    renderer.resources().material(pillarMaterial).roughness = 0.35f;
+    // Polished metal, so the scene shows a ray traced reflection without anyone
+    // having to build one: the pillar picks up the floor, the blocks and the
+    // sky. Turn its roughness up in Details and watch the reflection dissolve
+    // into the sky gradient, which is the whole difference between the two.
+    renderer.resources().material(pillarMaterial).roughness = 0.12f;
+    renderer.resources().material(pillarMaterial).metallic = 1.0f;
 
     const MeshHandle planeMesh = renderer.createPlaneMesh(14.0f);
     const MeshHandle cubeMesh = renderer.createCubeMesh();

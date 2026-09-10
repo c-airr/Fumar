@@ -222,8 +222,29 @@ void main() {
     // towards the normal is a cheap stand-in for that blur: it is what a
     // prefiltered environment map does properly, without the map.
     const vec3 reflection = normalize(mix(reflect(-v, n), n, roughness * roughness));
-    const vec3 ambientSpecular = skyRadiance(reflection) *
-                                 fresnelAmbient(nDotV, f0, roughness);
+
+    // Two ways to answer "what is reflected here", and which one is used comes
+    // down to how sharp the reflection is.
+    //
+    // Below the threshold the surface is polished enough that you can make out
+    // what is in it, so a ray is traced and the answer is the actual scene. Above
+    // it the reflection is smeared over so wide a cone that one ray is a poor
+    // sample of it - noisy, and hidden behind the blur anyway - so the sky
+    // gradient is used instead, which is what a rough surface mostly shows.
+    //
+    // The blend across the threshold matters: switching between the two abruptly
+    // would draw a visible line across any object whose roughness varies.
+    vec3 reflected = skyRadiance(reflection);
+    if (frame.reflectionStrength > 0.0 && roughness < frame.reflectionRoughnessLimit) {
+        const float sharpness =
+            1.0 - smoothstep(frame.reflectionRoughnessLimit * 0.6,
+                             frame.reflectionRoughnessLimit, roughness);
+
+        const vec3 traced = traceReflection(vWorldPosition + n * 0.01, reflection);
+        reflected = mix(reflected, traced, sharpness * frame.reflectionStrength);
+    }
+
+    const vec3 ambientSpecular = reflected * fresnelAmbient(nDotV, f0, roughness);
     lit += ambientSpecular * occlusion;
 
     // Selection tint, mixed in rather than added, so a bright object cannot

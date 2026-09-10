@@ -74,6 +74,16 @@ struct Environment {
     /// Reach of the occlusion rays, in world units.
     f32 occlusionRadius = 1.6f;
 
+    /// How much of a traced reflection is used, against the sky-only
+    /// approximation everything had before. 0 turns them off.
+    f32 reflectionStrength = 1.0f;
+
+    /// Above this roughness the reflection is spread over too wide a cone for
+    /// one ray to sample it usefully, so the sky gradient is used instead. The
+    /// crossover is smooth, or an object whose roughness varies would show a
+    /// line where the two methods meet.
+    f32 reflectionRoughnessLimit = 0.35f;
+
     // --- the camera ---------------------------------------------------------
 
     /// Multiplies the image before tone mapping. A property of the camera, not

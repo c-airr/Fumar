@@ -50,6 +50,13 @@ struct alignas(16) LightUniform {
 /// Must match kMaxLights in shaders/frame.glsl.
 constexpr u32 kMaxLights = 16;
 
+/// How many instances the per-frame record buffer is sized for. Growing it
+/// would mean reallocating and rewriting a descriptor mid-frame; a fixed
+/// ceiling that matches the acceleration structure's own is simpler and the
+/// consequence of exceeding it is only that the extra objects do not appear in
+/// reflections.
+constexpr u32 kMaxInstances = 1024;
+
 struct alignas(16) FrameUniforms {
     Mat4 view;
     Mat4 projection;
@@ -67,6 +74,9 @@ struct alignas(16) FrameUniforms {
     f32 shadowStrength;
     f32 occlusionStrength;
     f32 occlusionRadius;
+    f32 reflectionStrength;
+    f32 reflectionRoughnessLimit;
+    f32 padding;
     i32 lightCount;
     std::array<LightUniform, kMaxLights> lights;
 };
@@ -262,6 +272,7 @@ Renderer::~Renderer() {
     m_resources.clear();
     for (PerFrame& frame : m_perFrame) {
         frame.cameraUniforms = rhi::Buffer{};
+        frame.instanceData = rhi::Buffer{};
         frame.topLevel = rhi::TopLevelStructure{};
     }
     m_lightMarker = Mesh{};
@@ -410,6 +421,8 @@ void Renderer::createDescriptors() {
     if (m_device->rayTracingSupported()) {
         frameLayout.binding(1, vk::DescriptorType::eAccelerationStructureKHR,
                             vk::ShaderStageFlagBits::eFragment);
+        frameLayout.binding(2, vk::DescriptorType::eStorageBuffer,
+                            vk::ShaderStageFlagBits::eFragment);
     }
     m_cameraSetLayout = frameLayout.build(handle);
 
@@ -434,12 +447,27 @@ void Renderer::createDescriptors() {
     if (m_device->rayTracingSupported()) {
         poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eAccelerationStructureKHR,
                                                    rhi::kFramesInFlight});
+        poolSizes.push_back(
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight});
     }
     m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
         *m_device, rhi::kFramesInFlight + kMaterialBudget + kInternalImageSets, poolSizes);
 
     // The uniform buffers themselves outlive any number of scene loads; only
     // the descriptor sets pointing at them are reallocated.
+    if (m_device->rayTracingSupported()) {
+        for (PerFrame& frame : m_perFrame) {
+            // Host visible and rewritten every frame, like the uniforms: the
+            // list changes whenever anything in the scene moves.
+            frame.instanceData = rhi::Buffer(*m_device,
+                                             rhi::BufferDesc{
+                                                 .size = sizeof(InstanceRecord) * kMaxInstances,
+                                                 .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                 .hostVisible = true,
+                                             });
+        }
+    }
+
     for (PerFrame& frame : m_perFrame) {
         frame.cameraUniforms = rhi::Buffer(*m_device, rhi::BufferDesc{
                                                           .size = sizeof(FrameUniforms),
@@ -460,6 +488,11 @@ void Renderer::allocateDescriptorSets() {
     for (PerFrame& frame : m_perFrame) {
         frame.cameraSet = m_descriptorPool->allocate(*m_cameraSetLayout);
         writer.buffer(frame.cameraSet, 0, frame.cameraUniforms.handle(), sizeof(FrameUniforms));
+
+        if (frame.instanceData.valid()) {
+            writer.buffer(frame.cameraSet, 2, frame.instanceData.handle(),
+                          frame.instanceData.size(), vk::DescriptorType::eStorageBuffer);
+        }
     }
 
     // Reuses the material layout - one combined image sampler is exactly what
@@ -826,6 +859,9 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         .shadowStrength = m_device->rayTracingSupported() ? env.shadowStrength : 0.0f,
         .occlusionStrength = m_device->rayTracingSupported() ? env.occlusionStrength : 0.0f,
         .occlusionRadius = env.occlusionRadius,
+        .reflectionStrength = m_device->rayTracingSupported() ? env.reflectionStrength : 0.0f,
+        .reflectionRoughnessLimit = env.reflectionRoughnessLimit,
+        .padding = 0.0f,
         // Filled in below, once the scene has been walked.
         .lightCount = 0,
         .lights = {},
@@ -896,12 +932,14 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
     // pointer to one, which is why rebuilding it every frame is affordable and
     // rebuilding the meshes would not be.
     m_instances.clear();
+    m_instanceRecords.clear();
+
     m_scene.forEachDrawable([&](NodeId, const Node& node, const Mat4& worldTransform) {
-        if (!m_resources.has(node.mesh)) {
+        if (!m_resources.has(node.mesh) || m_instances.size() >= kMaxInstances) {
             return;
         }
-        const rhi::BottomLevelStructure& blas = m_resources.mesh(node.mesh).accelerationStructure();
-        if (!blas.valid()) {
+        const Mesh& mesh = m_resources.mesh(node.mesh);
+        if (!mesh.accelerationStructure().valid()) {
             return;
         }
 
@@ -912,12 +950,38 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
         // enough for now; separate bits would let shadow rays ignore something
         // that camera rays still see, glass being the usual example.
         instance.mask = 0xFF;
+
+        // The one number a ray gets back that means anything to us. Set to this
+        // instance's position in the record list, so a hit can look up what it
+        // hit - the alternative is a ray that knows a triangle was there and
+        // nothing whatsoever about it.
+        instance.instanceCustomIndex = static_cast<u32>(m_instanceRecords.size());
+
         instance.flags =
             static_cast<u32>(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
-        instance.accelerationStructureReference = blas.deviceAddress();
+        instance.accelerationStructureReference = mesh.accelerationStructure().deviceAddress();
+
+        const MaterialHandle handle =
+            m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
+        const Material& material = m_resources.has(handle) ? m_resources.material(handle)
+                                                           : Material{};
+
+        m_instanceRecords.push_back(InstanceRecord{
+            .vertices = mesh.vertexBuffer().deviceAddress(),
+            .indices = mesh.indexBuffer().deviceAddress(),
+            .baseColor = material.baseColorFactor,
+            .metallic = material.metallic,
+            .roughness = material.roughness,
+            .padding = {0.0f, 0.0f},
+        });
 
         m_instances.push_back(instance);
     });
+
+    if (!m_instanceRecords.empty() && frame.instanceData.valid()) {
+        frame.instanceData.write(m_instanceRecords.data(),
+                                 m_instanceRecords.size() * sizeof(InstanceRecord));
+    }
 
     frame.topLevel.record(*m_device, cmd, m_instances);
 

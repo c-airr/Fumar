@@ -122,6 +122,8 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         {"shadow_strength", env.shadowStrength},
         {"occlusion_strength", env.occlusionStrength},
         {"occlusion_radius", env.occlusionRadius},
+        {"reflection_strength", env.reflectionStrength},
+        {"reflection_roughness_limit", env.reflectionRoughnessLimit},
     };
 
     // --- meshes -------------------------------------------------------------
@@ -437,6 +439,9 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         env.shadowStrength = source.value("shadow_strength", env.shadowStrength);
         env.occlusionStrength = source.value("occlusion_strength", env.occlusionStrength);
         env.occlusionRadius = source.value("occlusion_radius", env.occlusionRadius);
+        env.reflectionStrength = source.value("reflection_strength", env.reflectionStrength);
+        env.reflectionRoughnessLimit =
+            source.value("reflection_roughness_limit", env.reflectionRoughnessLimit);
         renderer.environment() = env;
     }
 

@@ -54,7 +54,15 @@ bool supportsRayTracing(vk::PhysicalDevice device) {
     // bufferDeviceAddress is what makes the rest possible: an acceleration
     // structure build is handed the ADDRESSES of the vertex, index and scratch
     // buffers, not descriptors bound to them.
-    return chain.get<vk::PhysicalDeviceVulkan12Features>().bufferDeviceAddress == VK_TRUE &&
+    // shaderInt64 is a Vulkan 1.0 feature, and it is here because a buffer
+    // device ADDRESS is a 64-bit integer: without it the shader cannot even
+    // name the type it needs to hold one.
+    if (chain.get<vk::PhysicalDeviceFeatures2>().features.shaderInt64 != VK_TRUE) {
+        return false;
+    }
+
+    return chain.get<vk::PhysicalDeviceVulkan12Features>().scalarBlockLayout == VK_TRUE &&
+           chain.get<vk::PhysicalDeviceVulkan12Features>().bufferDeviceAddress == VK_TRUE &&
            chain.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure ==
                VK_TRUE &&
            chain.get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery == VK_TRUE;
@@ -234,6 +242,10 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
     features10.fillModeNonSolid = VK_TRUE;
     features10.wideLines = m_wideLinesSupported ? VK_TRUE : VK_FALSE;
 
+    // Only with ray tracing: the reflection shader holds buffer addresses, and
+    // an address is a 64-bit integer.
+    features10.shaderInt64 = supportsRayTracing(m_physicalDevice) ? VK_TRUE : VK_FALSE;
+
     // --- optional: ray tracing ----------------------------------------------
     // These three structs are linked into the chain only when the GPU can
     // actually do it. They are declared out here rather than inside the branch
@@ -250,6 +262,13 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
     };
     vk::PhysicalDeviceVulkan12Features features12{
         .pNext = &accelerationFeatures,
+
+        // Lets a shader lay a struct over raw memory the way C does, instead of
+        // std140/std430 padding every member out to sixteen bytes. Needed
+        // because the reflection shader reads the SAME vertex buffer the
+        // rasteriser does, and that one is packed as C++ wrote it.
+        .scalarBlockLayout = VK_TRUE,
+
         .bufferDeviceAddress = VK_TRUE,
     };
 

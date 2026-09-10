@@ -85,6 +85,15 @@ public:
     /// the mesh appears in the scene.
     const rhi::BottomLevelStructure& accelerationStructure() const { return m_blas; }
 
+    /// Addresses of the vertex and index buffers in the GPU's address space.
+    ///
+    /// The rasteriser reaches these by having them BOUND; a ray that lands on a
+    /// triangle has no such binding, because it did not know which mesh it was
+    /// going to hit. Handing the shader the addresses is how it reads the
+    /// geometry it found - the same buffers, no copy.
+    const rhi::Buffer& vertexBuffer() const { return m_vertexBuffer; }
+    const rhi::Buffer& indexBuffer() const { return m_indexBuffer; }
+
     bool valid() const { return m_indexCount > 0; }
 
 private:

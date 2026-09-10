@@ -986,6 +986,19 @@ void drawWorldSettings(Renderer& renderer) {
             ImGui::TextDisabled("Shadows and occlusion are unavailable.");
         }
 
+            ImGui::SliderFloat("Reflections", &env.reflectionStrength, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Rays traced from smooth surfaces to find what they\n"
+                                  "reflect. Set a material's roughness low in Details\n"
+                                  "to see it - a rough surface reflects the sky and\n"
+                                  "nothing else, which is what it does in reality too.");
+            }
+            ImGui::SliderFloat("Reflect below", &env.reflectionRoughnessLimit, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Roughness above which a reflection is too blurred for\n"
+                                  "one ray to sample: the sky gradient is used instead.");
+            }
+
         ImGui::SeparatorText("Camera");
         ImGui::DragFloat("Exposure", &env.exposure, 0.005f, 0.01f, 8.0f);
         if (ImGui::IsItemHovered()) {
