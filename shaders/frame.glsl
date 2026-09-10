@@ -13,6 +13,32 @@
 #ifndef FUMAR_FRAME_GLSL
 #define FUMAR_FRAME_GLSL
 
+/// A light placed in the scene. The sun is not one of these - it has no
+/// position, lives in the sky, and is described by the fields below instead.
+///
+/// Packed four vec4s at a time rather than as named scalars because std140
+/// rounds every member of an array of structs up to sixteen bytes: written out
+/// plainly this would be twice the size for the same information.
+struct SceneLight {
+    /// xyz = world position, w = range in world units.
+    vec4 positionRange;
+
+    /// rgb = colour, a = intensity at the source.
+    vec4 colorIntensity;
+
+    /// xyz = the axis a spot light points along, w = cosine of its outer angle.
+    vec4 directionOuter;
+
+    /// x = cosine of the inner angle, y = radius of the light source itself,
+    /// z = 1 for a spot and 0 for a point, w = 1 if it casts shadows.
+    vec4 shape;
+};
+
+/// Fixed ceiling, because a uniform block has to have a size. Sixteen fits
+/// comfortably inside the 16 KB every implementation guarantees; going past it
+/// means a storage buffer, which has no such limit and one more binding.
+const int kMaxLights = 16;
+
 // Set 0 is bound once per frame. Keeping it separate from the per-material set
 // means switching material does not disturb it.
 layout(set = 0, binding = 0) uniform FrameData {
@@ -60,10 +86,11 @@ layout(set = 0, binding = 0) uniform FrameData {
     /// contact and creases, not distant geometry.
     float occlusionRadius;
 
-    /// Padding, so the block ends on a 16-byte boundary the way std140 expects.
-    /// Named rather than left implicit because the C++ struct has to carry it
-    /// too, and an unnamed gap is a gap somebody eventually fills wrongly.
-    float _padding;
+    /// How many entries of `lights` below are real. The rest are stale and
+    /// must not be read - the array is a fixed size, the scene is not.
+    int lightCount;
+
+    SceneLight lights[kMaxLights];
 } frame;
 
 /// World-space direction the given normalised device coordinate looks along.

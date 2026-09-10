@@ -34,6 +34,22 @@ namespace {
 ///
 /// The four floats at the end are deliberate: std140 packs scalars tightly, so
 /// grouping them means they share one 16-byte slot instead of taking four.
+/// One light, laid out exactly as SceneLight in shaders/frame.glsl.
+///
+/// Four vec4s rather than named scalars for one reason: std140 rounds every
+/// element of an array of structs up to a multiple of sixteen bytes, so a
+/// struct written out plainly - a vec3, a float, a vec3, a float - would occupy
+/// twice the space for the same numbers.
+struct alignas(16) LightUniform {
+    Vec4 positionRange;
+    Vec4 colorIntensity;
+    Vec4 directionOuter;
+    Vec4 shape;
+};
+
+/// Must match kMaxLights in shaders/frame.glsl.
+constexpr u32 kMaxLights = 16;
+
 struct alignas(16) FrameUniforms {
     Mat4 view;
     Mat4 projection;
@@ -51,7 +67,8 @@ struct alignas(16) FrameUniforms {
     f32 shadowStrength;
     f32 occlusionStrength;
     f32 occlusionRadius;
-    f32 padding;
+    i32 lightCount;
+    std::array<LightUniform, kMaxLights> lights;
 };
 
 /// Push constants, matching the block in shaders/object.glsl.
@@ -220,6 +237,12 @@ Renderer::Renderer(Window& window) : m_window(window) {
 
     m_frames = std::make_unique<rhi::FrameContext>(*m_device, m_swapchain->imageCount());
 
+    // A unit cube, scaled down when it is drawn. Kept out of the resource
+    // registry on purpose: it belongs to the editor's presentation of the
+    // scene, not to the scene, and would otherwise be saved into scene files
+    // and listed in the content panel as though somebody had made it.
+    m_lightMarker = makeCube(*m_device, *m_upload);
+
     FUMAR_INFO("renderer ready");
 }
 
@@ -241,6 +264,7 @@ Renderer::~Renderer() {
         frame.cameraUniforms = rhi::Buffer{};
         frame.topLevel = rhi::TopLevelStructure{};
     }
+    m_lightMarker = Mesh{};
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
     m_sceneHdr = rhi::Image{};
@@ -637,6 +661,39 @@ NodeId Renderer::pickNode(const Ray& ray) const {
     NodeId best = kInvalidNode;
     f32 bestDistance = 1e30f;
 
+    // Lights have no geometry, so a bounding box test would never reach them.
+    // They are tested against a small sphere around the marker instead - which
+    // is exactly the thing on screen the user is aiming at.
+    m_scene.traverse([&](NodeId id, u32) {
+        const Node& node = m_scene.node(id);
+        if (!node.light.has_value() || !node.visible) {
+            return;
+        }
+
+        const Mat4& world = m_scene.worldTransform(id);
+        const Vec3 centre{world.columns[3].x, world.columns[3].y, world.columns[3].z};
+
+        // Ray-sphere, solved by dropping a perpendicular: the closest approach
+        // of the ray to the centre. Cheaper than the quadratic and enough here,
+        // because the exact entry point does not matter - only which light is
+        // nearest and whether the ray came close enough to count.
+        constexpr f32 kMarkerRadius = 0.42f;
+        const Vec3 toCentre = centre - ray.origin;
+        const f32 along = dot(toCentre, ray.direction);
+        if (along < 0.0f) {
+            return;
+        }
+        const Vec3 closest = ray.origin + ray.direction * along;
+        if (lengthSquared(centre - closest) > kMarkerRadius * kMarkerRadius) {
+            return;
+        }
+
+        if (along < bestDistance) {
+            bestDistance = along;
+            best = id;
+        }
+    });
+
     m_scene.forEachDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
         if (!m_resources.has(node.mesh)) {
             return;
@@ -714,7 +771,7 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
     const Mat4 projection = m_camera.projection(aspect);
     const Environment& env = m_environment;
 
-    const FrameUniforms uniforms{
+    FrameUniforms uniforms{
         .view = view,
         .projection = projection,
         // Inverted here rather than in the shader: it is the same matrix for
@@ -737,8 +794,58 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         .shadowStrength = m_device->rayTracingSupported() ? env.shadowStrength : 0.0f,
         .occlusionStrength = m_device->rayTracingSupported() ? env.occlusionStrength : 0.0f,
         .occlusionRadius = env.occlusionRadius,
-        .padding = 0.0f,
+        // Filled in below, once the scene has been walked.
+        .lightCount = 0,
+        .lights = {},
     };
+
+    // --- lights ---------------------------------------------------------
+    // Gathered from the scene every frame rather than kept in a list that has
+    // to be maintained: a light is a node, and nodes are created, deleted,
+    // hidden and reparented by machinery that knows nothing about lighting.
+    // Walking the tree is the only way to stay right without that machinery
+    // having to tell anyone.
+    u32 lightCount = 0;
+    m_scene.traverse([&](NodeId id, u32) {
+        if (lightCount >= kMaxLights) {
+            return;
+        }
+        const Node& node = m_scene.node(id);
+        if (!node.light.has_value() || !node.visible) {
+            return;
+        }
+
+        const Light& light = *node.light;
+        const Mat4& world = m_scene.worldTransform(id);
+
+        // The last column of a transform is where it puts the origin, which is
+        // the light's position. No separate field for it, so a lamp parented to
+        // a moving object follows it for free.
+        const Vec3 position{world.columns[3].x, world.columns[3].y, world.columns[3].z};
+
+        // -Z is forward, the glTF and OpenGL convention fumar follows, so a
+        // spot light points where its node points.
+        const Vec3 direction =
+            normalize(Vec3{-world.columns[2].x, -world.columns[2].y, -world.columns[2].z});
+
+        const bool spot = light.type == LightType::Spot;
+        uniforms.lights[lightCount] = LightUniform{
+            .positionRange = Vec4{position.x, position.y, position.z, light.range},
+            .colorIntensity =
+                Vec4{light.color.x, light.color.y, light.color.z, light.intensity},
+            .directionOuter = Vec4{direction.x, direction.y, direction.z,
+                                   std::cos(radians(light.outerConeDegrees))},
+            .shape = Vec4{std::cos(radians(light.innerConeDegrees)), light.sourceRadius,
+                          spot ? 1.0f : 0.0f,
+                          // Shadows are only traced when the hardware can trace
+                          // at all; otherwise the ray functions are compiled out
+                          // and this would be a promise nothing keeps.
+                          (light.castsShadows && m_device->rayTracingSupported()) ? 1.0f : 0.0f},
+        };
+        ++lightCount;
+    });
+
+    uniforms.lightCount = static_cast<i32>(lightCount);
 
     // A plain memcpy into persistently mapped memory. No fence is needed: this
     // slot's previous frame was already waited on before we got here.
@@ -978,6 +1085,66 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
 
         m_resources.mesh(node.mesh).draw(cmd);
     };
+
+    // Lights first, so an outline drawn over one still wins.
+    const bool anyLight = m_scene.nodeCount() > 0 && m_lightMarker.valid();
+    if (anyLight) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->handle());
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 0,
+                               frameSet, {});
+        if (m_resources.has(m_resources.fallbackMaterial())) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 1,
+                                   m_resources.material(m_resources.fallbackMaterial()).descriptorSet,
+                                   {});
+        }
+
+        m_scene.traverse([&](NodeId id, u32) {
+            const Node& node = m_scene.node(id);
+            if (!node.light.has_value() || !node.visible) {
+                return;
+            }
+
+            const Mat4& world = m_scene.worldTransform(id);
+            const Vec3 position{world.columns[3].x, world.columns[3].y, world.columns[3].z};
+
+            // Built from the position alone rather than from the node's own
+            // matrix, so a light parented under something scaled does not get a
+            // stretched marker. A spot is drawn longer along its axis, which is
+            // the only cheap way to see which way it points.
+            Mat4 markerTransform = translation(position);
+            if (node.light->type == LightType::Spot) {
+                // The rotation columns, normalised to strip any inherited scale.
+                const Vec3 axisX = normalize(xyz(world.columns[0]));
+                const Vec3 axisY = normalize(xyz(world.columns[1]));
+                const Vec3 axisZ = normalize(xyz(world.columns[2]));
+                Mat4 orientation = identity();
+                orientation.columns[0] = direction(axisX * 0.22f);
+                orientation.columns[1] = direction(axisY * 0.22f);
+                orientation.columns[2] = direction(axisZ * 0.55f);
+                markerTransform = markerTransform * orientation;
+            } else {
+                markerTransform = markerTransform * scaling(Vec3{0.28f, 0.28f, 0.28f});
+            }
+
+            // Negative highlight tells outline.frag this is a marker and to
+            // take its colour from baseColor - the light's own colour, so a
+            // blue lamp reads as a blue lamp in the viewport.
+            const Vec3 tint = node.light->color;
+            const f32 boost = id == m_selected ? 4.0f : 2.2f;
+            const ObjectPushConstants push{
+                .model = markerTransform,
+                .baseColor = Vec4{tint.x * boost, tint.y * boost, tint.z * boost, 1.0f},
+                .metallic = 0.0f,
+                .roughness = 1.0f,
+                .highlight = -1.0f,
+            };
+            cmd.pushConstants<ObjectPushConstants>(
+                m_outlinePipeline->layout(),
+                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+
+            m_lightMarker.draw(cmd);
+        });
+    }
 
     if (m_highlighted != kInvalidNode || m_selected != kInvalidNode) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->handle());

@@ -151,6 +151,51 @@ float sunVisibility(vec3 position, vec3 normal, float nDotL) {
     return mix(1.0, visible, frame.shadowStrength);
 }
 
+/// How much of a placed light reaches this point.
+///
+/// Same idea as the sun, with one difference that matters: the ray stops AT the
+/// light rather than carrying on to infinity. Something behind the lamp is not
+/// between you and it.
+float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
+                      float nDotL) {
+    if (nDotL <= 0.0 || frame.shadowStrength <= 0.0) {
+        return 1.0;
+    }
+
+    const vec3 origin = offsetOrigin(position, normal);
+    const vec3 toLight = lightPosition - origin;
+    const float distance = length(toLight);
+    if (distance <= 0.0001) {
+        return 1.0;
+    }
+
+    const vec3 axis = toLight / distance;
+
+    vec3 tangent;
+    vec3 bitangent;
+    orthonormalBasis(axis, tangent, bitangent);
+
+    const float rotation = hash13(position + vec3(43.0)) * 6.2831853;
+
+    // Fewer rays than the sun gets. A lamp lights a small part of the frame, so
+    // the same budget spread over every light in the scene would cost far more
+    // for far less of the picture.
+    const int samples = 4;
+
+    float visible = 0.0;
+    for (int i = 0; i < samples; ++i) {
+        const vec2 offset = vogelDisc(i, samples, rotation) * sourceRadius;
+        const vec3 target = lightPosition + tangent * offset.x + bitangent * offset.y;
+        const vec3 direction = normalize(target - origin);
+
+        // Stopping just short of the light itself, so the lamp's own geometry -
+        // if somebody models one - does not shadow it.
+        visible += anyHit(origin, direction, 0.0, distance * 0.999) ? 0.0 : 1.0;
+    }
+
+    return mix(1.0, visible / float(samples), frame.shadowStrength);
+}
+
 /// How open the sky is above this point, sampled over a short distance.
 ///
 /// The ambient term assumes light arrives from the entire sky. Under a table,
@@ -196,6 +241,11 @@ float ambientOcclusion(vec3 position, vec3 normal) {
 #else // no ray tracing
 
 float sunVisibility(vec3 position, vec3 normal, float nDotL) {
+    return 1.0;
+}
+
+float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
+                      float nDotL) {
     return 1.0;
 }
 

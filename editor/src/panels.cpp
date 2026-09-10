@@ -55,6 +55,111 @@ Quat fromEulerDegrees(const Vec3& euler) {
     return normalize(yaw * pitch * roll);
 }
 
+/// Everything the Add menu can create.
+enum class SpawnKind : u8 {
+    Empty,
+    Cube,
+    Cylinder,
+    Plane,
+    PointLight,
+    SpotLight,
+};
+
+/// Creates one, in front of the camera, and selects it.
+///
+/// In front rather than at the origin: an object that appears where you are
+/// looking needs no hunting for. Shared between the Add menu in the outliner
+/// and the buttons in the content panel, because "add a cube" should mean the
+/// same thing wherever it is asked for.
+NodeId spawn(EditorState& state, Renderer& renderer, SpawnKind kind) {
+    Scene& scene = renderer.scene();
+
+    // Created once and reused: a fresh mesh per placed cube would upload the
+    // same vertices to the GPU again every single time.
+    static MeshHandle cubeMesh;
+    static MeshHandle cylinderMesh;
+    static MeshHandle planeMesh;
+    static MaterialHandle stoneMaterial;
+
+    if (!renderer.resources().has(cubeMesh)) {
+        cubeMesh = renderer.createCubeMesh();
+        cylinderMesh = renderer.createCylinderMesh(0.5f, 2.0f);
+        planeMesh = renderer.createPlaneMesh(1.0f);
+        stoneMaterial = renderer.createMaterial("Stone", Vec4{0.30f, 0.30f, 0.32f, 1.0f});
+    }
+
+    state.history.record(scene, state.selected);
+
+    const char* name = "Object";
+    switch (kind) {
+    case SpawnKind::Empty: name = "Empty"; break;
+    case SpawnKind::Cube: name = "Cube"; break;
+    case SpawnKind::Cylinder: name = "Cylinder"; break;
+    case SpawnKind::Plane: name = "Plane"; break;
+    case SpawnKind::PointLight: name = "Point Light"; break;
+    case SpawnKind::SpotLight: name = "Spot Light"; break;
+    }
+
+    const NodeId id = scene.createNode(name);
+    Node& node = scene.node(id);
+    node.transform.position = renderer.camera().position + renderer.camera().forward() * 6.0f;
+
+    switch (kind) {
+    case SpawnKind::Empty:
+        break;
+    case SpawnKind::Cube:
+        node.mesh = cubeMesh;
+        node.material = stoneMaterial;
+        break;
+    case SpawnKind::Cylinder:
+        node.mesh = cylinderMesh;
+        node.material = stoneMaterial;
+        break;
+    case SpawnKind::Plane:
+        node.mesh = planeMesh;
+        node.material = stoneMaterial;
+        break;
+    case SpawnKind::PointLight:
+        node.light = Light{};
+        break;
+    case SpawnKind::SpotLight:
+        node.light = Light{};
+        node.light->type = LightType::Spot;
+
+        // Aimed down. A spot light created pointing along -Z would be shining
+        // at the camera that made it, which lights nothing and looks broken.
+        node.transform.rotation = fromAxisAngle(Vec3{1.0f, 0.0f, 0.0f}, radians(-90.0f));
+        break;
+    }
+
+    state.selected = id;
+    return id;
+}
+
+/// The Add menu, shared by the outliner button and the viewport context menu.
+void drawSpawnMenuItems(EditorState& state, Renderer& renderer) {
+    if (ImGui::MenuItem("Empty")) {
+        spawn(state, renderer, SpawnKind::Empty);
+    }
+    ImGui::SeparatorText("Shapes");
+    if (ImGui::MenuItem("Cube")) {
+        spawn(state, renderer, SpawnKind::Cube);
+    }
+    if (ImGui::MenuItem("Cylinder")) {
+        spawn(state, renderer, SpawnKind::Cylinder);
+    }
+    if (ImGui::MenuItem("Plane")) {
+        spawn(state, renderer, SpawnKind::Plane);
+    }
+    ImGui::SeparatorText("Lights");
+    if (ImGui::MenuItem("Point light")) {
+        spawn(state, renderer, SpawnKind::PointLight);
+    }
+    if (ImGui::MenuItem("Spot light")) {
+        spawn(state, renderer, SpawnKind::SpotLight);
+    }
+}
+
 /// A toolbar button that shows its active state through the accent colour.
 bool toolButton(const char* label, bool active, const char* tooltip) {
     if (active) {
@@ -522,15 +627,23 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     ImGui::End();
 }
 
-void drawOutlinerPanel(EditorState& state, Scene& scene) {
+void drawOutlinerPanel(EditorState& state, Renderer& renderer) {
     if (!state.showOutliner) {
         return;
     }
 
+    Scene& scene = renderer.scene();
+
     if (ImGui::Begin("World Outliner", &state.showOutliner)) {
-        if (ImGui::Button("Add empty")) {
-            state.history.record(scene, state.selected);
-            state.selected = scene.createNode("node");
+        // A menu rather than a button: everything that can be put into the
+        // scene belongs in one place, and there is now more than one kind of
+        // thing.
+        if (ImGui::Button("Add")) {
+            ImGui::OpenPopup("##add_menu");
+        }
+        if (ImGui::BeginPopup("##add_menu")) {
+            drawSpawnMenuItems(state, renderer);
+            ImGui::EndPopup();
         }
         ImGui::SameLine();
         ImGui::TextDisabled("%zu nodes", scene.nodeCount());
@@ -653,6 +766,70 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
             }
         } else {
             ImGui::TextDisabled("Material: default");
+        }
+
+        // --- light ----------------------------------------------------------
+        if (node.light.has_value()) {
+            Light& light = *node.light;
+            ImGui::SeparatorText("Light");
+
+            int type = light.type == LightType::Spot ? 1 : 0;
+            if (ImGui::Combo("Type", &type, "Point\0Spot\0")) {
+                state.history.record(scene, state.selected);
+                light.type = type == 1 ? LightType::Spot : LightType::Point;
+            }
+
+            ImGui::ColorEdit3("Colour", &light.color.x, ImGuiColorEditFlags_Float);
+            recordOnEdit();
+
+            ImGui::DragFloat("Intensity", &light.intensity, 0.5f, 0.0f, 10000.0f);
+            recordOnEdit();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Brightness at the source. Falls off with the square of\n"
+                                  "the distance, so it needs to be larger than it looks:\n"
+                                  "at three metres it is already down to a ninth.");
+            }
+
+            ImGui::DragFloat("Range", &light.range, 0.1f, 0.1f, 500.0f, "%.1f m");
+            recordOnEdit();
+
+            if (light.type == LightType::Spot) {
+                ImGui::DragFloat("Inner angle", &light.innerConeDegrees, 0.25f, 0.0f, 89.0f,
+                                 "%.1f deg");
+                recordOnEdit();
+                ImGui::DragFloat("Outer angle", &light.outerConeDegrees, 0.25f, 0.5f, 89.5f,
+                                 "%.1f deg");
+                recordOnEdit();
+
+                // The soft edge of the beam is the gap between the two, so the
+                // outer angle being the smaller of the pair is not a taste
+                // question - it inverts the fade.
+                light.outerConeDegrees = std::max(light.outerConeDegrees,
+                                                  light.innerConeDegrees + 0.5f);
+            }
+
+            ImGui::DragFloat("Source radius", &light.sourceRadius, 0.005f, 0.0f, 5.0f, "%.3f m");
+            recordOnEdit();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("How big the bulb is. Zero is a mathematical point and\n"
+                                  "casts infinitely sharp shadows, which nothing real does.");
+            }
+
+            if (ImGui::Checkbox("Casts shadows", &light.castsShadows)) {
+                state.history.record(scene, state.selected);
+            }
+
+            if (!renderer.rayTracingSupported()) {
+                ImGui::TextDisabled("No ray tracing on this GPU: lights do not cast shadows.");
+            }
+
+            if (ImGui::Button("Remove light")) {
+                state.history.record(scene, state.selected);
+                node.light.reset();
+            }
+        } else if (ImGui::Button("Add light")) {
+            state.history.record(scene, state.selected);
+            node.light = Light{};
         }
 
         ImGui::SeparatorText("Script");
@@ -811,42 +988,20 @@ void drawContentPanel(EditorState& state, Renderer& renderer) {
     if (ImGui::Begin("Content", &state.showContent)) {
         ImGui::SeparatorText("Place");
 
-        Scene& scene = renderer.scene();
-
-        // The handles are created once and reused: a new mesh per placed cube
-        // would upload the same vertices to the GPU again every time.
-        static MeshHandle cubeMesh;
-        static MeshHandle cylinderMesh;
-        static MeshHandle planeMesh;
-        static MaterialHandle stoneMaterial;
-
-        if (!renderer.resources().has(cubeMesh)) {
-            cubeMesh = renderer.createCubeMesh();
-            cylinderMesh = renderer.createCylinderMesh(0.5f, 2.0f);
-            planeMesh = renderer.createPlaneMesh(1.0f);
-            stoneMaterial = renderer.createMaterial("Stone", Vec4{0.55f, 0.55f, 0.58f, 1.0f});
-        }
-
-        // Spawned in front of the camera rather than at the origin, so a new
-        // object appears where you are looking instead of somewhere off screen.
-        const auto place = [&](const char* name, MeshHandle mesh, MaterialHandle material) {
-            state.history.record(scene, state.selected);
-            const NodeId id = scene.createNode(name);
-            Node& node = scene.node(id);
-            node.mesh = mesh;
-            node.material = material;
-            node.transform.position = renderer.camera().position + renderer.camera().forward() * 6.0f;
-            state.selected = id;
-        };
-
         if (ImGui::Button("Cube", ImVec2(-1.0f, 0.0f))) {
-            place("Cube", cubeMesh, stoneMaterial);
+            spawn(state, renderer, SpawnKind::Cube);
         }
         if (ImGui::Button("Cylinder", ImVec2(-1.0f, 0.0f))) {
-            place("Cylinder", cylinderMesh, stoneMaterial);
+            spawn(state, renderer, SpawnKind::Cylinder);
         }
         if (ImGui::Button("Plane", ImVec2(-1.0f, 0.0f))) {
-            place("Plane", planeMesh, stoneMaterial);
+            spawn(state, renderer, SpawnKind::Plane);
+        }
+        if (ImGui::Button("Point light", ImVec2(-1.0f, 0.0f))) {
+            spawn(state, renderer, SpawnKind::PointLight);
+        }
+        if (ImGui::Button("Spot light", ImVec2(-1.0f, 0.0f))) {
+            spawn(state, renderer, SpawnKind::SpotLight);
         }
 
         ImGui::SeparatorText("Import");

@@ -3,9 +3,11 @@
 #include "fumar/core/math.hpp"
 #include "fumar/core/types.hpp"
 #include "fumar/scene/handles.hpp"
+#include "fumar/scene/light.hpp"
 #include "fumar/scene/transform.hpp"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +43,13 @@ struct Node {
     /// Hides the node and everything under it. Kept separate from destruction
     /// so an editor can toggle it without losing the node.
     bool visible = true;
+
+    /// A light at this node's world position, if it is one.
+    ///
+    /// Optional rather than a flag plus a struct, because "this node has no
+    /// light" and "this node has a light with intensity zero" are different
+    /// things and the type should say which.
+    std::optional<Light> light;
 
     /// Name of the Lua script driving this node, or empty for none.
     ///

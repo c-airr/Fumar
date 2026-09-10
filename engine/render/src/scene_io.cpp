@@ -196,6 +196,22 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
             entry["material"] = node.material.index;
         }
 
+        // A nested object rather than flat keys, so a node that is not a light
+        // carries nothing about lighting at all.
+        if (node.light.has_value()) {
+            const Light& light = *node.light;
+            entry["light"] = {
+                {"type", light.type == LightType::Spot ? "spot" : "point"},
+                {"color", toJson(light.color)},
+                {"intensity", light.intensity},
+                {"range", light.range},
+                {"inner", light.innerConeDegrees},
+                {"outer", light.outerConeDegrees},
+                {"source_radius", light.sourceRadius},
+                {"shadows", light.castsShadows},
+            };
+        }
+
         const auto parent = indexOf.find(node.parent);
         entry["parent"] = parent != indexOf.end() ? parent->second : -1;
 
@@ -375,6 +391,21 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         node.transform.scale = vec3From(entry.value("scale", Json::array()), Vec3{1.0f, 1.0f, 1.0f});
         node.visible = entry.value("visible", true);
         node.script = entry.value("script", std::string{});
+
+        if (entry.contains("light")) {
+            const Json& source = entry["light"];
+            Light light;
+            light.type = source.value("type", std::string{"point"}) == "spot" ? LightType::Spot
+                                                                             : LightType::Point;
+            light.color = vec3From(source.value("color", Json::array()), light.color);
+            light.intensity = source.value("intensity", light.intensity);
+            light.range = source.value("range", light.range);
+            light.innerConeDegrees = source.value("inner", light.innerConeDegrees);
+            light.outerConeDegrees = source.value("outer", light.outerConeDegrees);
+            light.sourceRadius = source.value("source_radius", light.sourceRadius);
+            light.castsShadows = source.value("shadows", light.castsShadows);
+            node.light = light;
+        }
 
         const auto meshIndex = entry.value("mesh", ~0u);
         if (meshIndex < meshes.size()) {

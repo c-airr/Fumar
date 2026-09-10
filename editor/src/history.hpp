@@ -19,6 +19,7 @@ struct NodeRecord {
     MeshHandle mesh;
     MaterialHandle material;
     std::string script;
+    std::optional<Light> light;
     bool visible = true;
 
     /// Index of the parent within the same list, or -1 for the scene root.

@@ -272,6 +272,13 @@ private:
     /// Checkerboard used by materials with no texture of their own.
     rhi::Image m_defaultTexture;
 
+    /// A small box drawn as a wireframe wherever there is a light.
+    ///
+    /// A light has no geometry, so without this it is invisible in the viewport
+    /// and there is nothing to click on to select it. Every editor draws
+    /// something here for the same reason.
+    Mesh m_lightMarker;
+
     /// Descriptor set 0 plus its uniform buffer, duplicated per frame in
     /// flight. Writing to a single buffer while the GPU reads it for the
     /// previous frame would tear the camera between the two.

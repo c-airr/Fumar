@@ -130,7 +130,10 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
 void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts);
 
 /// The scene tree. Click to select, right-click for actions.
-void drawOutlinerPanel(EditorState& state, Scene& scene);
+///
+/// Takes the Renderer because the Add menu lives here and creating a cube needs
+/// a mesh uploaded to the GPU.
+void drawOutlinerPanel(EditorState& state, Renderer& renderer);
 
 /// Properties of whatever is selected.
 ///

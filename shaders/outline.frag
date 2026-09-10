@@ -23,8 +23,17 @@ const vec3 kHoverColor = vec3(2.9, 1.9, 1.0);
 const vec3 kSelectedColor = vec3(3.6, 2.8, 1.6);
 
 void main() {
-    // highlight carries which state this is: the renderer passes 1.0 for the
-    // selected object and less for a merely hovered one.
+    // A negative highlight means this is not an outline around an object but a
+    // marker standing in for something that has no geometry of its own - a
+    // light. Those bring their own colour, so the renderer can tint a lamp with
+    // the colour it actually emits.
+    if (object.highlight < 0.0) {
+        outColor = vec4(object.baseColor.rgb, 1.0);
+        return;
+    }
+
+    // Otherwise highlight carries which state this is: 1.0 for the selected
+    // object, less for a merely hovered one.
     const vec3 colour = object.highlight >= 0.99 ? kSelectedColor : kHoverColor;
     outColor = vec4(colour, 1.0);
 }

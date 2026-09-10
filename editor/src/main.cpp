@@ -109,6 +109,17 @@ void createStarterScene(Renderer& renderer) {
         scene.node(scene.node(blocks).children.front()).script = "bob";
     }
 
+    // A lamp, so the scene shows what a placed light does without anyone having
+    // to add one first. Warm and close to the ground, where the sun does not
+    // reach: a light that only brightens what is already lit teaches nothing.
+    const NodeId lamp = scene.createNode("Lamp");
+    scene.node(lamp).transform.position = Vec3{-2.6f, 1.5f, 2.2f};
+    scene.node(lamp).light = Light{
+        .color = Vec3{1.0f, 0.62f, 0.30f},
+        .intensity = 55.0f,
+        .range = 9.0f,
+    };
+
     const std::filesystem::path modelPath = executableDirectory() / "assets" / "DamagedHelmet.glb";
     if (std::filesystem::exists(modelPath)) {
         const NodeId model = renderer.loadModel(modelPath);
@@ -332,7 +343,7 @@ int main() {
 
         drawDockspace(state, sceneDirectory);
         drawViewportPanel(state, renderer, scripts);
-        drawOutlinerPanel(state, renderer.scene());
+        drawOutlinerPanel(state, renderer);
         drawDetailsPanel(state, renderer.scene(), renderer, scripts);
         drawContentPanel(state, renderer);
         drawScriptsPanel(state, scripts);

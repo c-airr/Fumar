@@ -76,13 +76,58 @@ vec3 fresnelAmbient(float cosTheta, vec3 f0, float roughness) {
     return f0 + (ceiling - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+/// The whole reflectance model for one light direction, without the light's own
+/// colour or brightness.
+///
+/// Pulled out into a function because the sun and every placed light want
+/// exactly the same maths and differ only in where the light comes from and how
+/// much of it arrives. What it returns is the fraction of incoming light sent
+/// towards the eye, already multiplied by the cosine term - so a caller
+/// multiplies by the light's radiance and adds.
+vec3 evaluateBrdf(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float metallic, float roughness) {
+    const vec3 h = normalize(v + l);
+
+    const float nDotL = max(dot(n, l), 0.0);
+    const float nDotV = max(dot(n, v), 1e-4);
+    const float nDotH = max(dot(n, h), 0.0);
+    const float vDotH = max(dot(v, h), 0.0);
+
+    const vec3 fresnel = fresnelSchlick(vDotH, f0);
+    const float distribution = distributionGGX(nDotH, roughness);
+    const float geometry = geometrySmith(nDotV, nDotL, roughness);
+
+    const vec3 specular = (distribution * geometry * fresnel) / max(4.0 * nDotV * nDotL, 1e-4);
+
+    // Energy conservation: light reflected off the surface is not also
+    // available to scatter around inside it, and a metal has no inside to
+    // scatter in at all.
+    const vec3 diffuseWeight = (vec3(1.0) - fresnel) * (1.0 - metallic);
+
+    return (diffuseWeight * albedo / kPi + specular) * nDotL;
+}
+
+/// How much of a light survives the trip to a point `distance` away.
+///
+/// The inverse square is the physics. The windowing term is not: light does not
+/// actually stop at any distance, but a renderer that took that literally would
+/// test every lamp in a level against every surface. This shape reaches exactly
+/// zero at the light's range instead of being cut off there, which is the
+/// difference between a light fading out and a visible circle on the floor.
+float distanceFalloff(float distance, float range) {
+    const float ratio = clamp(distance / max(range, 0.0001), 0.0, 1.0);
+    const float window = 1.0 - ratio * ratio * ratio * ratio;
+
+    // +1 in the denominator keeps it finite at distance zero, where the inverse
+    // square would divide by nothing.
+    return (window * window) / (distance * distance + 1.0);
+}
+
 void main() {
     // Interpolating a normal across a triangle shortens it, so it has to be
     // renormalised per fragment or large faces go dark in the middle.
     const vec3 n = normalize(vNormal);
     const vec3 v = normalize(frame.cameraPosition.xyz - vWorldPosition);
     const vec3 l = normalize(frame.sunDirection.xyz);
-    const vec3 h = normalize(v + l);
 
     // The texture is multiplied by the material colour, so an untextured
     // material uses a 1x1 white texture and shows its colour unchanged.
@@ -100,31 +145,66 @@ void main() {
     // image is gold. One number, two completely different materials.
     const vec3 f0 = mix(vec3(0.04), albedo, metallic);
 
+    // Only needed outside the reflectance function to decide whether a shadow
+    // ray is worth tracing at all.
     const float nDotL = max(dot(n, l), 0.0);
     const float nDotV = max(dot(n, v), 1e-4);
-    const float nDotH = max(dot(n, h), 0.0);
-    const float vDotH = max(dot(v, h), 0.0);
 
     // --- the sun ------------------------------------------------------------
-    const vec3 fresnel = fresnelSchlick(vDotH, f0);
-    const float distribution = distributionGGX(nDotH, roughness);
-    const float geometry = geometrySmith(nDotV, nDotL, roughness);
-
-    const vec3 specular = (distribution * geometry * fresnel) /
-                          max(4.0 * nDotV * nDotL, 1e-4);
-
-    // Energy conservation: light reflected off the surface is not also
-    // available to scatter around inside it, and a metal has no inside to
-    // scatter in at all.
-    const vec3 diffuseWeight = (vec3(1.0) - fresnel) * (1.0 - metallic);
-
     // How much of the sun this point can actually see. Without ray tracing this
     // is always 1 and nothing casts a shadow - which is what every image before
     // this looked like.
     const float visibility = sunVisibility(vWorldPosition, n, nDotL);
 
     const vec3 sunRadiance = frame.sunColor.rgb * frame.sunIntensity;
-    vec3 lit = (diffuseWeight * albedo / kPi + specular) * sunRadiance * nDotL * visibility;
+    vec3 lit = evaluateBrdf(n, v, l, albedo, f0, metallic, roughness) * sunRadiance * visibility;
+
+    // --- placed lights --------------------------------------------------------
+    for (int i = 0; i < frame.lightCount; ++i) {
+        const SceneLight light = frame.lights[i];
+
+        const vec3 toLight = light.positionRange.xyz - vWorldPosition;
+        const float distance = length(toLight);
+        if (distance > light.positionRange.w) {
+            continue;
+        }
+
+        const vec3 lightDirection = toLight / max(distance, 0.0001);
+        const float lightNDotL = max(dot(n, lightDirection), 0.0);
+        if (lightNDotL <= 0.0) {
+            continue;
+        }
+
+        float attenuation = distanceFalloff(distance, light.positionRange.w);
+
+        // A spot is a point light with the beam narrowed. The cone term is the
+        // angle from its axis, faded between the two cosines so the edge of the
+        // beam is soft rather than a hard circle.
+        if (light.shape.z > 0.5) {
+            const float cosAngle = dot(-lightDirection, normalize(light.directionOuter.xyz));
+            const float cone = clamp((cosAngle - light.directionOuter.w) /
+                                         max(light.shape.x - light.directionOuter.w, 0.0001),
+                                     0.0, 1.0);
+
+            // Squared, because a linear fade across the cone edge still reads
+            // as a line.
+            attenuation *= cone * cone;
+        }
+
+        if (attenuation <= 0.0) {
+            continue;
+        }
+
+        float shadow = 1.0;
+        if (light.shape.w > 0.5) {
+            shadow = lightVisibility(vWorldPosition, n, light.positionRange.xyz, light.shape.y,
+                                     lightNDotL);
+        }
+
+        const vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
+        lit += evaluateBrdf(n, v, lightDirection, albedo, f0, metallic, roughness) * radiance *
+               shadow;
+    }
 
     // --- the sky ------------------------------------------------------------
     // Without this, everything the sun does not reach is pure black - which is
