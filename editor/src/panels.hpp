@@ -6,6 +6,9 @@
 
 #include <imgui.h>
 
+#include <filesystem>
+#include <string>
+
 namespace fumar {
 
 class ImGuiLayer;
@@ -65,6 +68,23 @@ struct EditorState {
     /// Set from the menu to rebuild the default panel arrangement.
     bool resetLayoutRequested = false;
 
+    // --- scene file ---------------------------------------------------------
+
+    /// The file the scene was last saved to or loaded from. Empty means it has
+    /// never been saved, and Save behaves as Save As.
+    std::string scenePath;
+
+    /// Requests raised by the menu and acted on by the main loop, rather than
+    /// performed inside it. Loading a scene destroys the very nodes the panels
+    /// are in the middle of describing, so it has to happen between frames.
+    bool newSceneRequested = false;
+    bool saveRequested = false;
+    bool openRequested = false;
+    std::string openPath;
+
+    /// Shown briefly after a save, so the action is visibly acknowledged.
+    f32 saveFlashSeconds = 0.0f;
+
     // --- viewport ----------------------------------------------------------
 
     /// The off-screen scene image, as ImGui knows it.
@@ -82,7 +102,9 @@ struct EditorState {
 };
 
 /// Fills the whole window with an invisible dock host and draws the menu bar.
-void drawDockspace(EditorState& state);
+///
+/// `sceneDirectory` is scanned for saved scenes to list under File > Open.
+void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirectory);
 
 /// The scene image, the toolbar and the gizmo.
 void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts);

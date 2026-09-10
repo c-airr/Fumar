@@ -13,6 +13,7 @@ add_library(fumar_render STATIC
     src/mesh.cpp
     src/renderer.cpp
     src/resources.cpp
+    src/scene_io.cpp
     src/texture.cpp
     src/third_party_impl.cpp)
 
@@ -32,7 +33,8 @@ target_link_libraries(fumar_render
     # files, so their headers stay out of everyone else's include path.
     PRIVATE
         fumar_cgltf
-        fumar_stb)
+        fumar_stb
+        nlohmann_json::nlohmann_json)
 
 fumar_configure_target(fumar_render)
 

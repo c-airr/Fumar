@@ -90,7 +90,24 @@ FetchContent_Declare(imguizmo
     GIT_TAG        18cef5e031d8c6973d80284c67f60549fafd78c1
     SOURCE_SUBDIR  no-cmake-here)
 
-FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb imgui imguizmo)
+# ---------------------------------------------------------------------------
+# nlohmann/json - scene files.
+#
+# JSON so a scene can be read, diffed and hand-edited. A binary format would
+# load faster and matter for a shipping game; during development being able to
+# open a scene in a text editor and see what changed is worth more.
+# ---------------------------------------------------------------------------
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+set(JSON_Install OFF CACHE INTERNAL "")
+
+FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.12.0
+    GIT_SHALLOW    TRUE
+    SYSTEM
+    EXCLUDE_FROM_ALL)
+
+FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb imgui imguizmo nlohmann_json)
 
 # Header-only dependencies get a hand-written INTERFACE target. SYSTEM keeps
 # their warnings out of our build log.

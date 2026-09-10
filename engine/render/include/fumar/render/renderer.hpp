@@ -74,6 +74,13 @@ public:
     /// the node it was rooted at, or kInvalidNode on failure.
     NodeId loadModel(const std::filesystem::path& path, NodeId parent = kRootNode);
 
+    /// Empties the scene and releases every mesh, texture and material.
+    ///
+    /// Also resets the descriptor pool, which frees the camera sets along with
+    /// the material ones - so those are reallocated here too. Without that,
+    /// loading a few scenes in a row would exhaust the pool.
+    void resetScene();
+
     /// Records and submits one frame.
     void drawFrame();
 
@@ -160,6 +167,7 @@ private:
     void createViewportTarget(Extent2D size);
     void createDefaultTexture();
     void createDescriptors();
+    void allocateDescriptorSets();
     void updateCameraUniforms(u32 frameIndex);
     void recordSceneRendering(vk::CommandBuffer cmd);
     void recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex);

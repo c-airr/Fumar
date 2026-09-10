@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -200,7 +201,7 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
 
 } // namespace
 
-void drawDockspace(EditorState& state) {
+void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirectory) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -229,6 +230,41 @@ void drawDockspace(EditorState& state) {
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
     if (ImGui::BeginMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("New scene")) {
+                state.newSceneRequested = true;
+            }
+
+            if (ImGui::BeginMenu("Open")) {
+                std::error_code ec;
+                bool anyListed = false;
+
+                if (std::filesystem::exists(sceneDirectory, ec)) {
+                    for (const auto& entry : std::filesystem::directory_iterator(sceneDirectory, ec)) {
+                        if (!entry.is_regular_file() || entry.path().extension() != ".fumar") {
+                            continue;
+                        }
+                        anyListed = true;
+                        if (ImGui::MenuItem(entry.path().filename().string().c_str())) {
+                            state.openRequested = true;
+                            state.openPath = entry.path().string();
+                        }
+                    }
+                }
+
+                if (!anyListed) {
+                    ImGui::TextDisabled("no saved scenes");
+                }
+                ImGui::EndMenu();
+            }
+
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save", "Ctrl+S")) {
+                state.saveRequested = true;
+            }
+            ImGui::EndMenu();
+        }
+
         if (ImGui::BeginMenu("Window")) {
             ImGui::MenuItem("World Outliner", nullptr, &state.showOutliner);
             ImGui::MenuItem("Details", nullptr, &state.showDetails);
@@ -241,6 +277,20 @@ void drawDockspace(EditorState& state) {
             }
             ImGui::MenuItem("ImGui demo", nullptr, &state.showImGuiDemo);
             ImGui::EndMenu();
+        }
+
+        // The file being edited, in the middle of the bar where a title would
+        // normally sit.
+        ImGui::TextDisabled("|");
+        if (state.scenePath.empty()) {
+            ImGui::TextDisabled("untitled");
+        } else {
+            ImGui::TextDisabled("%s", std::filesystem::path(state.scenePath).filename().string().c_str());
+        }
+
+        if (state.saveFlashSeconds > 0.0f) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.0f), "saved");
         }
 
         const char* hint =

@@ -12,6 +12,52 @@
 
 namespace fumar {
 
+/// Where a mesh came from, so it can be rebuilt when a scene is loaded.
+///
+/// A MeshHandle is a runtime index and means nothing in a file - reload in a
+/// different order and it points at something else. What survives being written
+/// to disk is a description of how to produce the mesh again, which is exactly
+/// what this is.
+struct MeshSource {
+    /// "cube", "plane" or "cylinder" for generated meshes; empty when imported.
+    std::string shape;
+
+    /// Shape parameters. Their meaning depends on the shape: plane uses x for
+    /// half-size and y for UV tiling, cylinder uses x, y and z for radius,
+    /// height and segment count.
+    Vec4 parameters{};
+
+    /// Source file, for imported meshes.
+    std::string file;
+
+    /// Which primitive inside that file. The loader visits them in a fixed
+    /// order, so the index is stable as long as the file is.
+    u32 primitive = 0;
+
+    bool imported() const { return !file.empty(); }
+};
+
+/// A generated mesh: a shape name and its parameters.
+///
+/// A small factory rather than a designated initialiser at each call site,
+/// because naming only some fields warns and naming all of them means every
+/// call has to be revisited when the struct grows.
+inline MeshSource proceduralMesh(std::string shape, Vec4 parameters = {}) {
+    MeshSource source;
+    source.shape = std::move(shape);
+    source.parameters = parameters;
+    return source;
+}
+
+/// A mesh that came out of a file, identified by that file and its position in
+/// it.
+inline MeshSource importedMesh(std::string file, u32 primitive) {
+    MeshSource source;
+    source.file = std::move(file);
+    source.primitive = primitive;
+    return source;
+}
+
 /// What a surface looks like.
 ///
 /// Only base colour for now. A physically based material would add metallic,
@@ -29,6 +75,17 @@ struct Material {
     /// because building it per draw would be pure overhead - the contents never
     /// change after load.
     vk::DescriptorSet descriptorSet;
+
+    /// Texture file this material was built from, for saving. Empty for a flat
+    /// colour, and for glTF materials - those record their origin below instead,
+    /// because a glTF texture is usually embedded in the file rather than
+    /// sitting beside it as an image.
+    std::string baseColorPath;
+
+    /// The glTF file and material index this came from, for saving. Empty for
+    /// materials created in the editor.
+    std::string sourceFile;
+    u32 sourceIndex = 0;
 };
 
 /// Owns the GPU resources that scene nodes name by handle.
@@ -44,11 +101,14 @@ public:
     ResourceRegistry(const ResourceRegistry&) = delete;
     ResourceRegistry& operator=(const ResourceRegistry&) = delete;
 
-    MeshHandle addMesh(Mesh mesh);
+    /// Registers a mesh together with a description of how to rebuild it.
+    /// The description is what a saved scene stores in place of the handle.
+    MeshHandle addMesh(Mesh mesh, MeshSource source = {});
     TextureHandle addTexture(rhi::Image texture);
     MaterialHandle addMaterial(Material material);
 
     const Mesh& mesh(MeshHandle handle) const;
+    const MeshSource& meshSource(MeshHandle handle) const;
     const rhi::Image& texture(TextureHandle handle) const;
     const Material& material(MaterialHandle handle) const;
     Material& material(MaterialHandle handle);
@@ -71,6 +131,10 @@ public:
 
 private:
     std::vector<Mesh> m_meshes;
+
+    // Parallel to m_meshes rather than a member of Mesh: a Mesh is GPU
+    // resources, and where it came from is bookkeeping the GPU has no use for.
+    std::vector<MeshSource> m_meshSources;
     std::vector<rhi::Image> m_textures;
     std::vector<Material> m_materials;
     MaterialHandle m_fallbackMaterial;

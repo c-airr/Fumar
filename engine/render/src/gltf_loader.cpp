@@ -272,6 +272,11 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
             }
         }
 
+        // Recorded so a saved scene can find this material again by reloading
+        // the file, rather than trying to store an embedded texture itself.
+        material.sourceFile = pathString;
+        material.sourceIndex = static_cast<u32>(i);
+
         material.descriptorSet = context.descriptorPool.allocate(context.materialSetLayout);
         writer.image(material.descriptorSet, 0, view, context.sampler);
         materialHandles[i] = resources.addMaterial(std::move(material));
@@ -309,6 +314,7 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
 
     // --- geometry -----------------------------------------------------------
     usize primitiveCount = 0;
+    u32 primitiveCounter = 0;
     for (usize i = 0; i < data->nodes_count; ++i) {
         const cgltf_node& source = data->nodes[i];
         if (source.mesh == nullptr) {
@@ -346,7 +352,10 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
                 target = scene.createNode(scene.node(nodeIds[i]).name + "_part", nodeIds[i]);
             }
 
-            scene.node(target).mesh = resources.addMesh(std::move(mesh));
+            // The file and a running index, so a saved scene can find this
+            // exact primitive again after a reload.
+            scene.node(target).mesh =
+                resources.addMesh(std::move(mesh), importedMesh(pathString, primitiveCounter++));
             scene.node(target).material = material;
             ++primitiveCount;
         }

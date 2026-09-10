@@ -303,8 +303,8 @@ void Renderer::createDescriptors() {
     m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
         *m_device, rhi::kFramesInFlight + kMaterialBudget, poolSizes);
 
-    rhi::DescriptorWriter writer;
-
+    // The uniform buffers themselves outlive any number of scene loads; only
+    // the descriptor sets pointing at them are reallocated.
     for (PerFrame& frame : m_perFrame) {
         frame.cameraUniforms = rhi::Buffer(*m_device, rhi::BufferDesc{
                                                           .size = sizeof(CameraUniforms),
@@ -314,13 +314,21 @@ void Renderer::createDescriptors() {
                                                           // needs direct access.
                                                           .hostVisible = true,
                                                       });
+    }
+
+    allocateDescriptorSets();
+}
+
+void Renderer::allocateDescriptorSets() {
+    rhi::DescriptorWriter writer;
+
+    for (PerFrame& frame : m_perFrame) {
         frame.cameraSet = m_descriptorPool->allocate(*m_cameraSetLayout);
         writer.buffer(frame.cameraSet, 0, frame.cameraUniforms.handle(), sizeof(CameraUniforms));
     }
 
     // The fallback material: used by anything with no material of its own, so
-    // a broken or untextured asset shows an obvious checkerboard instead of
-    // failing to bind a descriptor.
+    // an untextured or broken asset still binds something valid.
     Material fallback;
     fallback.name = "default";
     fallback.baseColorFactor = Vec4{0.62f, 0.63f, 0.65f, 1.0f};
@@ -328,19 +336,39 @@ void Renderer::createDescriptors() {
     writer.image(fallback.descriptorSet, 0, m_defaultTexture.view(), *m_sampler);
     m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
 
-    writer.submit(handle);
+    writer.submit(m_device->handle());
+}
+
+void Renderer::resetScene() {
+    // Anything about to be released may still be referenced by a frame the GPU
+    // has not finished.
+    m_device->waitIdle();
+
+    m_selected = kInvalidNode;
+    m_highlighted = kInvalidNode;
+
+    m_scene = Scene{};
+    m_resources.clear();
+
+    // Frees every descriptor set at once - including the camera sets, which is
+    // why they are reallocated immediately afterwards.
+    m_descriptorPool->reset();
+    allocateDescriptorSets();
 }
 
 MeshHandle Renderer::createCubeMesh() {
-    return m_resources.addMesh(makeCube(*m_device, *m_upload));
+    return m_resources.addMesh(makeCube(*m_device, *m_upload), proceduralMesh("cube"));
 }
 
 MeshHandle Renderer::createPlaneMesh(f32 halfSize, f32 uvTiling) {
-    return m_resources.addMesh(makePlane(*m_device, *m_upload, halfSize, uvTiling));
+    return m_resources.addMesh(makePlane(*m_device, *m_upload, halfSize, uvTiling),
+                               proceduralMesh("plane", Vec4{halfSize, uvTiling, 0.0f, 0.0f}));
 }
 
 MeshHandle Renderer::createCylinderMesh(f32 radius, f32 height, u32 segments) {
-    return m_resources.addMesh(makeCylinder(*m_device, *m_upload, radius, height, segments));
+    return m_resources.addMesh(
+        makeCylinder(*m_device, *m_upload, radius, height, segments),
+        proceduralMesh("cylinder", Vec4{radius, height, static_cast<f32>(segments), 0.0f}));
 }
 
 MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
@@ -354,6 +382,7 @@ MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
         rhi::Image texture = loadTextureFromFile(*m_device, *m_upload, baseColorTexture);
         if (texture.valid()) {
             material.baseColor = m_resources.addTexture(std::move(texture));
+            material.baseColorPath = baseColorTexture.string();
             view = m_resources.texture(material.baseColor).view();
         } else {
             FUMAR_WARN("material '{}' falls back to a flat colour", material.name);

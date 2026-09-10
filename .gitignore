@@ -37,3 +37,6 @@ dist/
 
 # editor layout, per-machine
 *.ini
+
+# saved scenes are per-user work, not source
+scenes/

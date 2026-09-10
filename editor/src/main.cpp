@@ -6,6 +6,7 @@
 #include "fumar/platform/paths.hpp"
 #include "fumar/platform/window.hpp"
 #include "fumar/render/renderer.hpp"
+#include "fumar/render/scene_io.hpp"
 #include "fumar/scene/scene.hpp"
 #include "fumar/script/script_engine.hpp"
 #include "fumar/ui/imgui_layer.hpp"
@@ -209,6 +210,8 @@ int main() {
     renderer.camera().yaw = -125.0f;
     renderer.camera().pitch = -20.0f;
 
+    const std::filesystem::path sceneDirectory = executableDirectory() / "scenes";
+
     EditorState state;
     state.viewportTexture = ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
 
@@ -248,7 +251,7 @@ int main() {
         ui.beginFrame();
         ImGuizmo::BeginFrame();
 
-        drawDockspace(state);
+        drawDockspace(state, sceneDirectory);
         drawViewportPanel(state, renderer, scripts);
         drawOutlinerPanel(state, renderer.scene());
         drawDetailsPanel(state, renderer.scene(), renderer, scripts);
@@ -267,6 +270,15 @@ int main() {
         // F5 recompiles, the way every editor with a build step does it.
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
             scripts.compileAll();
+        }
+
+        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
+            !ImGui::GetIO().WantTextInput) {
+            state.saveRequested = true;
+        }
+
+        if (state.saveFlashSeconds > 0.0f) {
+            state.saveFlashSeconds -= deltaSeconds;
         }
 
         // Scripts run only while playing, so an object being positioned by hand
@@ -295,6 +307,40 @@ int main() {
 
         ui.endFrame();
         renderer.drawFrame();
+
+        // --- scene file actions ----------------------------------------------
+        // Deferred to after the frame on purpose: loading replaces the very
+        // nodes the panels were describing, and destroying them mid-frame would
+        // leave ImGui holding freed strings.
+        if (state.saveRequested) {
+            state.saveRequested = false;
+            if (state.scenePath.empty()) {
+                state.scenePath = (sceneDirectory / "untitled.fumar").string();
+            }
+            if (saveScene(renderer, state.scenePath)) {
+                state.saveFlashSeconds = 1.5f;
+            }
+        }
+
+        if (state.openRequested) {
+            state.openRequested = false;
+            if (loadScene(renderer, state.openPath)) {
+                state.scenePath = state.openPath;
+                state.selected = kInvalidNode;
+                state.hovered = kInvalidNode;
+                scripts.restart();
+            }
+        }
+
+        if (state.newSceneRequested) {
+            state.newSceneRequested = false;
+            renderer.resetScene();
+            createStarterScene(renderer);
+            state.scenePath.clear();
+            state.selected = kInvalidNode;
+            state.hovered = kInvalidNode;
+            scripts.restart();
+        }
     }
 
     // The last submitted frame may still be executing, and its command buffer
