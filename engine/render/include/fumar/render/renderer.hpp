@@ -2,6 +2,7 @@
 
 #include "fumar/core/types.hpp"
 #include "fumar/render/camera.hpp"
+#include "fumar/render/environment.hpp"
 #include "fumar/render/mesh.hpp"
 #include "fumar/render/resources.hpp"
 #include "fumar/rhi/buffer.hpp"
@@ -53,6 +54,11 @@ public:
 
     ResourceRegistry& resources() { return m_resources; }
     const ResourceRegistry& resources() const { return m_resources; }
+
+    /// The sun and sky. Edited in place - every field is read fresh each frame,
+    /// so there is nothing to notify and no way for the two to fall out of step.
+    Environment& environment() { return m_environment; }
+    const Environment& environment() const { return m_environment; }
 
     // --- content creation ---------------------------------------------------
     // Thin wrappers that hand the device and upload context to the factories,
@@ -176,11 +182,16 @@ private:
     bool recreateSwapchain();
 
     void createViewportTarget(Extent2D size);
+
+    /// Points the tone mapping pass at the current HDR image. Called whenever
+    /// that image is rebuilt, which invalidates the descriptor written before.
+    void updateTonemapDescriptor();
     void createDefaultTexture();
     void createDescriptors();
     void allocateDescriptorSets();
-    void updateCameraUniforms(u32 frameIndex);
+    void updateFrameUniforms(u32 frameIndex);
     void recordSceneRendering(vk::CommandBuffer cmd);
+    void recordTonemap(vk::CommandBuffer cmd);
     void recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex);
     void recordCommands(u32 imageIndex);
 
@@ -199,6 +210,14 @@ private:
     std::unique_ptr<rhi::UploadContext> m_upload;
     std::unique_ptr<rhi::GraphicsPipeline> m_pipeline;
 
+    /// Fills the frame with sky before any geometry, from a fullscreen triangle
+    /// and no vertex buffer at all.
+    std::unique_ptr<rhi::GraphicsPipeline> m_skyPipeline;
+
+    /// Reads the HDR scene back and writes the displayable image. The last
+    /// thing that happens to the picture.
+    std::unique_ptr<rhi::GraphicsPipeline> m_tonemapPipeline;
+
     /// Same geometry, rasterised as lines. Used to outline the hovered and
     /// selected objects without a second render target or a stencil pass.
     std::unique_ptr<rhi::GraphicsPipeline> m_outlinePipeline;
@@ -209,10 +228,19 @@ private:
     vk::UniqueDescriptorSetLayout m_materialSetLayout;
     vk::UniqueSampler m_sampler;
 
-    /// The off-screen colour and depth the scene is drawn into. Sized to the
-    /// viewport panel, not to the window.
-    rhi::Image m_sceneColor;
+    /// Where the scene is actually drawn: a floating-point image, so a sunlit
+    /// surface can be worth 20 and a shadow 0.02 and both survive to the tone
+    /// mapper. Sized to the viewport panel, not to the window.
+    rhi::Image m_sceneHdr;
     rhi::Image m_depthImage;
+
+    /// The tone mapped result, in a displayable format. This is the image the
+    /// interface samples to show the viewport.
+    rhi::Image m_sceneColor;
+
+    /// Descriptor pointing at m_sceneHdr, for the tone mapping pass. Rewritten
+    /// whenever the viewport is resized, since that replaces the image.
+    vk::DescriptorSet m_tonemapSet;
     Extent2D m_viewportExtent{1280, 720};
 
     vk::Format m_depthFormat = vk::Format::eUndefined;
@@ -221,6 +249,13 @@ private:
     /// the swapchain, so the scene pipeline never has to be rebuilt when the
     /// window's format changes.
     static constexpr vk::Format kSceneColorFormat = vk::Format::eR8G8B8A8Srgb;
+
+    /// Half-precision float per channel: 16 bits covers roughly 0.00006 to
+    /// 65504, which is far more range than 8-bit UNORM's 256 steps between 0
+    /// and 1, at half the bandwidth of full floats. This is the standard choice
+    /// for an HDR render target and the reason a bright sun does not simply
+    /// clip on the way into memory.
+    static constexpr vk::Format kSceneHdrFormat = vk::Format::eR16G16B16A16Sfloat;
 
     /// Checkerboard used by materials with no texture of their own.
     rhi::Image m_defaultTexture;
@@ -237,6 +272,7 @@ private:
     Scene m_scene;
     ResourceRegistry m_resources;
     Camera m_camera;
+    Environment m_environment;
     OverlayCallback m_overlay;
 
     NodeId m_selected = kInvalidNode;

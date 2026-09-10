@@ -76,11 +76,19 @@ include(FumarLuaJIT)
 # --- shaders ----------------------------------------------------------------
 # Compiled once, into a target both executables depend on. Declaring them per
 # executable would mean two build rules writing the same .spv file.
+#
+# Only the entry points are listed. The shared pieces - frame.glsl, object.glsl,
+# sky.glsl - are pulled in with #include and picked up automatically through the
+# depfile glslc writes, so editing one of them still rebuilds everything that
+# uses it without it being named here.
 fumar_compile_shaders(fumar_shaders
     FILES
         "${CMAKE_SOURCE_DIR}/shaders/mesh.vert"
         "${CMAKE_SOURCE_DIR}/shaders/mesh.frag"
-        "${CMAKE_SOURCE_DIR}/shaders/outline.frag")
+        "${CMAKE_SOURCE_DIR}/shaders/outline.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert"
+        "${CMAKE_SOURCE_DIR}/shaders/sky.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/tonemap.frag")
 
 # --- engine modules ---------------------------------------------------------
 # The order mirrors the dependency graph: core depends on nothing, sandbox

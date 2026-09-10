@@ -103,6 +103,24 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         {"fov", camera.fovYDegrees},
     };
 
+    // --- environment --------------------------------------------------------
+    // Angles and colours, exactly as the editor shows them. Storing the derived
+    // sun VECTOR instead would save two lines here and cost the ability to
+    // reopen the file and keep dragging the sliders.
+    const Environment& env = renderer.environment();
+    root["environment"] = {
+        {"sun_elevation", env.sunElevationDegrees},
+        {"sun_azimuth", env.sunAzimuthDegrees},
+        {"sun_color", toJson(env.sunColor)},
+        {"sun_intensity", env.sunIntensity},
+        {"sun_radius", env.sunAngularRadiusDegrees},
+        {"sky_zenith", toJson(env.skyZenithColor)},
+        {"sky_horizon", toJson(env.skyHorizonColor)},
+        {"ground", toJson(env.groundColor)},
+        {"sky_intensity", env.skyIntensity},
+        {"exposure", env.exposure},
+    };
+
     // --- meshes -------------------------------------------------------------
     Json meshes = Json::array();
     for (u32 i = 0; i < static_cast<u32>(resources.meshCount()); ++i) {
@@ -128,6 +146,8 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         Json entry;
         entry["name"] = material.name;
         entry["color"] = toJson(material.baseColorFactor);
+        entry["metallic"] = material.metallic;
+        entry["roughness"] = material.roughness;
 
         if (!material.sourceFile.empty()) {
             entry["file"] = toPortablePath(material.sourceFile);
@@ -317,13 +337,17 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
             continue;
         }
 
-        materials.push_back(renderer.createMaterial(entry.value("name", std::string{"material"}),
-                                                    vec4From(entry.value("color", Json::array()),
-                                                             Vec4{1.0f, 1.0f, 1.0f, 1.0f}),
-                                                    entry.contains("texture")
-                                                        ? fromPortablePath(
-                                                              entry["texture"].get<std::string>())
-                                                        : std::filesystem::path{}));
+        const MaterialHandle created = renderer.createMaterial(
+            entry.value("name", std::string{"material"}),
+            vec4From(entry.value("color", Json::array()), Vec4{1.0f, 1.0f, 1.0f, 1.0f}),
+            entry.contains("texture") ? fromPortablePath(entry["texture"].get<std::string>())
+                                      : std::filesystem::path{});
+
+        Material& material = renderer.resources().material(created);
+        material.metallic = entry.value("metallic", material.metallic);
+        material.roughness = entry.value("roughness", material.roughness);
+
+        materials.push_back(created);
     }
 
     // --- nodes --------------------------------------------------------------
@@ -358,6 +382,25 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         if (materialIndex < materials.size()) {
             node.material = materials[materialIndex];
         }
+    }
+
+    // --- environment --------------------------------------------------------
+    // Every field falls back to the default, so a scene written before the
+    // environment existed loads with a sensible sky rather than a black one.
+    if (root.contains("environment")) {
+        const Json& source = root["environment"];
+        Environment env;
+        env.sunElevationDegrees = source.value("sun_elevation", env.sunElevationDegrees);
+        env.sunAzimuthDegrees = source.value("sun_azimuth", env.sunAzimuthDegrees);
+        env.sunColor = vec3From(source.value("sun_color", Json::array()), env.sunColor);
+        env.sunIntensity = source.value("sun_intensity", env.sunIntensity);
+        env.sunAngularRadiusDegrees = source.value("sun_radius", env.sunAngularRadiusDegrees);
+        env.skyZenithColor = vec3From(source.value("sky_zenith", Json::array()), env.skyZenithColor);
+        env.skyHorizonColor = vec3From(source.value("sky_horizon", Json::array()), env.skyHorizonColor);
+        env.groundColor = vec3From(source.value("ground", Json::array()), env.groundColor);
+        env.skyIntensity = source.value("sky_intensity", env.skyIntensity);
+        env.exposure = source.value("exposure", env.exposure);
+        renderer.environment() = env;
     }
 
     // --- camera -------------------------------------------------------------

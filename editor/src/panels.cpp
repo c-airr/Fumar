@@ -104,6 +104,7 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow("Scripts", leftBottom);
     ImGui::DockBuilderDockWindow("Content", leftBottom);
     ImGui::DockBuilderDockWindow("Viewport", viewport);
+    ImGui::DockBuilderDockWindow("World", details);
     ImGui::DockBuilderDockWindow("Details", details);
 
     ImGui::DockBuilderFinish(dockspaceId);
@@ -271,6 +272,7 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
         if (ImGui::BeginMenu("Window")) {
             ImGui::MenuItem("World Outliner", nullptr, &state.showOutliner);
             ImGui::MenuItem("Details", nullptr, &state.showDetails);
+            ImGui::MenuItem("World", nullptr, &state.showWorld);
             ImGui::MenuItem("Content", nullptr, &state.showContent);
             ImGui::MenuItem("Scripts", nullptr, &state.showScripts);
             ImGui::MenuItem("Statistics", nullptr, &state.showStats);
@@ -498,7 +500,7 @@ void drawOutlinerPanel(EditorState& state, Scene& scene) {
     ImGui::End();
 }
 
-void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer,
+void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
                       const ScriptEngine& scripts) {
     if (!state.showDetails) {
         return;
@@ -551,16 +553,27 @@ void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer
         }
 
         if (node.material.valid() && renderer.resources().has(node.material)) {
-            const Material& material = renderer.resources().material(node.material);
+            Material& material = renderer.resources().material(node.material);
             ImGui::Text("Material: %s", material.name.c_str());
 
-            // Read-only preview of the colour: editing it here would change it
-            // for every object sharing the material, which is a surprise best
-            // left until materials are their own asset in the content panel.
-            const ImVec4 colour(material.baseColorFactor.x, material.baseColorFactor.y,
-                                material.baseColorFactor.z, material.baseColorFactor.w);
-            ImGui::ColorButton("##material_colour", colour, ImGuiColorEditFlags_NoTooltip,
-                               ImVec2(ImGui::GetContentRegionAvail().x, 18.0f));
+            // Editing here changes the material for every object using it. That
+            // is not a bug to work around: a material is a shared asset, and
+            // pretending otherwise would mean silently cloning it on the first
+            // edit and leaving the user with two things named the same.
+            ImGui::ColorEdit3("Base colour", &material.baseColorFactor.x,
+                              ImGuiColorEditFlags_Float);
+
+            ImGui::SliderFloat("Metallic", &material.metallic, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("0 = plastic, stone, wood.  1 = metal.\n"
+                                  "Metals have no diffuse colour: they tint what they reflect.");
+            }
+
+            ImGui::SliderFloat("Roughness", &material.roughness, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("0 = mirror, 1 = fully diffuse.\n"
+                                  "Decides how wide the highlight is.");
+            }
         } else {
             ImGui::TextDisabled("Material: default");
         }
@@ -591,6 +604,104 @@ void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer
         ImGui::Text("Parent: %s",
                     node.parent == kRootNode ? "(scene root)" : scene.node(node.parent).name.c_str());
         ImGui::Text("Children: %zu", node.children.size());
+    }
+    ImGui::End();
+}
+
+void drawWorldPanel(EditorState& state, Renderer& renderer) {
+    if (!state.showWorld) {
+        return;
+    }
+
+    if (ImGui::Begin("World", &state.showWorld)) {
+        Environment& env = renderer.environment();
+
+        // Four points on the same set of dials, not four different renderers.
+        // Worth having as buttons because the difference between them is
+        // entirely in numbers that are hard to guess from a cold start.
+        ImGui::SeparatorText("Presets");
+        if (ImGui::Button("Noon")) {
+            env = Environment{};
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Golden hour")) {
+            env.sunElevationDegrees = 6.0f;
+            env.sunColor = Vec3{1.0f, 0.72f, 0.42f};
+            env.sunIntensity = 4.0f;
+            env.skyZenithColor = Vec3{0.18f, 0.30f, 0.62f};
+            env.skyHorizonColor = Vec3{0.95f, 0.62f, 0.38f};
+            env.groundColor = Vec3{0.20f, 0.16f, 0.13f};
+            env.skyIntensity = 0.6f;
+            env.exposure = 0.55f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Overcast")) {
+            // The sun is still there, it is just no longer the dominant light:
+            // raise the sky and the shadows fill in until nothing casts one.
+            env.sunElevationDegrees = 60.0f;
+            env.sunColor = Vec3{0.92f, 0.93f, 0.95f};
+            env.sunIntensity = 0.9f;
+            env.skyZenithColor = Vec3{0.60f, 0.63f, 0.68f};
+            env.skyHorizonColor = Vec3{0.72f, 0.74f, 0.77f};
+            env.groundColor = Vec3{0.30f, 0.30f, 0.30f};
+            env.skyIntensity = 1.3f;
+            env.exposure = 0.5f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Night")) {
+            env.sunElevationDegrees = 34.0f;
+            env.sunColor = Vec3{0.68f, 0.76f, 1.0f};
+            env.sunIntensity = 0.5f;
+            env.sunAngularRadiusDegrees = 0.3f;
+            env.skyZenithColor = Vec3{0.015f, 0.025f, 0.06f};
+            env.skyHorizonColor = Vec3{0.06f, 0.08f, 0.14f};
+            env.groundColor = Vec3{0.02f, 0.02f, 0.03f};
+            env.skyIntensity = 1.0f;
+            env.exposure = 1.6f;
+        }
+
+        ImGui::SeparatorText("Sun");
+
+        // Elevation goes below zero deliberately: dragging the sun under the
+        // horizon is how you get night, and it should be one slider away.
+        ImGui::SliderFloat("Elevation", &env.sunElevationDegrees, -15.0f, 90.0f, "%.1f deg");
+        ImGui::SliderFloat("Azimuth", &env.sunAzimuthDegrees, 0.0f, 360.0f, "%.1f deg");
+        ImGui::ColorEdit3("Sun colour", &env.sunColor.x, ImGuiColorEditFlags_Float);
+        ImGui::DragFloat("Sun intensity", &env.sunIntensity, 0.02f, 0.0f, 40.0f);
+        ImGui::DragFloat("Sun size", &env.sunAngularRadiusDegrees, 0.01f, 0.05f, 15.0f, "%.2f deg");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Half-angle of the disc. The real sun is 0.27 degrees.");
+        }
+
+        ImGui::SeparatorText("Sky");
+        ImGui::ColorEdit3("Zenith", &env.skyZenithColor.x, ImGuiColorEditFlags_Float);
+        ImGui::ColorEdit3("Horizon", &env.skyHorizonColor.x, ImGuiColorEditFlags_Float);
+        ImGui::ColorEdit3("Ground", &env.groundColor.x, ImGuiColorEditFlags_Float);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Also the light bouncing up off the ground onto\n"
+                              "the underside of everything. Set it to black and\n"
+                              "objects start to look like they are floating.");
+        }
+        ImGui::DragFloat("Sky intensity", &env.skyIntensity, 0.01f, 0.0f, 8.0f);
+
+        ImGui::SeparatorText("Camera");
+        ImGui::DragFloat("Exposure", &env.exposure, 0.005f, 0.01f, 8.0f);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("The scene is rendered in floating point, where the sun\n"
+                              "is worth dozens and a shadow a fraction of one. This is\n"
+                              "what decides where that range lands on the display.");
+        }
+
+        // The direction the two angles work out to. Not editable - it is
+        // derived - but seeing it move while dragging is what makes the
+        // relationship between the sliders and the world obvious.
+        const Vec3 direction = env.sunDirection();
+        ImGui::Spacing();
+        ImGui::TextDisabled("sun vector: %.2f, %.2f, %.2f", static_cast<f64>(direction.x),
+                            static_cast<f64>(direction.y), static_cast<f64>(direction.z));
+        if (direction.y <= 0.0f) {
+            ImGui::TextColored(kAccent, "below the horizon");
+        }
     }
     ImGui::End();
 }

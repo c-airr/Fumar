@@ -55,6 +55,7 @@ struct EditorState {
     bool scriptsRunning = false;
 
     bool showOutliner = true;
+    bool showWorld = true;
     bool showScripts = true;
     bool showDetails = true;
     bool showContent = true;
@@ -113,8 +114,16 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
 void drawOutlinerPanel(EditorState& state, Scene& scene);
 
 /// Properties of whatever is selected.
-void drawDetailsPanel(EditorState& state, Scene& scene, const Renderer& renderer,
+///
+/// Takes a mutable Renderer because materials are edited here: changing a
+/// material affects every object using it, which is exactly how a material
+/// asset is supposed to behave.
+void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
                       const ScriptEngine& scripts);
+
+/// The sun, the sky and the exposure - everything that lights the scene
+/// without being in it.
+void drawWorldPanel(EditorState& state, Renderer& renderer);
 
 /// Meshes and materials in the project, and buttons to place them.
 void drawContentPanel(EditorState& state, Renderer& renderer);

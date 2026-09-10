@@ -71,6 +71,21 @@ struct Material {
     /// and for tinting textured ones.
     Vec4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
 
+    /// 0 = dielectric, 1 = metal. There is nothing physical in between: the
+    /// range exists so a texture that covers both kinds of surface has
+    /// somewhere to interpolate, not so you can make half-metal.
+    ///
+    /// The two behave completely differently. A dielectric reflects about 4% of
+    /// the light regardless of its colour and lets the rest through to be
+    /// coloured by what is underneath - which is why plastic has white
+    /// highlights whatever colour it is. A metal reflects nearly everything and
+    /// tints it, and has no diffuse colour at all.
+    f32 metallic = 0.0f;
+
+    /// 0 = mirror, 1 = fully diffuse. The single control that most changes how
+    /// a surface reads, because it decides how wide the highlight is.
+    f32 roughness = 0.75f;
+
     /// Descriptor set 1, built when the material is registered. Cached here
     /// because building it per draw would be pure overhead - the contents never
     /// change after load.

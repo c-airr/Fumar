@@ -24,28 +24,44 @@
 namespace fumar {
 namespace {
 
-/// Descriptor set 0, binding 0. Must match the CameraData block in mesh.vert.
+/// Descriptor set 0, binding 0. Must match the FrameData block in
+/// shaders/frame.glsl exactly.
 ///
 /// alignas(16) reproduces the std140 rules the shader compiler applies: every
 /// mat4 and vec4 starts on a 16-byte boundary. A struct that merely looks right
 /// in C++ can still be laid out differently from the shader's view of it, and
 /// the symptom is a scene that renders skewed rather than an error.
-struct alignas(16) CameraUniforms {
+///
+/// The four floats at the end are deliberate: std140 packs scalars tightly, so
+/// grouping them means they share one 16-byte slot instead of taking four.
+struct alignas(16) FrameUniforms {
     Mat4 view;
     Mat4 projection;
-    Vec4 position;
+    Mat4 invViewProjection;
+    Vec4 cameraPosition;
+    Vec4 sunDirection;
+    Vec4 sunColor;
+    Vec4 skyZenithColor;
+    Vec4 skyHorizonColor;
+    Vec4 groundColor;
+    f32 sunIntensity;
+    f32 sunAngularRadius;
+    f32 skyIntensity;
+    f32 exposure;
 };
 
-/// Push constants, matching the block in mesh.vert and mesh.frag.
+/// Push constants, matching the block in shaders/object.glsl.
 ///
-/// 84 bytes used of the 128 every implementation guarantees. Worth watching:
+/// 92 bytes used of the 128 every implementation guarantees. Worth watching:
 /// push constants are the fastest way to get per-draw data to a shader
 /// precisely because the block is tiny and lives in the command buffer, so
 /// anything that grows past the limit belongs in a uniform buffer instead.
 struct ObjectPushConstants {
     Mat4 model;      // 64 bytes
     Vec4 baseColor;  // 16 bytes
-    f32 highlight;   // 4 bytes: 0 = normal, 0.5 = hovered, 1 = selected
+    f32 metallic;    // 4
+    f32 roughness;   // 4
+    f32 highlight;   // 4: 0 = normal, 0.5 = hovered, 1 = selected
 };
 
 constexpr bool kValidationByDefault =
@@ -102,10 +118,10 @@ Renderer::Renderer(Window& window) : m_window(window) {
         *m_device, rhi::GraphicsPipelineDesc{
                        .vertexShader = shaderDir / "mesh.vert.spv",
                        .fragmentShader = shaderDir / "mesh.frag.spv",
-                       // The scene pipeline targets the off-screen image, not
-                       // the swapchain - so a change of window format never
+                       // The scene pipeline targets the off-screen HDR image,
+                       // not the swapchain - so a change of window format never
                        // invalidates it.
-                       .colorFormat = kSceneColorFormat,
+                       .colorFormat = kSceneHdrFormat,
                        .depthFormat = m_depthFormat,
                        .vertexBindings = vertexBindings,
                        .vertexAttributes = vertexAttributes,
@@ -122,7 +138,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
         *m_device, rhi::GraphicsPipelineDesc{
                        .vertexShader = shaderDir / "mesh.vert.spv",
                        .fragmentShader = shaderDir / "outline.frag.spv",
-                       .colorFormat = kSceneColorFormat,
+                       .colorFormat = kSceneHdrFormat,
                        .depthFormat = m_depthFormat,
                        .vertexBindings = vertexBindings,
                        .vertexAttributes = vertexAttributes,
@@ -145,6 +161,47 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        // surface they trace, and their depth values match it
                        // exactly.
                        .depthCompare = vk::CompareOp::eLessOrEqual,
+                   });
+
+    // The sky and the tone mapper are both fullscreen passes: three vertices
+    // generated in the vertex shader, no vertex buffer, no geometry. Note the
+    // empty vertexBindings/vertexAttributes - that is what says so.
+    m_skyPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "fullscreen.vert.spv",
+                       .fragmentShader = shaderDir / "sky.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       // Declared even though nothing here touches depth: a
+                       // pipeline used in a pass that has a depth attachment
+                       // must name its format, or creation fails.
+                       .depthFormat = m_depthFormat,
+                       // Empty: fullscreen.vert builds its three vertices from
+                       // gl_VertexIndex, so there is no vertex buffer to
+                       // describe and none is bound before the draw.
+                       .vertexBindings = {},
+                       .vertexAttributes = {},
+                       .setLayouts = setLayouts,
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       // The sky is behind everything, so it neither tests
+                       // depth (nothing has been drawn yet) nor writes it
+                       // (geometry drawn afterwards must not be rejected).
+                       .depthTest = false,
+                       .depthWrite = false,
+                   });
+
+    m_tonemapPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "fullscreen.vert.spv",
+                       .fragmentShader = shaderDir / "tonemap.frag.spv",
+                       // This one writes the displayable image, so it is the
+                       // only scene pipeline built for the 8-bit sRGB format.
+                       .colorFormat = kSceneColorFormat,
+                       .vertexBindings = {},
+                       .vertexAttributes = {},
+                       .setLayouts = setLayouts,
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       .depthTest = false,
+                       .depthWrite = false,
                    });
 
     m_frames = std::make_unique<rhi::FrameContext>(*m_device, m_swapchain->imageCount());
@@ -171,12 +228,15 @@ Renderer::~Renderer() {
     }
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
+    m_sceneHdr = rhi::Image{};
     m_sceneColor = rhi::Image{};
     m_sampler.reset();
     m_materialSetLayout.reset();
     m_cameraSetLayout.reset();
     m_descriptorPool.reset();
     m_frames.reset();
+    m_tonemapPipeline.reset();
+    m_skyPipeline.reset();
     m_outlinePipeline.reset();
     m_pipeline.reset();
     m_upload.reset();
@@ -211,12 +271,21 @@ void Renderer::createViewportTarget(Extent2D size) {
     m_viewportExtent = size;
     const vk::Extent2D extent{size.width, size.height};
 
+    // Where the geometry lands. eSampled because the tone mapping pass reads
+    // it back as a texture in the very next pass of the same frame.
+    m_sceneHdr = rhi::Image(*m_device, rhi::ImageDesc{
+                                           .extent = extent,
+                                           .format = kSceneHdrFormat,
+                                           .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                                                    vk::ImageUsageFlagBits::eSampled,
+                                           .aspect = vk::ImageAspectFlagBits::eColor,
+                                       });
+
+    // What the interface displays, after tone mapping. eSampled for the same
+    // reason one step further along: ImGui reads it as a texture.
     m_sceneColor = rhi::Image(*m_device, rhi::ImageDesc{
                                              .extent = extent,
                                              .format = kSceneColorFormat,
-                                             // eSampled is the whole point: the
-                                             // interface reads this image back
-                                             // as a texture to show in a panel.
                                              .usage = vk::ImageUsageFlagBits::eColorAttachment |
                                                       vk::ImageUsageFlagBits::eSampled,
                                              .aspect = vk::ImageAspectFlagBits::eColor,
@@ -241,6 +310,11 @@ bool Renderer::resizeViewport(Extent2D size) {
     // The old images may still be referenced by frames in flight.
     m_device->waitIdle();
     createViewportTarget(size);
+
+    // createViewportTarget replaced the HDR image, so the descriptor the tone
+    // mapping pass reads it through now points at a freed view. Safe to rewrite
+    // here and only here, because of the waitIdle above.
+    updateTonemapDescriptor();
 
     FUMAR_DEBUG("viewport target resized to {}x{}", size.width, size.height);
     return true;
@@ -284,9 +358,12 @@ void Renderer::createDefaultTexture() {
 void Renderer::createDescriptors() {
     const vk::Device handle = m_device->handle();
 
+    // Both stages: the vertex shader needs the matrices, the fragment shader
+    // needs the sun and sky. A binding is only visible to the stages named here.
     m_cameraSetLayout = rhi::DescriptorSetLayoutBuilder()
                             .binding(0, vk::DescriptorType::eUniformBuffer,
-                                     vk::ShaderStageFlagBits::eVertex)
+                                     vk::ShaderStageFlagBits::eVertex |
+                                         vk::ShaderStageFlagBits::eFragment)
                             .build(handle);
 
     m_materialSetLayout = rhi::DescriptorSetLayoutBuilder()
@@ -298,18 +375,23 @@ void Renderer::createDescriptors() {
     // material. Pools do not grow, so the material budget is fixed up front -
     // a real asset system would allocate a pool per scene instead of guessing.
     constexpr u32 kMaterialBudget = 64;
+
+    // Plus one image set the renderer keeps for itself: the tone mapping pass
+    // reads the HDR target through a descriptor just like any material.
+    constexpr u32 kInternalImageSets = 1;
     const std::array<vk::DescriptorPoolSize, 2> poolSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaterialBudget},
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
+                               kMaterialBudget + kInternalImageSets},
     };
     m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
-        *m_device, rhi::kFramesInFlight + kMaterialBudget, poolSizes);
+        *m_device, rhi::kFramesInFlight + kMaterialBudget + kInternalImageSets, poolSizes);
 
     // The uniform buffers themselves outlive any number of scene loads; only
     // the descriptor sets pointing at them are reallocated.
     for (PerFrame& frame : m_perFrame) {
         frame.cameraUniforms = rhi::Buffer(*m_device, rhi::BufferDesc{
-                                                          .size = sizeof(CameraUniforms),
+                                                          .size = sizeof(FrameUniforms),
                                                           .usage = vk::BufferUsageFlagBits::eUniformBuffer,
                                                           // Rewritten every
                                                           // frame, so the CPU
@@ -326,14 +408,19 @@ void Renderer::allocateDescriptorSets() {
 
     for (PerFrame& frame : m_perFrame) {
         frame.cameraSet = m_descriptorPool->allocate(*m_cameraSetLayout);
-        writer.buffer(frame.cameraSet, 0, frame.cameraUniforms.handle(), sizeof(CameraUniforms));
+        writer.buffer(frame.cameraSet, 0, frame.cameraUniforms.handle(), sizeof(FrameUniforms));
     }
+
+    // Reuses the material layout - one combined image sampler is exactly what
+    // the tone mapper needs, and a second identical layout would buy nothing.
+    m_tonemapSet = m_descriptorPool->allocate(*m_materialSetLayout);
+    writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_sampler);
 
     // The fallback material: used by anything with no material of its own, so
     // an untextured or broken asset still binds something valid.
     Material fallback;
     fallback.name = "default";
-    fallback.baseColorFactor = Vec4{0.62f, 0.63f, 0.65f, 1.0f};
+    fallback.baseColorFactor = Vec4{0.30f, 0.31f, 0.33f, 1.0f};
     fallback.descriptorSet = m_descriptorPool->allocate(*m_materialSetLayout);
     writer.image(fallback.descriptorSet, 0, m_defaultTexture.view(), *m_sampler);
     m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
@@ -352,6 +439,12 @@ std::string lowerExtension(const std::filesystem::path& path) {
 }
 
 } // namespace
+
+void Renderer::updateTonemapDescriptor() {
+    rhi::DescriptorWriter writer;
+    writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_sampler);
+    writer.submit(m_device->handle());
+}
 
 bool Renderer::isImportable(const std::filesystem::path& path) {
     const std::string extension = lowerExtension(path);
@@ -569,14 +662,35 @@ bool Renderer::recreateSwapchain() {
     return true;
 }
 
-void Renderer::updateCameraUniforms(u32 frameIndex) {
-    const vk::Extent2D extent = m_swapchain->extent();
-    const f32 aspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
+void Renderer::updateFrameUniforms(u32 frameIndex) {
+    // The aspect ratio of the image being rendered INTO, which is the viewport
+    // panel - not the window. Using the window's would stretch everything by
+    // however much the panel differs from it, and since the panel is docked
+    // beside other panels, it always does.
+    const f32 aspect = static_cast<f32>(m_viewportExtent.width) /
+                       static_cast<f32>(m_viewportExtent.height);
 
-    const CameraUniforms uniforms{
-        .view = m_camera.view(),
-        .projection = m_camera.projection(aspect),
-        .position = point(m_camera.position),
+    const Mat4 view = m_camera.view();
+    const Mat4 projection = m_camera.projection(aspect);
+    const Environment& env = m_environment;
+
+    const FrameUniforms uniforms{
+        .view = view,
+        .projection = projection,
+        // Inverted here rather than in the shader: it is the same matrix for
+        // every one of the two million pixels the sky covers, so computing it
+        // once per frame on the CPU is free by comparison.
+        .invViewProjection = inverse(projection * view),
+        .cameraPosition = point(m_camera.position),
+        .sunDirection = direction(env.sunDirection()),
+        .sunColor = Vec4{env.sunColor.x, env.sunColor.y, env.sunColor.z, 1.0f},
+        .skyZenithColor = Vec4{env.skyZenithColor.x, env.skyZenithColor.y, env.skyZenithColor.z, 1.0f},
+        .skyHorizonColor = Vec4{env.skyHorizonColor.x, env.skyHorizonColor.y, env.skyHorizonColor.z, 1.0f},
+        .groundColor = Vec4{env.groundColor.x, env.groundColor.y, env.groundColor.z, 1.0f},
+        .sunIntensity = env.sunIntensity,
+        .sunAngularRadius = radians(env.sunAngularRadiusDegrees),
+        .skyIntensity = env.skyIntensity,
+        .exposure = env.exposure,
     };
 
     // A plain memcpy into persistently mapped memory. No fence is needed: this
@@ -591,7 +705,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     const std::array<vk::ImageMemoryBarrier2, 2> toAttachment{
         vk::ImageMemoryBarrier2{
             // Waits for the fragment shader that sampled this image last frame,
-            // when the interface displayed it. Overwriting it before that read
+            // when the tone mapper read it. Overwriting it before that read
             // completes is exactly the hazard this barrier exists for.
             .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
             .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
@@ -601,7 +715,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_sceneColor.handle(),
+            .image = m_sceneHdr.handle(),
             .subresourceRange = kWholeColorImage,
         },
         vk::ImageMemoryBarrier2{
@@ -626,10 +740,10 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         .pImageMemoryBarriers = toAttachment.data(),
     });
 
+    // Black rather than a background colour: the sky pass below covers every
+    // pixel, so this is only ever seen if that pass fails - and a black frame
+    // says so much more clearly than a plausible-looking grey one.
     vk::ClearValue colorClear{};
-    colorClear.color.float32[0] = 0.055f;
-    colorClear.color.float32[1] = 0.058f;
-    colorClear.color.float32[2] = 0.065f;
     colorClear.color.float32[3] = 1.0f;
 
     vk::ClearValue depthClear{};
@@ -638,7 +752,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     depthClear.depthStencil.depth = 1.0f;
 
     const vk::RenderingAttachmentInfo colorAttachment{
-        .imageView = m_sceneColor.view(),
+        .imageView = m_sceneHdr.view(),
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
@@ -663,21 +777,42 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         .pDepthAttachment = &depthAttachment,
     });
 
+    const vk::Viewport viewport{
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<f32>(extent.width),
+        .height = static_cast<f32>(extent.height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    const vk::Rect2D scissor{.offset = {0, 0}, .extent = extent};
+    const vk::DescriptorSet frameSet = m_perFrame[m_frames->currentFrame()].cameraSet;
+
+    // --- sky ----------------------------------------------------------------
+    // First, so everything drawn afterwards has something to sit against. It
+    // writes no depth, so geometry is not rejected by it; and because it covers
+    // every pixel there is nothing for the colour clear above to do.
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_skyPipeline->handle());
+    cmd.setViewport(0, viewport);
+    cmd.setScissor(0, scissor);
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_skyPipeline->layout(), 0, frameSet, {});
+    if (m_resources.has(m_resources.fallbackMaterial())) {
+        // Set 1 is unused by the sky shader, but the layout declares it, so
+        // something compatible has to be bound before the draw is legal.
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_skyPipeline->layout(), 1,
+                               m_resources.material(m_resources.fallbackMaterial()).descriptorSet, {});
+    }
+
+    // Three vertices, no buffer: fullscreen.vert builds them from gl_VertexIndex.
+    cmd.draw(3, 1, 0, 0);
+
+    // --- geometry -----------------------------------------------------------
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_pipeline->handle());
 
-    cmd.setViewport(0, vk::Viewport{
-                           .x = 0.0f,
-                           .y = 0.0f,
-                           .width = static_cast<f32>(extent.width),
-                           .height = static_cast<f32>(extent.height),
-                           .minDepth = 0.0f,
-                           .maxDepth = 1.0f,
-                       });
+    cmd.setViewport(0, viewport);
+    cmd.setScissor(0, scissor);
 
-    cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = extent});
-
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 0,
-                           m_perFrame[m_frames->currentFrame()].cameraSet, {});
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 0, frameSet, {});
 
     // Materials are bound per drawable rather than once, because different
     // nodes use different ones. Consecutive nodes usually share a material
@@ -711,6 +846,8 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         const ObjectPushConstants push{
             .model = worldTransform,
             .baseColor = material.baseColorFactor,
+            .metallic = material.metallic,
+            .roughness = material.roughness,
             .highlight = id == m_selected ? 1.0f : 0.0f,
         };
         cmd.pushConstants<ObjectPushConstants>(
@@ -736,6 +873,8 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         const ObjectPushConstants push{
             .model = m_scene.worldTransform(id),
             .baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
+            .metallic = 0.0f,
+            .roughness = 1.0f,
             .highlight = strength,
         };
         cmd.pushConstants<ObjectPushConstants>(
@@ -751,7 +890,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         // The outline shader ignores both sets, but the layout still declares
         // them, so something compatible has to be bound or the draw is invalid.
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 0,
-                               m_perFrame[m_frames->currentFrame()].cameraSet, {});
+                               frameSet, {});
         if (m_resources.has(m_resources.fallbackMaterial())) {
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 1,
                                    m_resources.material(m_resources.fallbackMaterial()).descriptorSet, {});
@@ -764,6 +903,91 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         }
         drawOutline(m_selected, 1.0f);
     }
+
+    cmd.endRendering();
+}
+
+void Renderer::recordTonemap(vk::CommandBuffer cmd) {
+    const vk::Extent2D extent{m_viewportExtent.width, m_viewportExtent.height};
+
+    // Two images swap roles here: the HDR target stops being written and starts
+    // being read, and the displayable one does the opposite. Both transitions
+    // belong in one barrier - the driver can then schedule them together
+    // instead of draining the pipeline twice.
+    const std::array<vk::ImageMemoryBarrier2, 2> barriers{
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            // eColorAttachmentOptimal, not eUndefined: the contents are the
+            // whole point here. eUndefined tells the driver it may throw the
+            // pixels away, which is right for an image about to be overwritten
+            // and catastrophic for one about to be read.
+            .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_sceneHdr.handle(),
+            .subresourceRange = kWholeColorImage,
+        },
+        vk::ImageMemoryBarrier2{
+            // Waits for the interface's fragment shader, which sampled this
+            // image last frame to draw the viewport panel.
+            .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_sceneColor.handle(),
+            .subresourceRange = kWholeColorImage,
+        },
+    };
+
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = static_cast<u32>(barriers.size()),
+        .pImageMemoryBarriers = barriers.data(),
+    });
+
+    const vk::RenderingAttachmentInfo colorAttachment{
+        .imageView = m_sceneColor.view(),
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        // eDontCare rather than eClear: every pixel is written by the draw
+        // below, so clearing first would be wasted bandwidth.
+        .loadOp = vk::AttachmentLoadOp::eDontCare,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+    };
+
+    // No depth attachment at all - which is also why the tone mapping pipeline
+    // is built with depthFormat left undefined.
+    cmd.beginRendering(vk::RenderingInfo{
+        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachment,
+    });
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_tonemapPipeline->handle());
+    cmd.setViewport(0, vk::Viewport{
+                           .x = 0.0f,
+                           .y = 0.0f,
+                           .width = static_cast<f32>(extent.width),
+                           .height = static_cast<f32>(extent.height),
+                           .minDepth = 0.0f,
+                           .maxDepth = 1.0f,
+                       });
+    cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = extent});
+
+    // Set 0 for the exposure, set 1 for the image being tone mapped.
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_tonemapPipeline->layout(), 0,
+                           m_perFrame[m_frames->currentFrame()].cameraSet, {});
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_tonemapPipeline->layout(), 1,
+                           m_tonemapSet, {});
+
+    cmd.draw(3, 1, 0, 0);
 
     cmd.endRendering();
 
@@ -863,10 +1087,12 @@ void Renderer::recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex) {
 void Renderer::recordCommands(u32 imageIndex) {
     const vk::CommandBuffer cmd = m_frames->commandBuffer();
 
-    // Two passes: the scene into the off-screen target, then the interface into
-    // the window with that target as one of its textures. They cannot share a
-    // pass, because the second reads what the first wrote.
+    // Three passes, each reading what the one before it wrote - which is
+    // exactly why they cannot be merged. The scene goes into the HDR target,
+    // the tone mapper turns that into a displayable image, and the interface
+    // draws into the window with that image as one of its textures.
     recordSceneRendering(cmd);
+    recordTonemap(cmd);
     recordUiRendering(cmd, imageIndex);
 }
 
@@ -912,7 +1138,7 @@ void Renderer::drawFrame() {
     // exactly once even when several nodes share a parent.
     m_scene.updateWorldTransforms();
 
-    updateCameraUniforms(m_frames->currentFrame());
+    updateFrameUniforms(m_frames->currentFrame());
 
     m_frames->beginCommandBuffer();
     recordCommands(*imageIndex);

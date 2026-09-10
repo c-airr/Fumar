@@ -34,12 +34,25 @@ void createStarterScene(Renderer& renderer) {
     // A restrained palette: everything is a shade of grey except the pillar,
     // which is warmed slightly so it reads as a different material without
     // turning the scene into a colour chart.
+    //
+    // These are LINEAR reflectances, not the numbers a colour picker shows.
+    // Something that looks like mid-grey on screen reflects about 20% of the
+    // light hitting it, not 50 - the display's own curve accounts for the rest.
+    // Feed 0.6 in here and the surface behaves like fresh snow, which is what
+    // makes a scene look washed out no matter what the lighting does.
     const MaterialHandle floorMaterial =
-        renderer.createMaterial("Floor", Vec4{0.34f, 0.345f, 0.36f, 1.0f});
+        renderer.createMaterial("Floor", Vec4{0.17f, 0.175f, 0.185f, 1.0f});
     const MaterialHandle blockMaterial =
-        renderer.createMaterial("Block", Vec4{0.60f, 0.61f, 0.63f, 1.0f});
+        renderer.createMaterial("Block", Vec4{0.32f, 0.325f, 0.34f, 1.0f});
     const MaterialHandle pillarMaterial =
-        renderer.createMaterial("Pillar", Vec4{0.52f, 0.48f, 0.44f, 1.0f});
+        renderer.createMaterial("Pillar", Vec4{0.29f, 0.26f, 0.22f, 1.0f});
+
+    // Roughness is what makes them read as different materials at all: the
+    // floor scatters the sky evenly, the blocks hold a soft sheen, and the
+    // pillar is smooth enough to show where the sun is.
+    renderer.resources().material(floorMaterial).roughness = 0.85f;
+    renderer.resources().material(blockMaterial).roughness = 0.55f;
+    renderer.resources().material(pillarMaterial).roughness = 0.35f;
 
     const MeshHandle planeMesh = renderer.createPlaneMesh(14.0f);
     const MeshHandle cubeMesh = renderer.createCubeMesh();
@@ -255,6 +268,7 @@ int main() {
         drawViewportPanel(state, renderer, scripts);
         drawOutlinerPanel(state, renderer.scene());
         drawDetailsPanel(state, renderer.scene(), renderer, scripts);
+        drawWorldPanel(state, renderer);
         drawContentPanel(state, renderer);
         drawScriptsPanel(state, scripts);
         drawStatsPanel(state, renderer.scene(), renderer);

@@ -259,6 +259,8 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
             const auto& pbr = source.pbr_metallic_roughness;
             material.baseColorFactor = Vec4{pbr.base_color_factor[0], pbr.base_color_factor[1],
                                             pbr.base_color_factor[2], pbr.base_color_factor[3]};
+            material.metallic = pbr.metallic_factor;
+            material.roughness = pbr.roughness_factor;
 
             const cgltf_texture* texture = pbr.base_color_texture.texture;
             if (texture != nullptr && texture->image != nullptr) {
