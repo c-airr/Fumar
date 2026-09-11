@@ -107,7 +107,7 @@ add_subdirectory(editor)
 
 # The gameplay library. After the engine modules it links, and after the editor
 # only by convention - it is loaded at runtime, not linked into anything.
-add_subdirectory(game)
+add_subdirectory(scripts)
 
 # Development tools. Built, never installed.
 add_subdirectory(tools/native_smoke)
@@ -127,7 +127,10 @@ install(TARGETS fumar_game RUNTIME DESTINATION . LIBRARY DESTINATION .)
 install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/" DESTINATION shaders
         FILES_MATCHING PATTERN "*.spv")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/" DESTINATION assets OPTIONAL)
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/lua/" DESTINATION scripts OPTIONAL)
+# Mirrors the source layout, so the folder beside a released executable looks
+# like the one in the repository. Only Lua travels: the C++ is already inside
+# fumar_game, and a player has no compiler to do anything with a .cpp.
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/scripts/lua/" DESTINATION scripts/lua OPTIONAL)
 install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts/" DESTINATION fonts OPTIONAL)
 
 message(STATUS "fumar ${PROJECT_VERSION} | ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} | ${CMAKE_BUILD_TYPE}")

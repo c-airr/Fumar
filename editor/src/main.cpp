@@ -192,8 +192,9 @@ std::filesystem::path luaScriptDirectory() {
         return FUMAR_LUA_SOURCE_DIR;
     }
 #endif
-    // A release: there is no source tree, and the copy is the real thing.
-    return executableDirectory() / "scripts";
+    // A release: there is no source tree, and the copy is the real thing. The
+    // layout matches, so this is the same relative path either way.
+    return executableDirectory() / "scripts" / "lua";
 }
 
 /// Keyboard shortcuts that apply when no text field has focus.

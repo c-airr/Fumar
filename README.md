@@ -33,7 +33,7 @@ The idea behind this is simple: test whether an AI can actually build and mainta
 
 ```powershell
 # Build
-.\scripts\dev.ps1 cmake --build --preset windows-debug
+.\tools\dev.ps1 cmake --build --preset windows-debug
 
 # Run editor
 .\build\windows-debug\bin\fumar_editor.exe
@@ -78,7 +78,7 @@ Zadaniem tego projektu jest sprawdzenie, czy AI jest w ogóle w stanie pracować
 
 ```powershell
 # Zbuduj
-.\scripts\dev.ps1 cmake --build --preset windows-debug
+.\tools\dev.ps1 cmake --build --preset windows-debug
 
 # Odpal edytor
 .\build\windows-debug\bin\fumar_editor.exe

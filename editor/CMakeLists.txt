@@ -40,7 +40,7 @@ endif()
 # a development build works on the SOURCE, not on the copy made beside the
 # executable. Absent from a distributed build, where the copy is all there is.
 target_compile_definitions(fumar_editor PRIVATE
-    FUMAR_LUA_SOURCE_DIR="${CMAKE_SOURCE_DIR}/lua")
+    FUMAR_LUA_SOURCE_DIR="${CMAKE_SOURCE_DIR}/scripts/lua")
 
 # The interface fonts, from ImGui's own misc/fonts directory.
 if(EXISTS "${FUMAR_IMGUI_FONT_DIR}")
@@ -57,9 +57,10 @@ endif()
 # them. Copied rather than referenced in place so a built editor is
 # self-contained - and copy_directory_if_different means editing a script and
 # rebuilding picks it up without a full copy.
-if(EXISTS "${CMAKE_SOURCE_DIR}/lua")
+if(EXISTS "${CMAKE_SOURCE_DIR}/scripts/lua")
     add_custom_command(TARGET fumar_editor POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
-                "${CMAKE_SOURCE_DIR}/lua" "$<TARGET_FILE_DIR:fumar_editor>/scripts"
+                "${CMAKE_SOURCE_DIR}/scripts/lua"
+                "$<TARGET_FILE_DIR:fumar_editor>/scripts/lua"
         COMMENT "copying lua scripts")
 endif()

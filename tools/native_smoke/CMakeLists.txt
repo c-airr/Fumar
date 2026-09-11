@@ -8,7 +8,10 @@
 #  that implements them is unloaded. Every one of those breaks silently.
 #
 #  Run it by hand:
-#     build/<preset>/bin/native_smoke <bin dir> <path to game/src/components.cpp>
+#     build/<preset>/bin/native_smoke <bin dir> <path to a component source>
+#
+#  For example:
+#     build/windows-debug/bin/native_smoke build/windows-debug/bin #         scripts/cpp/public/components.h
 #
 #  It edits that source, rebuilds, checks the new code is what runs, and puts
 #  the file back - so the working tree is unchanged when it finishes.

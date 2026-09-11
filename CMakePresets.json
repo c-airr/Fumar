@@ -27,7 +27,7 @@
         "CMAKE_CXX_COMPILER": "clang-cl"
       },
       "vendor": {
-        "fumar": "Needs an MSVC environment (INCLUDE/LIB). Run through scripts/dev.ps1."
+        "fumar": "Needs an MSVC environment (INCLUDE/LIB). Run through tools/dev.ps1."
       }
     },
     {

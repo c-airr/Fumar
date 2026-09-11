@@ -46,7 +46,7 @@ endif()
 # where there is one set of quoting rules.
 target_compile_definitions(fumar_native PRIVATE
     FUMAR_GAME_BUILD_DIR="${CMAKE_BINARY_DIR}"
-    FUMAR_GAME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/game/src"
+    FUMAR_GAME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/scripts/cpp"
 
     # The repository root, which is what an IDE should be handed rather than a
     # lone .cpp: both Visual Studio and VS Code read CMakePresets.json from here
@@ -59,7 +59,7 @@ if(WIN32)
     # needs the MSVC environment (INCLUDE/LIB), which the editor process does
     # not have unless it happened to be launched from a developer shell.
     target_compile_definitions(fumar_native PRIVATE
-        FUMAR_GAME_DEV_SCRIPT="${CMAKE_SOURCE_DIR}/scripts/dev.ps1")
+        FUMAR_GAME_DEV_SCRIPT="${CMAKE_SOURCE_DIR}/tools/dev.ps1")
 endif()
 
 fumar_configure_target(fumar_native)

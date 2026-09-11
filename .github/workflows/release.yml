@@ -35,7 +35,7 @@ jobs:
 
       # Sets INCLUDE, LIB and PATH for the MSVC toolchain. CMake with Ninja does
       # not run vcvars itself, and without it the linker cannot find libcmt or
-      # kernel32 - the same reason scripts/dev.ps1 exists for local builds.
+      # kernel32 - the same reason tools/dev.ps1 exists for local builds.
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -147,7 +147,7 @@ jobs:
   #  shipping it at 23.04), and the alternatives are adding LunarG's apt
   #  repository or fetching a shaderc build by hand, both of which trade a
   #  known-good build for a fragile one. 24.04 is also exactly what
-  #  scripts/linux-build.sh is tested against locally, so CI and the local
+  #  tools/linux-build.sh is tested against locally, so CI and the local
   #  container agree.
   #
   #  The cost, stated plainly: the Linux package needs glibc 2.39, so Ubuntu
@@ -158,7 +158,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The same package list as scripts/linux-build.sh, which is what proves
+      # The same package list as tools/linux-build.sh, which is what proves
       # this list is right - it is used locally too, not only here.
       - name: Install build dependencies
         run: |
