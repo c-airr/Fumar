@@ -138,12 +138,22 @@ jobs:
   # ---------------------------------------------------------------------------
   #  Linux x64
   # ---------------------------------------------------------------------------
-  #  Pinned to 22.04 rather than ubuntu-latest, because the glibc a binary is
-  #  built against is the OLDEST it will run on. Building on the newest runner
-  #  available would produce something that refuses to start on a distribution
-  #  a year old.
+  #  Pinned to 24.04, and the version is a real decision rather than "whatever
+  #  is newest". The glibc a binary is built against is the OLDEST it will run
+  #  on, so the instinct is to build on the oldest runner available - 22.04,
+  #  which would reach back further.
+  #
+  #  That does not work here: glslc is not a package on 22.04 (Ubuntu started
+  #  shipping it at 23.04), and the alternatives are adding LunarG's apt
+  #  repository or fetching a shaderc build by hand, both of which trade a
+  #  known-good build for a fragile one. 24.04 is also exactly what
+  #  scripts/linux-build.sh is tested against locally, so CI and the local
+  #  container agree.
+  #
+  #  The cost, stated plainly: the Linux package needs glibc 2.39, so Ubuntu
+  #  24.04 or newer, Debian 13, Fedora 40.
   linux-x64:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
