@@ -20,7 +20,13 @@ out/
 
 # IDE / tooling
 .vs/
-.vscode/
+# Editor state is per-user, but two files in here are project configuration:
+# which extensions this project needs, and where clangd finds the compile
+# database. Without them "Open in VS Code" hands somebody a text editor with
+# every line underlined in red.
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 .idea/
 CMakeUserPresets.json
 compile_commands.json

@@ -1,0 +1,23 @@
+{
+  "cmake.useCMakePresets": "always",
+
+  // Where the compile database lands. CMAKE_EXPORT_COMPILE_COMMANDS is on for
+  // every preset (see the base preset in CMakePresets.json), so this is the
+  // one line that connects the build to the editor's understanding of the code.
+  // Change the preset name here if you build a different one.
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/windows-debug",
+    "--header-insertion=never",
+    "--background-index"
+  ],
+
+  "files.associations": {
+    "*.glsl": "glsl",
+    "*.vert": "glsl",
+    "*.frag": "glsl"
+  },
+
+  // Matches .clang-format, so saving does not reformat against the project's
+  // own style.
+  "editor.formatOnSave": false
+}

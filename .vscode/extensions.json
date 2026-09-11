@@ -1,0 +1,18 @@
+{
+  // Suggested when the folder is opened. CMake Tools reads CMakePresets.json,
+  // so the presets in this repository become the build configurations in the
+  // status bar - and clangd gets its compile_commands.json from the same place,
+  // which is what makes completion know about vk:: and fumar:: rather than
+  // underlining every line in red.
+  "recommendations": [
+    "ms-vscode.cmake-tools",
+    "llvm-vs-code-extensions.vscode-clangd"
+  ],
+
+  // The Microsoft C/C++ extension and clangd both try to provide IntelliSense
+  // and fight over it. clangd is the one that understands the compile database
+  // this project already generates.
+  "unwantedRecommendations": [
+    "ms-vscode.cpptools"
+  ]
+}
