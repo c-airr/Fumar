@@ -344,6 +344,13 @@ int main() {
     ScriptContext scriptContext;
     state.viewportTexture = ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
 
+    // Survives across frames so the cursor can be captured BEFORE ImGui's
+    // NewFrame - which is when the SDL backend would otherwise call
+    // SDL_ShowCursor and undo relative mode. Known one frame late on the
+    // first Play tick that takes the camera; that is preferable to fighting
+    // the cursor every frame.
+    bool scriptDrivesCamera = false;
+
     auto lastFrameTime = Clock::now();
 
     while (!window.shouldClose()) {
@@ -376,12 +383,24 @@ int main() {
                 ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
         }
 
-        // --- interface ------------------------------------------------------
-        // Before the frame is started, because ImGui reads these flags during
-        // NewFrame. While the cursor is captured the interface must not touch
-        // it: see ImGuiLayer::setInputCaptured.
+        // --- cursor capture -------------------------------------------------
+        // Decided and applied before NewFrame. ImGui's SDL backend updates the
+        // OS cursor during NewFrame; if relative mode is still off at that
+        // point it calls ShowCursor and the pointer comes back as a grey
+        // unbound arrow instead of disappearing. Last frame's hover and script
+        // ownership are enough: both already lag the UI by one frame elsewhere.
+        const bool wantRelative =
+            window.hasFocus() &&
+            ((scriptDrivesCamera && state.scriptsRunning) ||
+             (window.mouseButtonDown(MouseButton::Right) &&
+              (window.relativeMouse() || state.viewportHovered)));
+
+        if (wantRelative != window.relativeMouse()) {
+            window.setRelativeMouse(wantRelative);
+        }
         ui.setInputCaptured(window.relativeMouse());
 
+        // --- interface ------------------------------------------------------
         ui.beginFrame();
         ImGuizmo::BeginFrame();
 
@@ -432,7 +451,7 @@ int main() {
 
         // Scripts run only while playing, so an object being positioned by hand
         // does not fight a script moving it.
-        bool scriptDrivesCamera = false;
+        scriptDrivesCamera = false;
         if (state.scriptsRunning) {
             fillScriptInput(scriptContext.input, window);
 
@@ -456,20 +475,16 @@ int main() {
                 renderer.camera().yaw = scriptContext.camera.yaw;
                 renderer.camera().pitch = scriptContext.camera.pitch;
 
-                // A first-person script needs continuous mouse movement, which
-                // only exists once the cursor is captured. Escape releases it -
-                // Window handles that - so there is always a way out.
-                // Not gated on the cursor being over the viewport: once it is
-                // captured there is no meaningful cursor position any more, so
-                // asking whether it is over anything would answer differently
-                // every frame and the capture would flicker on and off.
+                // Same-frame grab for the first Play tick that claims the
+                // camera - next frame the pre-NewFrame path keeps it. Escape
+                // still releases via Window; the next frame then sees
+                // relativeMouse false until the script path asks again, which
+                // it does while focused so Play stays locked until Stop.
                 if (window.hasFocus() && !window.relativeMouse()) {
                     window.setRelativeMouse(true);
+                    ui.setInputCaptured(true);
                 }
             }
-        } else if (window.relativeMouse()) {
-            // Leaving play mode hands the cursor back.
-            window.setRelativeMouse(false);
         }
 
         // --- camera ---------------------------------------------------------
@@ -483,6 +498,8 @@ int main() {
         // Not while a script owns the view: two things writing the camera in
         // the same frame means whichever runs last wins, which looks like the
         // controls fighting each other.
+        // Capture itself is owned above (wantRelative); Camera::update only
+        // applies look/move while active and must not fight that decision.
         const bool cameraActive =
             !scriptDrivesCamera && window.hasFocus() &&
             (window.relativeMouse() ||
@@ -490,12 +507,6 @@ int main() {
 
         if (cameraActive) {
             renderer.camera().update(window, deltaSeconds);
-        } else if (!scriptDrivesCamera && window.relativeMouse()) {
-            // Must not release here while a script owns the view: that path
-            // captures the cursor just above, and clearing it again in the same
-            // frame left relative mode flickering - cursor visible (often grey)
-            // and free to leave the window instead of staying locked.
-            window.setRelativeMouse(false);
         }
 
         updatePicking(state, renderer, cameraActive);

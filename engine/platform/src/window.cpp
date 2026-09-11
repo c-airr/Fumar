@@ -82,6 +82,11 @@ Uint32 toButtonMask(MouseButton button) {
 Window::Window(const WindowDesc& desc) {
     acquireSdl();
 
+    // Activation clicks (the first click that focuses the window) are otherwise
+    // swallowed by Windows/SDL, so holding right mouse to look does nothing
+    // until a second press. Editors expect that first click to count.
+    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+
     SDL_WindowFlags flags = SDL_WINDOW_VULKAN;
     if (desc.resizable) {
         flags |= SDL_WINDOW_RESIZABLE;
@@ -235,13 +240,37 @@ void Window::setRelativeMouse(bool enabled) {
     if (m_window == nullptr) {
         return;
     }
+
+    // Actual relative mode only engages for the keyboard-focus window. Calling
+    // SetWindowRelativeMouseMode without that focus still latches the per-window
+    // flag and returns success, which made relativeMouse() lie and left the
+    // cursor visible but "captured" as far as the editor was concerned.
+    if (enabled && SDL_GetKeyboardFocus() != m_window) {
+        return;
+    }
+
     if (!SDL_SetWindowRelativeMouseMode(m_window, enabled)) {
         FUMAR_WARN("SDL_SetWindowRelativeMouseMode failed: {}", SDL_GetError());
+        return;
+    }
+
+    // Belt and braces with ImGui's SDL backend, which calls ShowCursor every
+    // frame unless NoMouseCursorChange is set. Relative mode should hide the
+    // pointer on its own; forcing the visibility bit keeps a mismatched
+    // ShowCursor from undoing it for a frame.
+    if (enabled) {
+        SDL_HideCursor();
+    } else {
+        SDL_ShowCursor();
     }
 }
 
 bool Window::relativeMouse() const {
-    return m_window != nullptr && SDL_GetWindowRelativeMouseMode(m_window);
+    // The window flag is only a request. Relative mode is live solely while
+    // this window also has keyboard focus - otherwise the cursor is free and
+    // callers must not pretend it is captured.
+    return m_window != nullptr && SDL_GetWindowRelativeMouseMode(m_window) &&
+           SDL_GetKeyboardFocus() == m_window;
 }
 
 bool Window::hasFocus() const {

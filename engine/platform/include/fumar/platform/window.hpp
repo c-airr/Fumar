@@ -113,8 +113,11 @@ public:
 
     /// Hides the cursor and frees it from the screen edges, so looking around
     /// never runs out of desk. This is what every first-person camera needs.
+    /// No-ops when the window lacks keyboard focus - SDL would otherwise latch
+    /// a sticky per-window flag without actually capturing the pointer.
     void setRelativeMouse(bool enabled);
 
+    /// True only while the pointer is actually captured, not merely requested.
     bool relativeMouse() const;
 
     /// Whether this window is the one receiving keyboard input.

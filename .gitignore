@@ -40,3 +40,6 @@ dist/
 
 # saved scenes are per-user work, not source
 scenes/
+
+# AI
+claude.md
