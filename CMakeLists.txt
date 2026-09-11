@@ -109,6 +109,9 @@ add_subdirectory(editor)
 # only by convention - it is loaded at runtime, not linked into anything.
 add_subdirectory(game)
 
+# Development tools. Built, never installed.
+add_subdirectory(tools/native_smoke)
+
 # --- distribution -----------------------------------------------------------
 # `cmake --install build/<preset> --prefix dist` produces a folder that can be
 # copied to another machine and run: the executable, the compiled shaders and

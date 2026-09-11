@@ -134,8 +134,14 @@ u32 NativeEngine::reload(Scene& scene) {
 
     std::filesystem::copy_file(built, loaded, std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
-        m_state->errors.push_back(
-            std::format("could not copy the game library: {}", ec.message()));
+        // Nearly always one thing: another fumar has the copy open. The name is
+        // fixed, so two instances cannot both reload, and a crashed one that
+        // never released the file looks identical. Worth naming, because the
+        // operating system's own message says only that a file is in use and
+        // leaves you to guess by what.
+        m_state->errors.push_back(std::format(
+            "could not replace '{}': {}. Another fumar is probably running and holding it.",
+            loaded.filename().string(), ec.message()));
         return 0;
     }
 
