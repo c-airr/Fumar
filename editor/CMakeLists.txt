@@ -36,6 +36,12 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/assets")
         COMMENT "copying assets")
 endif()
 
+# Where Lua scripts are edited. Same idea as FUMAR_GAME_SOURCE_DIR for C++:
+# a development build works on the SOURCE, not on the copy made beside the
+# executable. Absent from a distributed build, where the copy is all there is.
+target_compile_definitions(fumar_editor PRIVATE
+    FUMAR_LUA_SOURCE_DIR="${CMAKE_SOURCE_DIR}/lua")
+
 # The interface fonts, from ImGui's own misc/fonts directory.
 if(EXISTS "${FUMAR_IMGUI_FONT_DIR}")
     add_custom_command(TARGET fumar_editor POST_BUILD

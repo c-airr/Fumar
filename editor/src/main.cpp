@@ -174,6 +174,28 @@ void fillScriptInput(ScriptInput& input, const Window& window) {
     input.mouseDelta = window.mouseDelta();
 }
 
+/// Where Lua scripts are read from and written to.
+///
+/// In a development build this is the repository's lua/ directory, NOT the copy
+/// made beside the executable - and the difference is the difference between
+/// keeping your work and losing it. That copy exists so a distributed build is
+/// self-contained; it is refreshed from the source on every build, so an edit
+/// made there is overwritten the next time you compile, and it lives inside
+/// build/, which is ignored by git and deleted outright by a clean.
+///
+/// C++ components already follow this rule - the Compile button builds
+/// game/src, not a copy of it. Lua now does too.
+std::filesystem::path luaScriptDirectory() {
+#if defined(FUMAR_LUA_SOURCE_DIR)
+    std::error_code ec;
+    if (std::filesystem::exists(FUMAR_LUA_SOURCE_DIR, ec)) {
+        return FUMAR_LUA_SOURCE_DIR;
+    }
+#endif
+    // A release: there is no source tree, and the copy is the real thing.
+    return executableDirectory() / "scripts";
+}
+
 /// Keyboard shortcuts that apply when no text field has focus.
 /// Keyboard shortcuts that apply when no text field has focus.
 ///
@@ -330,7 +352,7 @@ int main() {
 
     // Scripts live next to the executable, beside the assets. Compiled once at
     // startup so anything already written is available immediately.
-    ScriptEngine scripts(executableDirectory() / "scripts");
+    ScriptEngine scripts(luaScriptDirectory());
     scripts.compileAll();
 
     // The other half of the scripting model. Loaded rather than built at
