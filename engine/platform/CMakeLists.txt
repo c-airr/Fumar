@@ -8,6 +8,7 @@
 
 add_library(fumar_platform STATIC
     src/paths.cpp
+    src/ide.cpp
     src/window.cpp)
 
 add_library(fumar::platform ALIAS fumar_platform)

@@ -46,7 +46,13 @@ endif()
 # where there is one set of quoting rules.
 target_compile_definitions(fumar_native PRIVATE
     FUMAR_GAME_BUILD_DIR="${CMAKE_BINARY_DIR}"
-    FUMAR_GAME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/game/src")
+    FUMAR_GAME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/game/src"
+
+    # The repository root, which is what an IDE should be handed rather than a
+    # lone .cpp: both Visual Studio and VS Code read CMakePresets.json from here
+    # and configure a real project from it. Given one file instead, they open a
+    # text window with no build system behind it and no completion.
+    FUMAR_PROJECT_DIR="${CMAKE_SOURCE_DIR}")
 
 if(WIN32)
     # Through dev.ps1, not straight to cmake. Building with Ninja and clang-cl

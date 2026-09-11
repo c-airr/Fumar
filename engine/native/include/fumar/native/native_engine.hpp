@@ -63,8 +63,15 @@ public:
 
     bool has(const std::string& name) const;
 
-    /// Where the source lives, so the editor can point at it.
+    /// Where the component source lives, so the editor can point at it.
     std::filesystem::path sourceDirectory() const;
+
+    /// The repository root - what to hand an IDE.
+    ///
+    /// Not sourceDirectory(): both Visual Studio and VS Code build a project
+    /// from the CMakePresets.json at the root, and opening a single .cpp
+    /// instead gets you a text window with no completion and no way to build.
+    std::filesystem::path projectDirectory() const;
 
     bool loaded() const;
 

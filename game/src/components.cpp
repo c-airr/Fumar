@@ -11,10 +11,10 @@
 // goes in the scene - a node's transform, its name, its children - which the
 // engine owns and reloading never touches.
 
-#include "fumar/native/component.hpp"
-
-#include "fumar/core/log.hpp"
-#include "fumar/core/math.hpp"
+// One include for everything gameplay needs: the Component interface, the
+// scene, maths, logging and input. The engine's own modules are split much more
+// finely than this - for the engine's benefit, not yours.
+#include <fumar.hpp>
 
 namespace {
 

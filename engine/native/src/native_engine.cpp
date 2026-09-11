@@ -311,6 +311,14 @@ bool NativeEngine::has(const std::string& name) const {
     return m_state->registry.factories.contains(name);
 }
 
+std::filesystem::path NativeEngine::projectDirectory() const {
+#if defined(FUMAR_PROJECT_DIR)
+    return FUMAR_PROJECT_DIR;
+#else
+    return {};
+#endif
+}
+
 std::filesystem::path NativeEngine::sourceDirectory() const {
 #if defined(FUMAR_GAME_SOURCE_DIR)
     return FUMAR_GAME_SOURCE_DIR;

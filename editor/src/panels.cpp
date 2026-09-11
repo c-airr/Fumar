@@ -2,6 +2,7 @@
 
 #include "fumar/core/log.hpp"
 #include "fumar/core/math.hpp"
+#include "fumar/platform/ide.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/render/renderer.hpp"
 #include "fumar/native/native_engine.hpp"
@@ -1212,8 +1213,22 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
     }
 
     if (ImGui::Begin("Scripts", &state.showScripts)) {
-        // --- the file list --------------------------------------------------
-        ImGui::BeginChild("##script_list", ImVec2(200.0f, 0.0f), ImGuiChildFlags_ResizeX);
+        // Errors get a strip along the bottom, and only when there are any -
+        // a permanent one would be dead space in the common case, and no strip
+        // at all is how the section below the text editor became unreachable
+        // the first time: two children asking for the remaining height leaves
+        // nothing for anything after them.
+        const usize errorCount = scripts.errors().size() + native.errors().size();
+        const f32 footer =
+            errorCount == 0
+                ? 0.0f
+                : (ImGui::GetTextLineHeightWithSpacing() * static_cast<f32>(errorCount + 1) +
+                   ImGui::GetStyle().ItemSpacing.y * 2.0f);
+
+        // --- left: what exists ------------------------------------------------
+        ImGui::BeginChild("##script_list", ImVec2(260.0f, -footer), ImGuiChildFlags_ResizeX);
+
+        ImGui::SeparatorText("Lua");
 
         ImGui::SetNextItemWidth(-1.0f);
         char nameBuffer[64];
@@ -1226,8 +1241,7 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
         const bool canCreate = !state.newScriptName.empty();
         ImGui::BeginDisabled(!canCreate);
         if (ImGui::Button("Create", ImVec2(-1.0f, 0.0f)) && canCreate) {
-            const std::filesystem::path path =
-                scripts.directory() / (state.newScriptName + ".lua");
+            const std::filesystem::path path = scripts.directory() / (state.newScriptName + ".lua");
 
             std::error_code ec;
             if (std::filesystem::exists(path, ec)) {
@@ -1246,8 +1260,6 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
         }
         ImGui::EndDisabled();
 
-        ImGui::Separator();
-
         if (scripts.scriptNames().empty()) {
             ImGui::TextDisabled("No scripts yet.");
         }
@@ -1257,17 +1269,70 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
             }
         }
 
+        // --- C++ --------------------------------------------------------------
+        // Listed rather than edited, and opened in a real IDE rather than in a
+        // text box here. A Lua file is text the engine reads, so the editor can
+        // own it end to end; a C++ file goes through a compiler, a linker and a
+        // debugger, and a text box would only hide where that work happens.
+        ImGui::SeparatorText("C++");
+
+        if (native.canRebuild()) {
+            if (ImGui::Button("Rebuild", ImVec2(-1.0f, 0.0f)) && state.sceneForRebuild != nullptr) {
+                native.rebuild(*state.sceneForRebuild);
+            }
+
+            // Probed once. Finding Visual Studio means running vswhere, which is
+            // a process launch - not something to do sixty times a second for a
+            // button that will not change its mind.
+            static const std::vector<CodeEditor> editors = findCodeEditors();
+
+            for (const CodeEditor& editor : editors) {
+                if (ImGui::Button(("Open in " + editor.name).c_str(), ImVec2(-1.0f, 0.0f))) {
+                    // The project root, not the .cpp. Both read
+                    // CMakePresets.json from there and build a real project out
+                    // of it; handed a single file they open a text window with
+                    // no completion and no way to compile.
+                    openInEditor(editor, editor.wantsProjectRoot ? native.projectDirectory()
+                                                                 : native.sourceDirectory());
+                }
+            }
+
+            if (ImGui::Button("Show files", ImVec2(-1.0f, 0.0f))) {
+                revealInFileBrowser(native.sourceDirectory());
+            }
+
+            if (editors.empty()) {
+                ImGui::TextDisabled("No IDE found on this machine.");
+            }
+        } else {
+            ImGui::TextDisabled("No build directory: this is a");
+            ImGui::TextDisabled("distributed build, so there is no");
+            ImGui::TextDisabled("compiler to rebuild with.");
+        }
+
+        if (native.componentNames().empty()) {
+            ImGui::TextDisabled("No components registered.");
+        }
+        for (const std::string& name : native.componentNames()) {
+            // Not selectable: there is nothing to open here, only something to
+            // attach in the details panel.
+            ImGui::BulletText("%s", name.c_str());
+        }
+
         ImGui::EndChild();
         ImGui::SameLine();
 
-        // --- the text ---------------------------------------------------------
-        ImGui::BeginChild("##script_text", ImVec2(0.0f, 0.0f));
+        // --- right: the Lua text ----------------------------------------------
+        ImGui::BeginChild("##script_text", ImVec2(0.0f, -footer));
 
         if (state.openScript.empty()) {
             ImGui::TextDisabled("Select a script on the left, or create one.");
             ImGui::Spacing();
-            ImGui::TextDisabled("A script declares on_start(node) and on_update(node, dt).");
-            ImGui::TextDisabled("Attach it to an object in Details, then press Play.");
+            ImGui::TextDisabled("Lua: a script declares on_start(node) and on_update(node, dt).");
+            ImGui::TextDisabled("C++: a class derives from fumar::Component and is registered");
+            ImGui::TextDisabled("at the bottom of game/src/components.cpp.");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Either way, attach it in Details and press Play.");
         } else {
             if (ImGui::Button("Save")) {
                 saveScriptFromBuffer(state, scripts);
@@ -1303,48 +1368,18 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
 
         ImGui::EndChild();
 
-        // --- C++ --------------------------------------------------------------
-        // Listed rather than edited. A Lua file is text the engine reads, so the
-        // editor can own it end to end; a C++ file goes through a compiler and a
-        // linker, and putting a text box here would only hide where the real
-        // work happens.
-        ImGui::SeparatorText("C++ components");
-
-        if (native.canRebuild()) {
-            if (ImGui::Button("Rebuild C++") && state.sceneForRebuild != nullptr) {
-                native.rebuild(*state.sceneForRebuild);
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", native.sourceDirectory().string().c_str());
-        } else {
-            ImGui::TextDisabled("No build directory: this is a distributed build,");
-            ImGui::TextDisabled("so there is no compiler to rebuild with.");
-        }
-
-        if (native.componentNames().empty()) {
-            ImGui::TextDisabled("The game library registered nothing.");
-        }
-        for (const std::string& name : native.componentNames()) {
-            ImGui::BulletText("%s", name.c_str());
-        }
-
-        if (!native.errors().empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, kError);
-            for (const std::string& error : native.errors()) {
-                ImGui::TextWrapped("%s", error.c_str());
-            }
-            ImGui::PopStyleColor();
-        }
-
         // --- errors -----------------------------------------------------------
-        if (!scripts.errors().empty()) {
+        if (errorCount > 0) {
             ImGui::SeparatorText("Errors");
 
-            // Wrapped, because a Lua error carries a file and line and is
+            // Wrapped, because a Lua error carries a file and a line and is
             // routinely wider than the panel.
             ImGui::PushStyleColor(ImGuiCol_Text, kError);
             for (const ScriptError& error : scripts.errors()) {
                 ImGui::TextWrapped("%s: %s", error.script.c_str(), error.message.c_str());
+            }
+            for (const std::string& error : native.errors()) {
+                ImGui::TextWrapped("C++: %s", error.c_str());
             }
             ImGui::PopStyleColor();
         }
