@@ -16,6 +16,7 @@ namespace fumar {
 
 class ImGuiLayer;
 class Renderer;
+class NativeEngine;
 class ScriptEngine;
 class Window;
 
@@ -76,6 +77,11 @@ struct EditorState {
 
     /// Set from the menu to rebuild the default panel arrangement.
     bool resetLayoutRequested = false;
+
+    /// The scene, for the handful of panel actions that need it but are not
+    /// handed it - rebuilding the game library has to drop every component
+    /// instance, and those live per node.
+    Scene* sceneForRebuild = nullptr;
 
     /// Frames left to keep asking for Content to be the open tab.
     ///
@@ -158,7 +164,8 @@ struct EditorState {
 void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirectory);
 
 /// The scene image, the toolbar and the gizmo.
-void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts);
+void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts,
+                       NativeEngine& native);
 
 /// The scene tree. Click to select, right-click for actions.
 ///
@@ -172,7 +179,7 @@ void drawOutlinerPanel(EditorState& state, Renderer& renderer);
 /// material affects every object using it, which is exactly how a material
 /// asset is supposed to behave.
 void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
-                      const ScriptEngine& scripts);
+                      const ScriptEngine& scripts, const NativeEngine& native);
 
 /// The sun, the sky and the exposure. Drawn INSIDE the details panel when
 /// nothing is selected, rather than as a panel of its own: an inspector with
@@ -187,6 +194,6 @@ void drawContentPanel(EditorState& state, Renderer& renderer);
 void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& renderer);
 
 /// The script list, the Compile button and any compile errors.
-void drawScriptsPanel(EditorState& state, ScriptEngine& scripts);
+void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& native);
 
 } // namespace fumar

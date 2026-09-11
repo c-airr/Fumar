@@ -16,6 +16,7 @@ target_link_libraries(fumar_editor PRIVATE
     fumar::platform
     fumar::render
     fumar::scene
+    fumar::native
     fumar::script
     fumar::ui)
 

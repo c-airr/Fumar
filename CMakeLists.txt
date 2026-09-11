@@ -100,15 +100,25 @@ add_subdirectory(engine/platform)
 add_subdirectory(engine/rhi)
 add_subdirectory(engine/render)
 add_subdirectory(engine/script)
+add_subdirectory(engine/native)
 add_subdirectory(engine/ui)
 add_subdirectory(sandbox)
 add_subdirectory(editor)
+
+# The gameplay library. After the engine modules it links, and after the editor
+# only by convention - it is loaded at runtime, not linked into anything.
+add_subdirectory(game)
 
 # --- distribution -----------------------------------------------------------
 # `cmake --install build/<preset> --prefix dist` produces a folder that can be
 # copied to another machine and run: the executable, the compiled shaders and
 # whatever assets exist, and nothing else.
 install(TARGETS fumar_editor sandbox RUNTIME DESTINATION .)
+
+# The game library travels with the editor: it is loaded at startup, so a
+# distribution without it has no C++ gameplay. RUNTIME covers the .dll on
+# Windows, LIBRARY the .so on Linux.
+install(TARGETS fumar_game RUNTIME DESTINATION . LIBRARY DESTINATION .)
 # FILES_MATCHING keeps the .d dependency files glslc leaves behind out of the
 # distribution - they are a build artifact, useless at runtime.
 install(DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/" DESTINATION shaders

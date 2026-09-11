@@ -51,6 +51,16 @@ struct Node {
     /// things and the type should say which.
     std::optional<Light> light;
 
+    /// Name of the C++ component driving this node, or empty for none.
+    ///
+    /// A name, for the same reason the Lua script is one: the scene has to be
+    /// saveable and loadable without a compiler, a loaded library, or any of
+    /// the machinery that turns this string into behaviour.
+    ///
+    /// Separate from `script` rather than sharing a field, so a node can have
+    /// both - which is the point of having two languages at all.
+    std::string component;
+
     /// Name of the Lua script driving this node, or empty for none.
     ///
     /// A name rather than a pointer or a compiled chunk: the scene has to stay

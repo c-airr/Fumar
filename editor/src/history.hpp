@@ -19,6 +19,7 @@ struct NodeRecord {
     MeshHandle mesh;
     MaterialHandle material;
     std::string script;
+    std::string component;
     std::optional<Light> light;
     bool visible = true;
 

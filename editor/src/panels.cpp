@@ -4,6 +4,7 @@
 #include "fumar/core/math.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/render/renderer.hpp"
+#include "fumar/native/native_engine.hpp"
 #include "fumar/script/script_engine.hpp"
 #include "fumar/ui/imgui_layer.hpp"
 
@@ -486,7 +487,8 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
     ImGui::End();
 }
 
-void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts) {
+void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scripts,
+                       NativeEngine& native) {
     // No padding: the scene image should meet the panel edge, the way a
     // viewport does in every editor.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -550,8 +552,12 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     const f32 rightGroupWidth = 190.0f;
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - rightGroupWidth + ImGui::GetCursorPosX());
 
-    if (toolButton("Compile", false, "Recompile every script (F5)")) {
+    if (toolButton("Compile", false,
+                   "Recompile the Lua scripts and rebuild the C++ game library (F5).\n"
+                   "Lua takes milliseconds; C++ takes seconds, and the editor\n"
+                   "stops while the compiler runs.")) {
         scripts.compileAll();
+        native.rebuild(renderer.scene());
     }
     ImGui::SameLine();
 
@@ -712,7 +718,7 @@ void drawOutlinerPanel(EditorState& state, Renderer& renderer) {
 }
 
 void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
-                      const ScriptEngine& scripts) {
+                      const ScriptEngine& scripts, const NativeEngine& native) {
     if (!state.showDetails) {
         return;
     }
@@ -897,6 +903,28 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         if (!node.script.empty() && !scripts.has(node.script)) {
             ImGui::TextColored(kError, "'%s' is not compiled",
                                node.script.c_str());
+        }
+
+        // A second, independent slot. A node can carry both - which is the
+        // point of having two languages rather than a choice between them.
+        const std::string currentComponent = node.component.empty() ? "(none)" : node.component;
+        if (ImGui::BeginCombo("C++", currentComponent.c_str())) {
+            if (ImGui::Selectable("(none)", node.component.empty())) {
+                state.history.record(scene, state.selected);
+                node.component.clear();
+            }
+            for (const std::string& name : native.componentNames()) {
+                if (ImGui::Selectable(name.c_str(), node.component == name)) {
+                    state.history.record(scene, state.selected);
+                    node.component = name;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (!node.component.empty() && !native.has(node.component)) {
+            ImGui::TextColored(kError, "'%s' is not in the loaded game library",
+                               node.component.c_str());
         }
 
         ImGui::SeparatorText("Hierarchy");
@@ -1178,7 +1206,7 @@ bool saveScriptFromBuffer(EditorState& state, const ScriptEngine& scripts) {
 
 } // namespace
 
-void drawScriptsPanel(EditorState& state, ScriptEngine& scripts) {
+void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& native) {
     if (!state.showScripts) {
         return;
     }
@@ -1274,6 +1302,39 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts) {
         }
 
         ImGui::EndChild();
+
+        // --- C++ --------------------------------------------------------------
+        // Listed rather than edited. A Lua file is text the engine reads, so the
+        // editor can own it end to end; a C++ file goes through a compiler and a
+        // linker, and putting a text box here would only hide where the real
+        // work happens.
+        ImGui::SeparatorText("C++ components");
+
+        if (native.canRebuild()) {
+            if (ImGui::Button("Rebuild C++") && state.sceneForRebuild != nullptr) {
+                native.rebuild(*state.sceneForRebuild);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", native.sourceDirectory().string().c_str());
+        } else {
+            ImGui::TextDisabled("No build directory: this is a distributed build,");
+            ImGui::TextDisabled("so there is no compiler to rebuild with.");
+        }
+
+        if (native.componentNames().empty()) {
+            ImGui::TextDisabled("The game library registered nothing.");
+        }
+        for (const std::string& name : native.componentNames()) {
+            ImGui::BulletText("%s", name.c_str());
+        }
+
+        if (!native.errors().empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kError);
+            for (const std::string& error : native.errors()) {
+                ImGui::TextWrapped("%s", error.c_str());
+            }
+            ImGui::PopStyleColor();
+        }
 
         // --- errors -----------------------------------------------------------
         if (!scripts.errors().empty()) {

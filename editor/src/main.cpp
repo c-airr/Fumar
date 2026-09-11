@@ -8,6 +8,7 @@
 #include "fumar/render/renderer.hpp"
 #include "fumar/render/scene_io.hpp"
 #include "fumar/scene/scene.hpp"
+#include "fumar/native/native_engine.hpp"
 #include "fumar/script/script_engine.hpp"
 #include "fumar/ui/imgui_layer.hpp"
 
@@ -130,6 +131,12 @@ void createStarterScene(Renderer& renderer) {
         const NodeId model = renderer.loadModel(modelPath);
         if (model != kInvalidNode) {
             scene.node(model).transform.position = Vec3{0.0f, 4.2f, 0.0f};
+
+            // A C++ component, while a block above carries a Lua script. Both
+            // run in the same frame off the same context, which is the whole
+            // claim the dual scripting model makes - press Play and watch one
+            // object driven from each side.
+            scene.node(model).component = "Spinner";
         }
     }
 
@@ -326,6 +333,12 @@ int main() {
     ScriptEngine scripts(executableDirectory() / "scripts");
     scripts.compileAll();
 
+    // The other half of the scripting model. Loaded rather than built at
+    // startup: a rebuild takes seconds, and the library sitting beside the
+    // executable is already current on a fresh build.
+    NativeEngine native(executableDirectory());
+    native.reload(renderer.scene());
+
     // The renderer records this after the scene, into the window - the scene
     // itself goes to an off-screen image that the viewport panel displays.
     renderer.setOverlay([&ui](vk::CommandBuffer cmd) { ui.record(cmd); });
@@ -342,6 +355,7 @@ int main() {
     // Rebuilt each frame except for the camera, which a script may keep
     // adjusting across frames - so it lives out here rather than in the loop.
     ScriptContext scriptContext;
+    state.sceneForRebuild = &renderer.scene();
     state.viewportTexture = ui.registerTexture(renderer.viewportImageView(), renderer.viewportSampler());
 
     // Survives across frames so the cursor can be captured BEFORE ImGui's
@@ -405,12 +419,12 @@ int main() {
         ImGuizmo::BeginFrame();
 
         drawDockspace(state, sceneDirectory);
-        drawViewportPanel(state, renderer, scripts);
+        drawViewportPanel(state, renderer, scripts, native);
         drawOutlinerPanel(state, renderer);
-        drawDetailsPanel(state, renderer.scene(), renderer, scripts);
+        drawDetailsPanel(state, renderer.scene(), renderer, scripts, native);
         // The order here becomes the order of the tabs along the bottom.
         drawContentPanel(state, renderer);
-        drawScriptsPanel(state, scripts);
+        drawScriptsPanel(state, scripts, native);
         drawStatsPanel(state, renderer.scene(), renderer);
 
         // Which of them is in FRONT is a separate question, decided by whichever
@@ -438,6 +452,7 @@ int main() {
         // F5 recompiles, the way every editor with a build step does it.
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
             scripts.compileAll();
+            native.rebuild(renderer.scene());
         }
 
         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
@@ -468,6 +483,10 @@ int main() {
             };
 
             scripts.update(renderer.scene(), scriptContext, deltaSeconds);
+
+            // After the Lua pass and sharing its context, so a C++ component and
+            // a Lua script on two different nodes see the same frame.
+            native.update(renderer.scene(), scriptContext, deltaSeconds);
 
             if (scriptContext.camera.controlled) {
                 scriptDrivesCamera = true;
@@ -565,6 +584,8 @@ int main() {
                 state.clipboard = SceneSnapshot{};
 
                 scripts.restart();
+            native.restart();
+                native.restart();
             }
         }
 
@@ -578,6 +599,7 @@ int main() {
             state.history.clear();
             state.clipboard = SceneSnapshot{};
             scripts.restart();
+            native.restart();
         }
     }
 

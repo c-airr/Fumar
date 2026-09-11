@@ -191,6 +191,9 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         if (!node.script.empty()) {
             entry["script"] = node.script;
         }
+        if (!node.component.empty()) {
+            entry["component"] = node.component;
+        }
         if (node.mesh.valid()) {
             entry["mesh"] = node.mesh.index;
         }
@@ -393,6 +396,7 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         node.transform.scale = vec3From(entry.value("scale", Json::array()), Vec3{1.0f, 1.0f, 1.0f});
         node.visible = entry.value("visible", true);
         node.script = entry.value("script", std::string{});
+        node.component = entry.value("component", std::string{});
 
         if (entry.contains("light")) {
             const Json& source = entry["light"];

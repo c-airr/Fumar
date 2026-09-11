@@ -18,6 +18,7 @@ void captureRecursive(const Scene& scene, NodeId id, i32 parentIndex, NodeId sel
         .mesh = node.mesh,
         .material = node.material,
         .script = node.script,
+        .component = node.component,
         .light = node.light,
         .visible = node.visible,
         .parent = parentIndex,
@@ -67,6 +68,7 @@ std::vector<NodeId> rebuild(Scene& scene, const SceneSnapshot& snapshot, NodeId 
         node.mesh = record.mesh;
         node.material = record.material;
         node.script = record.script;
+        node.component = record.component;
         node.light = record.light;
         node.visible = record.visible;
     }
