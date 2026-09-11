@@ -56,7 +56,17 @@ function(fumar_configure_target TARGET)
     set_target_properties(${TARGET} PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF)
+        CXX_EXTENSIONS OFF
+
+        # Every module compiled as position-independent code, because the game
+        # library is SHARED and links several of them. On ELF platforms a
+        # shared object may only contain code that can be mapped at any
+        # address; a static library built without -fPIC cannot go inside one,
+        # and the linker says so in the least helpful way available
+        # ("relocation R_X86_64_PC32 ... can not be used when making a shared
+        # object"). Windows has no equivalent restriction, which is why this
+        # only ever shows up on Linux.
+        POSITION_INDEPENDENT_CODE ON)
     if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         # /EHsc - C++ exceptions on, extern "C" functions assumed not to throw.
         #         Required because vulkan.hpp reports errors through exceptions.
