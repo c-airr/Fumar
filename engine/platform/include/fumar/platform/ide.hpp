@@ -21,6 +21,14 @@ struct CodeEditor {
     /// window with no project behind it and no IntelliSense. VS Code is happy
     /// either way but is far more useful given the folder, for the same reason.
     bool wantsProjectRoot = true;
+
+    /// Arguments that go before the path.
+    ///
+    /// VS Code gets --new-window here, and it matters more than it looks:
+    /// without it, a VS Code that is already open REPLACES the folder in the
+    /// window you were working in. Nothing new appears, your own project is
+    /// gone, and the button looks like it did nothing at all.
+    std::vector<std::string> arguments;
 };
 
 /// Editors found on this machine, most capable first. Empty is normal.

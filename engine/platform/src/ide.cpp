@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <system_error>
+#include <vector>
 
 namespace fumar {
 namespace {
@@ -139,7 +140,7 @@ std::vector<CodeEditor> findCodeEditors() {
         // The version is in the path rather than reported by vswhere's
         // productPath, so the name stays generic instead of claiming a year it
         // might have guessed wrong.
-        found.push_back(CodeEditor{"Visual Studio", devenv, true});
+        found.push_back(CodeEditor{"Visual Studio", devenv, true, {}});
     }
 
     // The per-user install, then the machine-wide one, then PATH. In that order
@@ -150,22 +151,22 @@ std::vector<CodeEditor> findCodeEditors() {
     };
     for (const std::filesystem::path& path : vscodePaths) {
         if (pathExists(path)) {
-            found.push_back(CodeEditor{"VS Code", path, true});
+            found.push_back(CodeEditor{"VS Code", path, true, {"--new-window"}});
             break;
         }
     }
     if (found.empty() || found.back().name != "VS Code") {
         if (const std::filesystem::path path = findOnPath("code.cmd"); !path.empty()) {
-            found.push_back(CodeEditor{"VS Code", path, true});
+            found.push_back(CodeEditor{"VS Code", path, true, {"--new-window"}});
         }
     }
 #else
     if (const std::filesystem::path path = findOnPath("code"); !path.empty()) {
-        found.push_back(CodeEditor{"VS Code", path, true});
+        found.push_back(CodeEditor{"VS Code", path, true, {"--new-window"}});
     }
     for (const char* name : {"clion", "subl", "gedit"}) {
         if (const std::filesystem::path path = findOnPath(name); !path.empty()) {
-            found.push_back(CodeEditor{name, path, true});
+            found.push_back(CodeEditor{name, path, true, {}});
         }
     }
 #endif
@@ -178,6 +179,14 @@ bool openInEditor(const CodeEditor& editor, const std::filesystem::path& path) {
         return false;
     }
 
+    // An empty path would be passed straight through as an empty argument, and
+    // an editor handed one opens with no folder - which looks exactly like the
+    // button having done nothing but start the application.
+    if (path.empty()) {
+        FUMAR_WARN("nothing to open in {}: the path is empty", editor.name);
+        return false;
+    }
+
     const std::string launcher = editor.launcher.string();
     const std::string target = path.string();
 
@@ -185,7 +194,13 @@ bool openInEditor(const CodeEditor& editor, const std::filesystem::path& path) {
     // wants. SDL's process API rather than std::system: system() goes through a
     // shell, which on Windows means a console window flashing up in front of
     // whatever the user was doing.
-    const std::array<const char*, 3> args{launcher.c_str(), target.c_str(), nullptr};
+    std::vector<const char*> args;
+    args.push_back(launcher.c_str());
+    for (const std::string& argument : editor.arguments) {
+        args.push_back(argument.c_str());
+    }
+    args.push_back(target.c_str());
+    args.push_back(nullptr);
 
     SDL_Process* process = SDL_CreateProcess(args.data(), false);
     if (process == nullptr) {
@@ -202,16 +217,41 @@ bool openInEditor(const CodeEditor& editor, const std::filesystem::path& path) {
 }
 
 bool revealInFileBrowser(const std::filesystem::path& path) {
-    // A file: URL through the desktop's own handler, which is Explorer on
-    // Windows and whatever xdg-open resolves to elsewhere. Spelling out
-    // explorer.exe and nautilus and dolphin by hand would be a list that is
-    // wrong on somebody's machine from the day it is written.
-    std::string url = "file:///" + path.generic_string();
-
-    if (!SDL_OpenURL(url.c_str())) {
-        FUMAR_WARN("could not open '{}': {}", path.string(), SDL_GetError());
+    if (path.empty()) {
         return false;
     }
+
+    // The file manager by name, not SDL_OpenURL with a file:// address.
+    //
+    // SDL_OpenURL hands the string to whatever the desktop has registered for
+    // that scheme, and on Windows the handler for file: is frequently the
+    // default BROWSER - so asking to see a folder opens a tab showing a
+    // directory listing, which is not what anybody meant. Each platform has one
+    // obvious command for this and they are worth naming.
+    const std::string target = path.string();
+
+#if defined(_WIN32)
+    const std::array<const char*, 3> args{"explorer.exe", target.c_str(), nullptr};
+#elif defined(__APPLE__)
+    const std::array<const char*, 3> args{"/usr/bin/open", target.c_str(), nullptr};
+#else
+    // xdg-open rather than nautilus or dolphin by name: which file manager is
+    // installed is the desktop environment's business, and a list written here
+    // would be wrong on somebody's machine from the day it was written.
+    const std::array<const char*, 3> args{"xdg-open", target.c_str(), nullptr};
+#endif
+
+    SDL_Process* process = SDL_CreateProcess(args.data(), false);
+    if (process == nullptr) {
+        FUMAR_WARN("could not show '{}': {}", target, SDL_GetError());
+        return false;
+    }
+
+    // Not waited on. explorer.exe in particular returns a non-zero exit code
+    // even when it worked, so its result would be a lie either way.
+    SDL_DestroyProcess(process);
+
+    FUMAR_INFO("showing '{}'", target);
     return true;
 }
 

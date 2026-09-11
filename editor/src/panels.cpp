@@ -239,16 +239,22 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
     const ImGuiID rightBottom =
         ImGui::DockBuilderSplitNode(rightTop, ImGuiDir_Down, 0.58f, nullptr, &rightTop);
 
+    // Scripts gets the left edge to itself. It is the one panel you work IN
+    // rather than glance at - a text editor squeezed into a strip along the
+    // bottom is a text editor nobody writes in.
+    const ImGuiID left =
+        ImGui::DockBuilderSplitNode(remainder, ImGuiDir_Left, 0.22f, nullptr, &remainder);
+
     // Then a strip along the bottom of what remains, under the viewport.
     const ImGuiID bottom =
         ImGui::DockBuilderSplitNode(remainder, ImGuiDir_Down, 0.30f, nullptr, &remainder);
 
     ImGui::DockBuilderDockWindow("World Outliner", rightTop);
     ImGui::DockBuilderDockWindow("Details", rightBottom);
+    ImGui::DockBuilderDockWindow("Scripts", left);
 
     // Tab order, left to right.
     ImGui::DockBuilderDockWindow("Content", bottom);
-    ImGui::DockBuilderDockWindow("Scripts", bottom);
     ImGui::DockBuilderDockWindow("Statistics", bottom);
 
     // Everything not carved off above.
@@ -416,6 +422,18 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
             ImGui::Separator();
             if (ImGui::MenuItem("Save", "Ctrl+S")) {
                 state.saveRequested = true;
+            }
+
+            ImGui::Separator();
+            if (ImGui::MenuItem("Open project folder")) {
+                // Everything the editor reads and writes at runtime lives in
+                // one place beside the executable: scripts/, scenes/, assets/.
+                // One entry that opens all of it beats three that each open a
+                // third of it.
+                revealInFileBrowser(executableDirectory());
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", executableDirectory().string().c_str());
             }
             ImGui::EndMenu();
         }
@@ -1225,8 +1243,24 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
                 : (ImGui::GetTextLineHeightWithSpacing() * static_cast<f32>(errorCount + 1) +
                    ImGui::GetStyle().ItemSpacing.y * 2.0f);
 
-        // --- left: what exists ------------------------------------------------
-        ImGui::BeginChild("##script_list", ImVec2(260.0f, -footer), ImGuiChildFlags_ResizeX);
+        // Side by side when there is room, stacked when there is not. The panel
+        // is docked down the left edge by default, which is nowhere near wide
+        // enough for two columns - and a layout that only works at one width is
+        // a layout that breaks the first time somebody drags a splitter.
+        const bool narrow = ImGui::GetContentRegionAvail().x < 560.0f;
+
+        // --- what exists --------------------------------------------------
+        // Stacked, the split follows what you are doing: with a script open the
+        // text wants the room, with nothing open the list does - the half below
+        // it would only be holding four lines of explanation.
+        const f32 listShare = state.openScript.empty() ? 0.78f : 0.38f;
+        const ImVec2 listSize = narrow
+                                    ? ImVec2(0.0f, ImGui::GetContentRegionAvail().y * listShare)
+                                    : ImVec2(260.0f, -footer);
+        const ImGuiChildFlags listFlags = narrow ? ImGuiChildFlags_ResizeY
+                                                 : ImGuiChildFlags_ResizeX;
+
+        ImGui::BeginChild("##script_list", listSize, listFlags);
 
         ImGui::SeparatorText("Lua");
 
@@ -1259,6 +1293,13 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
             }
         }
         ImGui::EndDisabled();
+
+        if (ImGui::Button("Open folder", ImVec2(-1.0f, 0.0f))) {
+            revealInFileBrowser(scripts.directory());
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", scripts.directory().string().c_str());
+        }
 
         if (scripts.scriptNames().empty()) {
             ImGui::TextDisabled("No scripts yet.");
@@ -1320,19 +1361,23 @@ void drawScriptsPanel(EditorState& state, ScriptEngine& scripts, NativeEngine& n
         }
 
         ImGui::EndChild();
-        ImGui::SameLine();
+        if (!narrow) {
+            ImGui::SameLine();
+        }
 
-        // --- right: the Lua text ----------------------------------------------
+        // --- the Lua text -----------------------------------------------------
         ImGui::BeginChild("##script_text", ImVec2(0.0f, -footer));
 
         if (state.openScript.empty()) {
-            ImGui::TextDisabled("Select a script on the left, or create one.");
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("Pick a script above, or create one.");
             ImGui::Spacing();
             ImGui::TextDisabled("Lua: a script declares on_start(node) and on_update(node, dt).");
-            ImGui::TextDisabled("C++: a class derives from fumar::Component and is registered");
-            ImGui::TextDisabled("at the bottom of game/src/components.cpp.");
+            ImGui::TextDisabled("C++: a class derives from fumar::Component and is registered at "
+                                "the bottom of game/src/components.cpp.");
             ImGui::Spacing();
             ImGui::TextDisabled("Either way, attach it in Details and press Play.");
+            ImGui::PopTextWrapPos();
         } else {
             if (ImGui::Button("Save")) {
                 saveScriptFromBuffer(state, scripts);
