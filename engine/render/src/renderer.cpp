@@ -57,6 +57,16 @@ constexpr u32 kMaxLights = 16;
 /// reflections.
 constexpr u32 kMaxInstances = 1024;
 
+/// How many textures a ray can reach. Must match kMaxSceneTextures in
+/// shaders/raytrace.glsl.
+///
+/// A fixed array rather than one sized at runtime: a variable-count descriptor
+/// binding is another feature to require and another way for an older driver to
+/// say no, and every unused slot here costs one descriptor. Slots past the end
+/// of the scene hold the default texture, so a stale index samples white rather
+/// than reading a descriptor nobody wrote.
+constexpr u32 kMaxSceneTextures = 128;
+
 struct alignas(16) FrameUniforms {
     Mat4 view;
     Mat4 projection;
@@ -88,11 +98,22 @@ struct alignas(16) FrameUniforms {
 /// precisely because the block is tiny and lives in the command buffer, so
 /// anything that grows past the limit belongs in a uniform buffer instead.
 struct ObjectPushConstants {
-    Mat4 model;      // 64 bytes
-    Vec4 baseColor;  // 16 bytes
-    f32 metallic;    // 4
-    f32 roughness;   // 4
-    f32 highlight;   // 4: 0 = normal, 0.5 = hovered, 1 = selected
+    Mat4 model;      // 64 bytes, offset 0
+    Vec4 baseColor;  // 16,       offset 64
+
+    /// Before the scalars, not after them, and the order is load-bearing.
+    ///
+    /// Push constants follow std430, where a vec2 is aligned to EIGHT bytes.
+    /// Placed after three floats it would start at offset 92, which is not a
+    /// multiple of 8, so the shader compiler inserts four bytes of padding and
+    /// reads it from 96 - while C++, which aligns a pair of floats to four,
+    /// writes it at 92. Nothing warns: the object simply gets somebody else's
+    /// tiling. Here it lands at 80, which both agree on.
+    Vec2 uvScale;    // 8,        offset 80
+
+    f32 metallic;    // 4,        offset 88
+    f32 roughness;   // 4,        offset 92
+    f32 highlight;   // 4,        offset 96: 0 = normal, 0.5 = hovered, 1 = selected
 };
 
 constexpr bool kValidationByDefault =
@@ -423,6 +444,8 @@ void Renderer::createDescriptors() {
                             vk::ShaderStageFlagBits::eFragment);
         frameLayout.binding(2, vk::DescriptorType::eStorageBuffer,
                             vk::ShaderStageFlagBits::eFragment);
+        frameLayout.binding(3, vk::DescriptorType::eCombinedImageSampler,
+                            vk::ShaderStageFlagBits::eFragment, kMaxSceneTextures);
     }
     m_cameraSetLayout = frameLayout.build(handle);
 
@@ -449,6 +472,11 @@ void Renderer::createDescriptors() {
                                                    rhi::kFramesInFlight});
         poolSizes.push_back(
             vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight});
+
+        // Every slot of the array, for every frame in flight. This is the one
+        // place the descriptor budget stops being trivial.
+        poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
+                                                   kMaxSceneTextures * rhi::kFramesInFlight});
     }
     m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
         *m_device, rhi::kFramesInFlight + kMaterialBudget + kInternalImageSets, poolSizes);
@@ -500,6 +528,10 @@ void Renderer::allocateDescriptorSets() {
     m_tonemapSet = m_descriptorPool->allocate(*m_materialSetLayout);
     writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_sampler);
 
+    // The camera sets were just reallocated, so whatever was written into their
+    // texture array went with them.
+    m_textureArrayDirty = true;
+
     // The fallback material: used by anything with no material of its own, so
     // an untextured or broken asset still binds something valid.
     Material fallback;
@@ -523,6 +555,41 @@ std::string lowerExtension(const std::filesystem::path& path) {
 }
 
 } // namespace
+
+void Renderer::refreshTextureArray() {
+    if (!m_device->rayTracingSupported()) {
+        return;
+    }
+
+    // The array lives in the per-frame set, and the other frame may still be
+    // reading it. This only runs after something added a texture - loading a
+    // model, creating a material - so the stall lands where the loading already
+    // was, not in the middle of a frame.
+    m_device->waitIdle();
+
+    rhi::DescriptorWriter writer;
+    const u32 count = static_cast<u32>(m_resources.textureCount());
+
+    for (PerFrame& frame : m_perFrame) {
+        for (u32 slot = 0; slot < kMaxSceneTextures; ++slot) {
+            // Past the end of the scene, the default texture. Every slot is
+            // written, so an index that is somehow stale samples white instead
+            // of reading a descriptor that was never filled in - which is
+            // undefined behaviour rather than a visible mistake.
+            const vk::ImageView view = slot < count
+                                           ? m_resources.texture(TextureHandle{slot}).view()
+                                           : m_defaultTexture.view();
+
+            writer.image(frame.cameraSet, 3, view, *m_sampler,
+                         vk::ImageLayout::eShaderReadOnlyOptimal, slot);
+        }
+    }
+
+    writer.submit(m_device->handle());
+    m_textureArrayDirty = false;
+
+    FUMAR_DEBUG("texture array refreshed, {} texture(s) in the scene", count);
+}
 
 void Renderer::updateTonemapDescriptor() {
     rhi::DescriptorWriter writer;
@@ -616,6 +683,7 @@ MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
         rhi::Image texture = loadTextureFromFile(*m_device, *m_upload, baseColorTexture);
         if (texture.valid()) {
             material.baseColor = m_resources.addTexture(std::move(texture));
+            m_textureArrayDirty = true;
             material.baseColorPath = baseColorTexture.string();
             view = m_resources.texture(material.baseColor).view();
         } else {
@@ -641,6 +709,10 @@ NodeId Renderer::loadModel(const std::filesystem::path& path, NodeId parent) {
         .sampler = *m_sampler,
         .fallbackTexture = m_defaultTexture.view(),
     };
+
+    // A glTF brings its own textures, however many; the array has to be
+    // rewritten before a ray can reach any of them.
+    m_textureArrayDirty = true;
 
     return loadGltfIntoScene(path, context, m_scene, m_resources, parent);
 }
@@ -973,7 +1045,12 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
             .baseColor = material.baseColorFactor,
             .metallic = material.metallic,
             .roughness = material.roughness,
-            .padding = {0.0f, 0.0f},
+            .texture = m_resources.has(material.baseColor) &&
+                               material.baseColor.index < kMaxSceneTextures
+                           ? material.baseColor.index
+                           : kNoTexture,
+            .uvScale = material.uvScale,
+            .padding = 0.0f,
         });
 
         m_instances.push_back(instance);
@@ -1145,6 +1222,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         const ObjectPushConstants push{
             .model = worldTransform,
             .baseColor = material.baseColorFactor,
+            .uvScale = material.uvScale,
             .metallic = material.metallic,
             .roughness = material.roughness,
             .highlight = id == m_selected ? 1.0f : 0.0f,
@@ -1172,6 +1250,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         const ObjectPushConstants push{
             .model = m_scene.worldTransform(id),
             .baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
+            .uvScale = Vec2{1.0f, 1.0f},
             .metallic = 0.0f,
             .roughness = 1.0f,
             .highlight = strength,
@@ -1231,6 +1310,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
             const ObjectPushConstants push{
                 .model = markerTransform,
                 .baseColor = Vec4{tint.x * boost, tint.y * boost, tint.z * boost, 1.0f},
+                .uvScale = Vec2{1.0f, 1.0f},
                 .metallic = 0.0f,
                 .roughness = 1.0f,
                 .highlight = -1.0f,
@@ -1500,6 +1580,13 @@ void Renderer::drawFrame() {
     // Done here rather than lazily during recording so each node is computed
     // exactly once even when several nodes share a parent.
     m_scene.updateWorldTransforms();
+
+    // Before anything is recorded, and only when something actually added a
+    // texture - so a load that creates twenty of them costs one refresh rather
+    // than twenty.
+    if (m_textureArrayDirty) {
+        refreshTextureArray();
+    }
 
     updateFrameUniforms(m_frames->currentFrame());
 

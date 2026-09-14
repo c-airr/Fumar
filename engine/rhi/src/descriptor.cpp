@@ -67,7 +67,8 @@ DescriptorWriter& DescriptorWriter::buffer(vk::DescriptorSet set, u32 binding, v
 }
 
 DescriptorWriter& DescriptorWriter::image(vk::DescriptorSet set, u32 binding, vk::ImageView view,
-                                          vk::Sampler sampler, vk::ImageLayout layout) {
+                                          vk::Sampler sampler, vk::ImageLayout layout,
+                                          u32 element) {
     const vk::DescriptorImageInfo& info = m_imageInfos.emplace_back(vk::DescriptorImageInfo{
         .sampler = sampler,
         .imageView = view,
@@ -79,7 +80,7 @@ DescriptorWriter& DescriptorWriter::image(vk::DescriptorSet set, u32 binding, vk
     m_writes.push_back(vk::WriteDescriptorSet{
         .dstSet = set,
         .dstBinding = binding,
-        .dstArrayElement = 0,
+        .dstArrayElement = element,
         .descriptorCount = 1,
         .descriptorType = vk::DescriptorType::eCombinedImageSampler,
         .pImageInfo = &info,

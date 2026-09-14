@@ -86,6 +86,16 @@ struct Material {
     /// a surface reads, because it decides how wide the highlight is.
     f32 roughness = 0.75f;
 
+    /// How many times the texture repeats across the mesh's own 0..1 range.
+    ///
+    /// Needed because a node's SCALE does not touch its texture coordinates. A
+    /// cube stretched into a ten-metre wall still has coordinates running 0 to
+    /// 1 across it, so the bricks stretch with it and come out as smears. This
+    /// is what puts the density back, and it belongs to the material rather
+    /// than the mesh because the same wall mesh at two sizes wants two
+    /// different answers.
+    Vec2 uvScale{1.0f, 1.0f};
+
     /// Descriptor set 1, built when the material is registered. Cached here
     /// because building it per draw would be pure overhead - the contents never
     /// change after load.

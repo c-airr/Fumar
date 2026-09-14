@@ -131,7 +131,8 @@ void main() {
 
     // The texture is multiplied by the material colour, so an untextured
     // material uses a 1x1 white texture and shows its colour unchanged.
-    const vec3 albedo = texture(baseColorTexture, vUV).rgb * object.baseColor.rgb;
+    const vec3 albedo = texture(baseColorTexture, vUV * object.uvScale).rgb *
+                        object.baseColor.rgb;
 
     const float metallic = clamp(object.metallic, 0.0, 1.0);
 

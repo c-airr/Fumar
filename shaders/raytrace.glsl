@@ -40,9 +40,30 @@ struct InstanceRecord {
     vec4 baseColor;
     float metallic;
     float roughness;
-    float padding0;
-    float padding1;
+
+    /// Slot in sceneTextures, or kNoTexture for a flat colour.
+    uint textureIndex;
+
+    vec2 uvScale;
+    float padding;
 };
+
+/// Matches kNoTexture in engine/render/include/fumar/render/renderer.hpp.
+const uint kNoTexture = 0xFFFFFFFFu;
+
+/// Must match kMaxSceneTextures in engine/render/src/renderer.cpp.
+const int kMaxSceneTextures = 128;
+
+/// Every texture in the scene, reachable without knowing in advance which one
+/// is wanted.
+///
+/// The rasteriser binds ONE material before each draw, because it knows what it
+/// is drawing. A ray does not: it finds out what it hit only after it has hit
+/// it, so the only way to read that surface's texture is for all of them to be
+/// reachable at once. Slots past the end of the scene hold the default texture,
+/// so a stale index samples white rather than reading a descriptor nobody
+/// wrote.
+layout(set = 0, binding = 3) uniform sampler2D sceneTextures[kMaxSceneTextures];
 
 /// Indexed by the custom index carried on each instance. This is the whole
 /// reason a hit means anything: without it a ray reports a distance and a
@@ -297,6 +318,12 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
                                        vertexBuffer.vertices[i1].normal * weights.y +
                                        vertexBuffer.vertices[i2].normal * weights.z);
 
+    // The same interpolation, for the texture coordinate. Nothing rasterised
+    // this triangle, so nothing interpolated anything for us.
+    const vec2 uv = vertexBuffer.vertices[i0].uv * weights.x +
+                    vertexBuffer.vertices[i1].uv * weights.y +
+                    vertexBuffer.vertices[i2].uv * weights.z;
+
     // Into world space. The 3x4 matrix the query returns drops the bottom row,
     // which a direction does not need anyway. This ignores non-uniform scale -
     // the inverse transpose would be correct - which shows only on a stretched
@@ -311,7 +338,22 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
     }
 
     const vec3 hitPoint = origin + rayDirection * distance;
-    const vec3 albedo = record.baseColor.rgb;
+
+    vec3 albedo = record.baseColor.rgb;
+    if (record.textureIndex != kNoTexture) {
+        // nonuniformEXT is not decoration. Neighbouring rays hit different
+        // objects, so this index varies within the wave; without it the
+        // hardware is entitled to use one lane's index for all of them, and a
+        // reflection shows the wrong object's texture in patches.
+        //
+        // textureLod with level 0 rather than texture(): there are no
+        // derivatives here to pick a mip level from, because there is no
+        // neighbouring fragment marching along the same surface. The cost is
+        // aliasing in a reflection of something far away - a ray differential
+        // is what would fix it properly.
+        albedo *= textureLod(sceneTextures[nonuniformEXT(record.textureIndex)],
+                             uv * record.uvScale, 0.0).rgb;
+    }
 
     // Lambert rather than the full reflectance model. What is being computed is
     // a reflection of a surface, at whatever size that reflection appears on

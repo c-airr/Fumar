@@ -14,8 +14,17 @@
 #define FUMAR_OBJECT_GLSL
 
 layout(push_constant) uniform PushConstants {
-    mat4 model;      // 64 bytes
-    vec4 baseColor;  // 16
+    mat4 model;      // 64 bytes, offset 0
+    vec4 baseColor;  // 16,       offset 64
+
+    /// How many times the texture repeats across the mesh. See Material in
+    /// engine/render/include/fumar/render/resources.hpp.
+    ///
+    /// Declared here rather than at the end because std430 aligns a vec2 to
+    /// eight bytes: after the three floats below it would sit at 96 while the
+    /// C++ struct writes it at 92, and every object would read somebody else's
+    /// tiling with nothing to warn you.
+    vec2 uvScale;    // 8,        offset 80
 
     /// 0 = dielectric (plastic, stone, wood), 1 = metal. Values in between are
     /// not a physical material, they exist because a texture that blends

@@ -61,7 +61,9 @@ bool supportsRayTracing(vk::PhysicalDevice device) {
         return false;
     }
 
-    return chain.get<vk::PhysicalDeviceVulkan12Features>().scalarBlockLayout == VK_TRUE &&
+    return chain.get<vk::PhysicalDeviceVulkan12Features>()
+                   .shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
+           chain.get<vk::PhysicalDeviceVulkan12Features>().scalarBlockLayout == VK_TRUE &&
            chain.get<vk::PhysicalDeviceVulkan12Features>().bufferDeviceAddress == VK_TRUE &&
            chain.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure ==
                VK_TRUE &&
@@ -262,6 +264,14 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
     };
     vk::PhysicalDeviceVulkan12Features features12{
         .pNext = &accelerationFeatures,
+
+        // A ray lands wherever it lands, so two neighbouring pixels in the same
+        // wave routinely hit different objects with different textures. Indexing
+        // an array of textures by a value that varies WITHIN a wave is exactly
+        // what "non-uniform" means here, and without this feature it is
+        // undefined behaviour rather than a compile error - the shader runs and
+        // returns whichever texture the hardware happened to pick.
+        .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
 
         // Lets a shader lay a struct over raw memory the way C does, instead of
         // std140/std430 padding every member out to sixteen bytes. Needed

@@ -206,6 +206,18 @@ private:
     /// Points the tone mapping pass at the current HDR image. Called whenever
     /// that image is rebuilt, which invalidates the descriptor written before.
     void updateTonemapDescriptor();
+
+    /// Rewrites the array of every texture in the scene, which is how a ray
+    /// reaches the one belonging to whatever it hit.
+    ///
+    /// Waits for the device first: the array lives in the per-frame set, and a
+    /// frame still in flight may be reading it. Only ever runs after something
+    /// added a texture, which is a load-time event rather than a per-frame one.
+    void refreshTextureArray();
+
+    /// Set when a texture is added, so the array is rebuilt once before the
+    /// next frame rather than once per texture during a load.
+    bool m_textureArrayDirty = true;
     void createDefaultTexture();
     void createDescriptors();
     void allocateDescriptorSets();
@@ -335,8 +347,18 @@ private:
         Vec4 baseColor;
         f32 metallic;
         f32 roughness;
-        f32 padding[2];
+
+        /// Slot in the texture array, or kNoTexture for a flat colour. An index
+        /// rather than a descriptor: the ray does not know what it will hit, so
+        /// nothing can be bound for it in advance.
+        u32 texture;
+
+        Vec2 uvScale;
+        f32 padding;
     };
+
+    /// What `InstanceRecord::texture` holds when a material has no texture.
+    static constexpr u32 kNoTexture = 0xFFFFFFFFu;
     std::vector<InstanceRecord> m_instanceRecords;
 
     Scene m_scene;

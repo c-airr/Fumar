@@ -32,82 +32,130 @@ namespace {
 /// either way.
 void createStarterScene(Renderer& renderer) {
     Scene& scene = renderer.scene();
+    const std::filesystem::path textures = executableDirectory() / "assets" / "textures";
 
-    // A restrained palette: everything is a shade of grey except the pillar,
-    // which is warmed slightly so it reads as a different material without
-    // turning the scene into a colour chart.
+    // A small walled courtyard, because an open plain is the worst possible
+    // scene for showing what this renderer does. Shadows need something to fall
+    // across, bounced light needs a surface to bounce off, and a reflection of
+    // an empty sky is a reflection of nothing. Three walls give all three.
     //
-    // These are LINEAR reflectances, not the numbers a colour picker shows.
-    // Something that looks like mid-grey on screen reflects about 20% of the
-    // light hitting it, not 50 - the display's own curve accounts for the rest.
-    // Feed 0.6 in here and the surface behaves like fresh snow, which is what
-    // makes a scene look washed out no matter what the lighting does.
-    const MaterialHandle floorMaterial =
-        renderer.createMaterial("Floor", Vec4{0.17f, 0.175f, 0.185f, 1.0f});
-    const MaterialHandle blockMaterial =
-        renderer.createMaterial("Block", Vec4{0.32f, 0.325f, 0.34f, 1.0f});
-    const MaterialHandle pillarMaterial =
-        renderer.createMaterial("Pillar", Vec4{0.29f, 0.26f, 0.22f, 1.0f});
+    // Base colours are LINEAR reflectances, not the numbers a colour picker
+    // shows. Something that looks mid-grey on screen reflects about 20% of the
+    // light hitting it, not 50. Where a texture supplies the colour the factor
+    // stays near white and only trims the brightness.
+    const MaterialHandle grassMaterial =
+        renderer.createMaterial("Grass", Vec4{0.85f, 0.9f, 0.85f, 1.0f}, textures / "grass.jpg");
+    const MaterialHandle brickMaterial =
+        renderer.createMaterial("Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, textures / "brick.jpg");
+    const MaterialHandle woodMaterial =
+        renderer.createMaterial("Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, textures / "wood.jpg");
+    const MaterialHandle stoneMaterial =
+        renderer.createMaterial("Stone", Vec4{0.34f, 0.335f, 0.32f, 1.0f});
+    const MaterialHandle metalMaterial =
+        renderer.createMaterial("Polished metal", Vec4{0.55f, 0.56f, 0.58f, 1.0f});
 
-    // Roughness is what makes them read as different materials at all: the
-    // floor scatters the sky evenly, the blocks hold a soft sheen, and the
-    // pillar is smooth enough to show where the sun is.
-    renderer.resources().material(floorMaterial).roughness = 0.85f;
-    renderer.resources().material(blockMaterial).roughness = 0.55f;
-    // Polished metal, so the scene shows a ray traced reflection without anyone
-    // having to build one: the pillar picks up the floor, the blocks and the
-    // sky. Turn its roughness up in Details and watch the reflection dissolve
-    // into the sky gradient, which is the whole difference between the two.
-    renderer.resources().material(pillarMaterial).roughness = 0.12f;
-    renderer.resources().material(pillarMaterial).metallic = 1.0f;
+    ResourceRegistry& resources = renderer.resources();
 
-    const MeshHandle planeMesh = renderer.createPlaneMesh(14.0f);
+    // Tiling is what keeps a texture at a believable size. A node's scale does
+    // not touch texture coordinates, so a cube stretched into a ten-metre wall
+    // would otherwise carry one enormous brick.
+    resources.material(grassMaterial).uvScale = Vec2{14.0f, 14.0f};
+    resources.material(grassMaterial).roughness = 0.95f;
+
+    resources.material(brickMaterial).uvScale = Vec2{6.0f, 2.0f};
+    resources.material(brickMaterial).roughness = 0.85f;
+
+    resources.material(woodMaterial).uvScale = Vec2{3.0f, 3.0f};
+    resources.material(woodMaterial).roughness = 0.55f;
+
+    resources.material(stoneMaterial).roughness = 0.75f;
+
+    // Polished metal, so the courtyard shows a ray traced reflection without
+    // anyone having to build one: the grass, the brick and the sky all appear
+    // in it. Turn its roughness up in Details and watch the reflection dissolve
+    // into the sky gradient - that is the whole difference between the two
+    // methods, in one slider.
+    resources.material(metalMaterial).roughness = 0.12f;
+    resources.material(metalMaterial).metallic = 1.0f;
+
+    const MeshHandle groundMesh = renderer.createPlaneMesh(16.0f);
     const MeshHandle cubeMesh = renderer.createCubeMesh();
     const MeshHandle cylinderMesh = renderer.createCylinderMesh(0.9f, 3.0f, 40);
 
-    const NodeId floor = scene.createNode("Floor");
-    scene.node(floor).mesh = planeMesh;
-    scene.node(floor).material = floorMaterial;
+    // --- ground -------------------------------------------------------------
+    const NodeId ground = scene.createNode("Ground");
+    scene.node(ground).mesh = groundMesh;
+    scene.node(ground).material = grassMaterial;
 
+    // --- walls --------------------------------------------------------------
+    // Boxes rather than flat quads, so they have a thickness for the sun to
+    // find an edge of and for bounced light to come off the inside face of.
+    const NodeId walls = scene.createNode("Walls");
+
+    struct WallPlacement {
+        const char* name;
+        Vec3 position;
+        Vec3 scale;
+    };
+
+    // Open towards the camera, so the courtyard reads as a place you are
+    // standing in rather than a box you are looking into.
+    const std::array<WallPlacement, 3> wallPlacements{{
+        {"Wall back", Vec3{0.0f, 1.75f, -7.0f}, Vec3{14.0f, 3.5f, 0.5f}},
+        {"Wall left", Vec3{-7.0f, 1.75f, 0.0f}, Vec3{0.5f, 3.5f, 14.0f}},
+        {"Wall right", Vec3{7.0f, 1.75f, 0.0f}, Vec3{0.5f, 3.5f, 14.0f}},
+    }};
+
+    for (const WallPlacement& wall : wallPlacements) {
+        const NodeId id = scene.createNode(wall.name, walls);
+        scene.node(id).mesh = cubeMesh;
+        scene.node(id).material = brickMaterial;
+        scene.node(id).transform.position = wall.position;
+        scene.node(id).transform.scale = wall.scale;
+    }
+
+    // --- a wooden deck ------------------------------------------------------
+    const NodeId deck = scene.createNode("Deck");
+    scene.node(deck).mesh = cubeMesh;
+    scene.node(deck).material = woodMaterial;
+    scene.node(deck).transform.position = Vec3{-3.4f, 0.15f, 2.6f};
+    scene.node(deck).transform.scale = Vec3{5.0f, 0.3f, 4.0f};
+
+    // --- the pillar ---------------------------------------------------------
     const NodeId pillar = scene.createNode("Pillar");
     scene.node(pillar).mesh = cylinderMesh;
-    scene.node(pillar).material = pillarMaterial;
-    // Wired up so a fresh editor has something to press Play on.
-    scene.node(pillar).script = "spin";
-    // Half its height plus a hair: sitting the bottom cap exactly on the floor
-    // plane makes the two surfaces coplanar, and the depth test then picks
-    // between them per pixel - the flickering black patch known as z-fighting.
-    scene.node(pillar).transform.position = Vec3{0.0f, 1.502f, 0.0f};
+    scene.node(pillar).material = metalMaterial;
+    scene.node(pillar).transform.position = Vec3{0.0f, 1.5f, -1.0f};
 
-    // Grouped under one node, so the whole arrangement can be moved or hidden
-    // with a single selection - which is what a hierarchy is for.
+    // --- some blocks --------------------------------------------------------
     const NodeId blocks = scene.createNode("Blocks");
 
-    struct BlockLayout {
-        const char* name;
+    struct BlockPlacement {
         Vec3 position;
         Vec3 scale;
         f32 yawDegrees;
     };
 
-    const BlockLayout layout[]{
-        {"Block A", {-4.0f, 0.5f, 2.5f}, {1.0f, 1.0f, 1.0f}, 0.0f},
-        {"Block B", {-2.6f, 0.35f, -3.2f}, {0.7f, 0.7f, 0.7f}, 25.0f},
-        {"Block C", {3.6f, 0.75f, 1.4f}, {1.5f, 1.5f, 1.5f}, -15.0f},
-        {"Block D", {4.4f, 0.3f, -2.8f}, {0.6f, 0.6f, 0.6f}, 40.0f},
-        {"Step", {0.0f, 0.2f, 4.2f}, {3.0f, 0.4f, 1.2f}, 0.0f},
-    };
+    const std::array<BlockPlacement, 4> blockPlacements{{
+        {Vec3{3.4f, 0.5f, 1.4f}, Vec3{1.0f, 1.0f, 1.0f}, 18.0f},
+        {Vec3{4.6f, 0.3f, -2.4f}, Vec3{0.6f, 0.6f, 0.6f}, -35.0f},
+        {Vec3{-4.8f, 0.55f, -3.6f}, Vec3{1.1f, 1.1f, 1.1f}, 8.0f},
+        {Vec3{1.6f, 0.25f, 3.8f}, Vec3{1.6f, 0.5f, 1.0f}, 52.0f},
+    }};
 
-    for (const BlockLayout& block : layout) {
-        const NodeId id = scene.createNode(block.name, blocks);
+    char blockName[32];
+    int blockIndex = 0;
+    for (const BlockPlacement& block : blockPlacements) {
+        std::snprintf(blockName, sizeof(blockName), "Block %c",
+                      static_cast<char>('A' + blockIndex++));
 
-        // Taken after createNode, which may have reallocated the node storage.
-        Node& node = scene.node(id);
-        node.mesh = cubeMesh;
-        node.material = blockMaterial;
-        node.transform.position = block.position;
-        node.transform.scale = block.scale;
-        node.transform.rotation = fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, radians(block.yawDegrees));
+        const NodeId id = scene.createNode(blockName, blocks);
+        scene.node(id).mesh = cubeMesh;
+        scene.node(id).material = stoneMaterial;
+        scene.node(id).transform.position = block.position;
+        scene.node(id).transform.scale = block.scale;
+        scene.node(id).transform.rotation =
+            fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, radians(block.yawDegrees));
     }
 
     // One block bobs, so Play visibly does two different things at once.
@@ -115,11 +163,11 @@ void createStarterScene(Renderer& renderer) {
         scene.node(scene.node(blocks).children.front()).script = "bob";
     }
 
-    // A lamp, so the scene shows what a placed light does without anyone having
-    // to add one first. Warm and close to the ground, where the sun does not
-    // reach: a light that only brightens what is already lit teaches nothing.
+    // --- a lamp -------------------------------------------------------------
+    // Warm, low, and inside the courtyard where the sun does not reach. A light
+    // that only brightens what is already lit teaches nothing.
     const NodeId lamp = scene.createNode("Lamp");
-    scene.node(lamp).transform.position = Vec3{-2.6f, 1.5f, 2.2f};
+    scene.node(lamp).transform.position = Vec3{-3.4f, 1.6f, 2.6f};
     scene.node(lamp).light = Light{
         .color = Vec3{1.0f, 0.62f, 0.30f},
         .intensity = 55.0f,
@@ -130,7 +178,7 @@ void createStarterScene(Renderer& renderer) {
     if (std::filesystem::exists(modelPath)) {
         const NodeId model = renderer.loadModel(modelPath);
         if (model != kInvalidNode) {
-            scene.node(model).transform.position = Vec3{0.0f, 4.2f, 0.0f};
+            scene.node(model).transform.position = Vec3{0.0f, 4.2f, -1.0f};
 
             // A C++ component, while a block above carries a Lua script. Both
             // run in the same frame off the same context, which is the whole
@@ -139,6 +187,11 @@ void createStarterScene(Renderer& renderer) {
             scene.node(model).component = "Spinner";
         }
     }
+
+    // The camera, placed to look into the courtyard rather than at the origin.
+    renderer.camera().position = Vec3{6.5f, 4.2f, 9.5f};
+    renderer.camera().yaw = -125.0f;
+    renderer.camera().pitch = -16.0f;
 
     FUMAR_INFO("starter scene: {} nodes, {} meshes, {} materials", scene.nodeCount(),
                renderer.resources().meshCount(), renderer.resources().materialCount());
@@ -366,10 +419,10 @@ int main() {
     // itself goes to an off-screen image that the viewport panel displays.
     renderer.setOverlay([&ui](vk::CommandBuffer cmd) { ui.record(cmd); });
 
+    // The camera comes with the scene. It used to be set again here, right
+    // after, which silently won - so moving the viewpoint inside
+    // createStarterScene changed nothing and there was no way to tell.
     createStarterScene(renderer);
-    renderer.camera().position = Vec3{7.5f, 5.5f, 10.0f};
-    renderer.camera().yaw = -125.0f;
-    renderer.camera().pitch = -20.0f;
 
     const std::filesystem::path sceneDirectory = executableDirectory() / "scenes";
 

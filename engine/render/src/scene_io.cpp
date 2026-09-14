@@ -154,6 +154,7 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         entry["color"] = toJson(material.baseColorFactor);
         entry["metallic"] = material.metallic;
         entry["roughness"] = material.roughness;
+        entry["uv_scale"] = Json::array({material.uvScale.x, material.uvScale.y});
 
         if (!material.sourceFile.empty()) {
             entry["file"] = toPortablePath(material.sourceFile);
@@ -371,6 +372,11 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         Material& material = renderer.resources().material(created);
         material.metallic = entry.value("metallic", material.metallic);
         material.roughness = entry.value("roughness", material.roughness);
+
+        const Json uvScale = entry.value("uv_scale", Json::array());
+        if (uvScale.is_array() && uvScale.size() == 2) {
+            material.uvScale = Vec2{uvScale[0].get<f32>(), uvScale[1].get<f32>()};
+        }
 
         materials.push_back(created);
     }

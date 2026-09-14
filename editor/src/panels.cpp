@@ -827,6 +827,12 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
                                   "Metals have no diffuse colour: they tint what they reflect.");
             }
 
+            ImGui::DragFloat2("Tiling", &material.uvScale.x, 0.05f, 0.01f, 256.0f);
+            recordOnEdit();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("How many times the texture repeats across the object.");
+            }
+
             ImGui::SliderFloat("Roughness", &material.roughness, 0.0f, 1.0f);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("0 = mirror, 1 = fully diffuse.\n"

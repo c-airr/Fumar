@@ -35,8 +35,13 @@ compile_commands.json
 Thumbs.db
 .DS_Store
 
-# downloaded sample assets, not ours to redistribute
-assets/
+# Downloaded sample assets - somebody else's work, sitting here for testing.
+assets/*
+
+# Except the textures, which are CC0: public domain, ours to redistribute, and
+# part of what the starter scene IS rather than a local convenience. Provenance
+# and licence are recorded in assets/textures/SOURCES.md.
+!assets/textures/
 
 # distribution output
 dist/

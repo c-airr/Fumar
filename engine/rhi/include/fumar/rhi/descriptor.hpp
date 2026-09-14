@@ -67,8 +67,13 @@ public:
                              vk::DeviceSize offset = 0);
 
     /// Points a binding at a texture plus the sampler used to read it.
+    ///
+    /// `element` selects a slot when the binding is an ARRAY of textures, which
+    /// is how a shader reaches a texture it could not know about in advance -
+    /// a ray hitting whichever object happens to be there.
     DescriptorWriter& image(vk::DescriptorSet set, u32 binding, vk::ImageView view, vk::Sampler sampler,
-                            vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal);
+                            vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                            u32 element = 0);
 
     /// Points a binding at an acceleration structure.
     ///

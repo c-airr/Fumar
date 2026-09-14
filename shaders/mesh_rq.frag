@@ -22,6 +22,12 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
+// Indexing an array of textures by a value that differs between neighbouring
+// rays. Two pixels in the same wave hit different objects, so the index is not
+// uniform across the wave - which the hardware has to be told, because the fast
+// path assumes it is.
+#extension GL_EXT_nonuniform_qualifier : require
+
 #define FUMAR_RAY_QUERY 1
 
 #include "mesh_shading.glsl"
