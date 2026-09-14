@@ -124,6 +124,7 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         {"occlusion_radius", env.occlusionRadius},
         {"reflection_strength", env.reflectionStrength},
         {"reflection_roughness_limit", env.reflectionRoughnessLimit},
+        {"indirect_strength", env.indirectStrength},
     };
 
     // --- meshes -------------------------------------------------------------
@@ -446,6 +447,7 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         env.reflectionStrength = source.value("reflection_strength", env.reflectionStrength);
         env.reflectionRoughnessLimit =
             source.value("reflection_roughness_limit", env.reflectionRoughnessLimit);
+        env.indirectStrength = source.value("indirect_strength", env.indirectStrength);
         renderer.environment() = env;
     }
 

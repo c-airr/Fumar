@@ -1049,6 +1049,17 @@ void drawWorldSettings(Renderer& renderer) {
             ImGui::TextDisabled("Shadows and occlusion are unavailable.");
         }
 
+            ImGui::SliderFloat("Bounced light", &env.indirectStrength, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Rays fired into the hemisphere above each point to see what\n"
+                    "is actually there. At 0 the ambient term assumes an open sky\n"
+                    "and darkens where something blocks it - which can only take\n"
+                    "light away. Above 0 it carries light too: a surface beside a\n"
+                    "coloured one picks up that colour.\n\n"
+                    "The most expensive thing here. Turn it down first.");
+            }
+
             ImGui::SliderFloat("Reflections", &env.reflectionStrength, 0.0f, 1.0f);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Rays traced from smooth surfaces to find what they\n"

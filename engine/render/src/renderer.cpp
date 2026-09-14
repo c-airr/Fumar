@@ -76,7 +76,7 @@ struct alignas(16) FrameUniforms {
     f32 occlusionRadius;
     f32 reflectionStrength;
     f32 reflectionRoughnessLimit;
-    f32 padding;
+    f32 indirectStrength;
     i32 lightCount;
     std::array<LightUniform, kMaxLights> lights;
 };
@@ -861,7 +861,8 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         .occlusionRadius = env.occlusionRadius,
         .reflectionStrength = m_device->rayTracingSupported() ? env.reflectionStrength : 0.0f,
         .reflectionRoughnessLimit = env.reflectionRoughnessLimit,
-        .padding = 0.0f,
+        .indirectStrength =
+            m_device->rayTracingSupported() ? env.indirectStrength : 0.0f,
         // Filled in below, once the scene has been walked.
         .lightCount = 0,
         .lights = {},

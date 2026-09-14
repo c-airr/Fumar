@@ -94,7 +94,14 @@ layout(set = 0, binding = 0) uniform FrameData {
     /// usefully, so the sky gradient is used instead.
     float reflectionRoughnessLimit;
 
-    float _padding;
+    /// How much light that has bounced off something else is added.
+    ///
+    /// 0 falls back to the analytic sky ambient: light is assumed to arrive
+    /// from an unobstructed sky, darkened by an occlusion term. Above 0 the
+    /// hemisphere is actually sampled, so what arrives is what is there -
+    /// sky where the sky is visible, and light off a nearby surface where it
+    /// is not.
+    float indirectStrength;
 
     /// How many entries of `lights` below are real. The rest are stale and
     /// must not be read - the array is a fixed size, the scene is not.

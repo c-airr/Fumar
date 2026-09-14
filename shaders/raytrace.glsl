@@ -59,6 +59,12 @@ layout(set = 0, binding = 2, scalar) readonly buffer InstanceBuffer {
 const int kShadowSamples = 8;
 const int kOcclusionSamples = 12;
 
+/// Bounced light is the expensive one: each sample is a full traversal looking
+/// for the NEAREST surface, plus a shadow ray where it lands. Eight is enough
+/// for light that is low-frequency by nature - what bounces is broad and soft,
+/// so the noise left over is broad and soft too.
+const int kIndirectSamples = 8;
+
 /// One pseudo-random number from a point in the WORLD.
 ///
 /// Not from gl_FragCoord, and that distinction is the whole reason this
@@ -233,18 +239,27 @@ float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sour
 
 /// What the scene looks like along a ray: the colour that comes back.
 ///
+/// What the scene looks like along a ray: the radiance that comes back.
+///
 /// One bounce, and only one. The surface it lands on is lit by the sun and the
-/// sky, with a shadow ray of its own, but anything reflected IN that surface is
-/// not traced further - a mirror facing a mirror shows sky, not a corridor.
-/// Each extra bounce multiplies the cost and, outside of a hall of mirrors,
-/// changes very little.
-vec3 traceReflection(vec3 origin, vec3 rayDirection) {
+/// sky, with a shadow ray of its own, but nothing reflected IN that surface is
+/// traced further - a mirror facing a mirror shows sky, not a corridor. Each
+/// extra bounce multiplies the cost and, outside of a hall of mirrors, changes
+/// very little.
+///
+/// `includeSunDisc` is the one thing that differs between its two callers. A
+/// mirror should show the sun; a diffuse bounce should not, because the disc is
+/// a handful of pixels of enormous brightness and a few hemisphere samples that
+/// happen to land on it turn into white speckles that are not light, only
+/// sampling error. The sun reaches a diffuse surface through the direct term,
+/// which integrates the whole disc analytically.
+vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeSunDisc) {
     rayQueryEXT query;
 
     // No TerminateOnFirstHit here, unlike a shadow ray: this one has to find the
     // NEAREST surface, not merely establish that something is in the way.
     rayQueryInitializeEXT(query, sceneStructure, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01,
-                          rayDirection, 400.0);
+                          rayDirection, maxDistance);
 
     // The loop the shadow rays do not need. Traversal reports candidate hits
     // and the shader decides; with opaque geometry there is nothing to decide,
@@ -253,9 +268,8 @@ vec3 traceReflection(vec3 origin, vec3 rayDirection) {
     }
 
     if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        // Nothing there: the reflection is of the sky, sun included. A mirror
-        // should show the sun.
-        return skyWithSun(rayDirection);
+        // Nothing there: what comes back is the sky.
+        return includeSunDisc ? skyWithSun(rayDirection) : skyRadiance(rayDirection);
     }
 
     const int instanceIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
@@ -315,6 +329,55 @@ vec3 traceReflection(vec3 origin, vec3 rayDirection) {
     return lit;
 }
 
+/// Kept for the reflection path, which always wants the sun in it.
+vec3 traceReflection(vec3 origin, vec3 rayDirection) {
+    return traceScene(origin, rayDirection, 400.0, true);
+}
+
+/// Light arriving at this point from everywhere except directly from a light:
+/// off the sky where the sky is visible, off whatever is in the way where it is
+/// not.
+///
+/// This REPLACES the analytic sky ambient and the occlusion term together,
+/// rather than adding to them, and that is the point rather than an
+/// optimisation. Those two were an approximation and a correction to it: assume
+/// an unobstructed sky, then darken where something is in the way. Sampling the
+/// hemisphere answers the actual question once - and where a surface is
+/// blocked, it returns the light coming off whatever is blocking it instead of
+/// simply less sky. That is the difference between a shadowed wall going grey
+/// and a shadowed wall picking up the colour of the red floor beside it.
+///
+/// Returns a mean radiance, the same quantity skyIrradiance returns, so callers
+/// multiply by albedo exactly as before. Cosine-weighted sampling is what makes
+/// the plain average correct: the pdf and the cosine term in the integral
+/// cancel, leaving albedo * mean(incoming).
+vec3 indirectLight(vec3 position, vec3 normal) {
+    const vec3 origin = offsetOrigin(position, normal);
+
+    vec3 tangent;
+    vec3 bitangent;
+    orthonormalBasis(normal, tangent, bitangent);
+
+    // Offset from the other sampling rotations, so the sets do not line up and
+    // reinforce each other's pattern.
+    const float rotation = hash13(position + vec3(91.0)) * 6.2831853;
+
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < kIndirectSamples; ++i) {
+        // A disc point lifted onto the hemisphere gives a cosine-weighted
+        // distribution: denser near the normal, which is where light matters
+        // most, and exactly the weighting that makes the plain average right.
+        const vec2 disc = vogelDisc(i, kIndirectSamples, rotation);
+        const float height = sqrt(max(1.0 - dot(disc, disc), 0.0));
+        const vec3 direction =
+            normalize(tangent * disc.x + bitangent * disc.y + normal * height);
+
+        sum += traceScene(origin, direction, 200.0, false);
+    }
+
+    return sum / float(kIndirectSamples);
+}
+
 /// How open the sky is above this point, sampled over a short distance.
 ///
 /// The ambient term assumes light arrives from the entire sky. Under a table,
@@ -372,6 +435,12 @@ vec3 traceReflection(vec3 origin, vec3 rayDirection) {
     // Without ray tracing the only thing that can be reflected is the sky, which
     // is exactly what the analytic version was already doing.
     return skyWithSun(rayDirection);
+}
+
+vec3 indirectLight(vec3 position, vec3 normal) {
+    // Never called without ray tracing - frame.indirectStrength is forced to
+    // zero there - but defined so the shading code compiles unchanged.
+    return skyIrradiance(normal);
 }
 
 float ambientOcclusion(vec3 position, vec3 normal) {

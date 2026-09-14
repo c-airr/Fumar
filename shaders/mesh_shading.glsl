@@ -209,14 +209,35 @@ void main() {
     // --- the sky ------------------------------------------------------------
     // Without this, everything the sun does not reach is pure black - which is
     // what the inside of a shadow looks like on the moon, and nowhere else.
-    // Ambient light arrives from the whole sky, so what blocks it is not one
-    // direction but how enclosed the point is. That is what ambient occlusion
-    // measures, and it is the difference between an object standing on the
-    // ground and one hovering a millimetre above it.
-    const float occlusion = ambientOcclusion(vWorldPosition, n);
+    // --- everything that is not a light -------------------------------------
+    // Two ways to answer "what else is lighting this point", and they are not
+    // additive - the second is a better version of the first, so exactly one
+    // runs.
+    //
+    // Traced: sample the hemisphere and see. Where the sky is visible the
+    // answer is sky; where something is in the way the answer is the light
+    // coming off that something, which is how a surface picks up the colour of
+    // what is beside it.
+    //
+    // Analytic: assume an unobstructed sky and darken where the hemisphere is
+    // blocked. Cheaper, always available, and the only option on a GPU that
+    // cannot trace - but it can only ever take light away, never carry any.
+    float occlusion = 1.0;
+    vec3 ambient;
 
-    const vec3 irradiance = skyIrradiance(n);
-    lit += irradiance * albedo * (1.0 - metallic) * occlusion;
+    if (frame.indirectStrength > 0.0) {
+        const vec3 traced = indirectLight(vWorldPosition, n);
+
+        // Blended against the analytic answer rather than switched to it, so
+        // the slider is a dial rather than a toggle - and so the two can be
+        // compared directly at the same exposure.
+        ambient = mix(skyIrradiance(n), traced, frame.indirectStrength);
+    } else {
+        occlusion = ambientOcclusion(vWorldPosition, n);
+        ambient = skyIrradiance(n) * occlusion;
+    }
+
+    lit += ambient * albedo * (1.0 - metallic);
 
     // A rough surface reflects a blurred sky. Lerping the reflection direction
     // towards the normal is a cheap stand-in for that blur: it is what a

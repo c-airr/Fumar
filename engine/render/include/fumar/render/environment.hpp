@@ -84,6 +84,19 @@ struct Environment {
     /// line where the two methods meet.
     f32 reflectionRoughnessLimit = 0.35f;
 
+    /// How much light that has bounced off something else is used.
+    ///
+    /// At 0 the ambient term is the analytic sky, darkened by an occlusion
+    /// factor - an approximation and a correction to it. Above 0 the hemisphere
+    /// is actually sampled, which answers the same question directly AND
+    /// carries light rather than only taking it away: a wall beside a red floor
+    /// goes slightly red instead of merely darker.
+    ///
+    /// The expensive one. Each sample is a full search for the nearest surface
+    /// plus a shadow ray where it lands, so this is the slider to reach for
+    /// first when the frame rate matters more than the picture.
+    f32 indirectStrength = 1.0f;
+
     // --- the camera ---------------------------------------------------------
 
     /// Multiplies the image before tone mapping. A property of the camera, not
