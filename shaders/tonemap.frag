@@ -19,6 +19,9 @@
 // happens to be identical keeps the pipeline layouts interchangeable.
 layout(set = 1, binding = 0) uniform sampler2D hdrScene;
 
+/// The blurred bright pass, at half resolution - see bloom_down.frag.
+layout(set = 1, binding = 1) uniform sampler2D bloom;
+
 layout(location = 0) in vec2 vUV;
 
 layout(location = 0) out vec4 outColor;
@@ -40,7 +43,17 @@ vec3 tonemapACES(vec3 x) {
 }
 
 void main() {
-    vec3 colour = texture(hdrScene, vUV).rgb * frame.exposure;
+    vec3 colour = texture(hdrScene, vUV).rgb;
+
+    // Mixed in rather than added, and that choice matters. Adding the glow
+    // makes the whole image brighter as the slider goes up, so raising bloom
+    // and lowering exposure become the same control and neither means
+    // anything. Lerping moves light OUT of the sharp image and into the spill,
+    // which is what actually happens in a lens - the total is unchanged and the
+    // slider does one thing only.
+    colour = mix(colour, texture(bloom, vUV).rgb, frame.bloomStrength);
+
+    colour *= frame.exposure;
     colour = tonemapACES(colour);
 
     // No pow(1/2.2) here: the target image is an sRGB format, so the hardware

@@ -106,7 +106,29 @@ struct Environment {
     /// numbers picked to land in 0..1, which is the whole point of rendering in
     /// HDR. This is the single knob that decides where that range ends up on
     /// the display.
-    f32 exposure = 0.5f;
+    f32 exposure = 1.2f;
+
+    // --- bloom --------------------------------------------------------------
+
+    /// How much of the image is the glow rather than the sharp render.
+    ///
+    /// This is the cue that says "brighter than the screen can show". A display
+    /// runs out of white at a value the scene passes long before the sun does,
+    /// so without light spilling past the edges of bright things, the sky and a
+    /// white wall end up the same pixel and the picture reads as flat paint.
+    ///
+    /// Small numbers only. It is lerped rather than added, so 0.05 means a
+    /// twentieth of the frame is spill - enough to see, and past about 0.15 the
+    /// image starts to look like it is behind frosted glass.
+    f32 bloomStrength = 0.07f;
+
+    /// Where the glow starts, in scene radiance, before exposure.
+    ///
+    /// Everything below this contributes nothing, which is what keeps bloom
+    /// from being a blur over the whole frame. Around 1.0 means "brighter than
+    /// a white surface in full sun", so the sky, the sun and specular
+    /// highlights glow and the ground does not.
+    f32 bloomThreshold = 1.1f;
 
     /// Unit vector pointing TOWARDS the sun, derived from the two angles.
     ///

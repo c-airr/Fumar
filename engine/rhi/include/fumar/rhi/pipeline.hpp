@@ -35,6 +35,14 @@ struct GraphicsPipelineDesc {
     u32 pushConstantSize = 0;
     vk::ShaderStageFlags pushConstantStages{};
 
+    /// Adds what the fragment shader writes to what is already there, instead
+    /// of replacing it.
+    ///
+    /// The one case that needs it so far is accumulating a blurred image into
+    /// the one above it: a shader cannot read the attachment it is writing, so
+    /// the sum has to happen in the blend unit rather than in the shader.
+    bool additiveBlend = false;
+
     vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
 
     /// eFill for solid triangles, eLine to rasterise their edges instead.

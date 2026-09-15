@@ -203,6 +203,13 @@ private:
 
     void createViewportTarget(Extent2D size);
 
+    /// Rebuilds the bloom image and the per-level views. Part of creating the
+    /// viewport target, since the chain is sized from it.
+    void createBloomChain();
+
+    /// Size of one level of the bloom chain, in pixels.
+    vk::Extent2D bloomMipExtent(u32 level) const;
+
     /// Points the tone mapping pass at the current HDR image. Called whenever
     /// that image is rebuilt, which invalidates the descriptor written before.
     void updateTonemapDescriptor();
@@ -228,6 +235,14 @@ private:
     /// buffer.
     void recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex);
     void recordSceneRendering(vk::CommandBuffer cmd);
+
+    /// Builds the glow: halve the HDR image five times, blurring as it goes,
+    /// then add the levels back up. Runs between the scene and the tone mapper,
+    /// and always runs even at zero strength - the alternative is leaving the
+    /// bloom image in an undefined layout for the tone mapper to sample, which
+    /// is a validation error rather than a black glow.
+    void recordBloom(vk::CommandBuffer cmd);
+
     void recordTonemap(vk::CommandBuffer cmd);
     void recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex);
     void recordCommands(u32 imageIndex);
@@ -255,6 +270,12 @@ private:
     /// thing that happens to the picture.
     std::unique_ptr<rhi::GraphicsPipeline> m_tonemapPipeline;
 
+    /// The two halves of the bloom chain: down blurs and shrinks, up blurs and
+    /// adds back. Only the second blends, which is the only difference between
+    /// them that the pipeline state can see.
+    std::unique_ptr<rhi::GraphicsPipeline> m_bloomDownPipeline;
+    std::unique_ptr<rhi::GraphicsPipeline> m_bloomUpPipeline;
+
     /// Same geometry, rasterised as lines. Used to outline the hovered and
     /// selected objects without a second render target or a stencil pass.
     std::unique_ptr<rhi::GraphicsPipeline> m_outlinePipeline;
@@ -263,7 +284,21 @@ private:
 
     vk::UniqueDescriptorSetLayout m_cameraSetLayout;
     vk::UniqueDescriptorSetLayout m_materialSetLayout;
+
+    /// Two images rather than one: the tone mapper reads the sharp scene and
+    /// the glow together, and a layout with one binding cannot say that.
+    vk::UniqueDescriptorSetLayout m_postSetLayout;
+
     vk::UniqueSampler m_sampler;
+
+    /// Clamped at the edges, unlike m_sampler, which repeats.
+    ///
+    /// Every post pass reads NEIGHBOURING texels, so a pixel at the left edge
+    /// of the screen reaches past it - and with a repeating sampler what it
+    /// finds there is the right edge. A bright window on one side of the frame
+    /// would glow faintly onto the other. Materials want repeat, because that
+    /// is what tiling means; post passes want clamp.
+    vk::UniqueSampler m_clampSampler;
 
     /// Where the scene is actually drawn: a floating-point image, so a sunlit
     /// surface can be worth 20 and a shadow 0.02 and both survive to the tone
@@ -275,8 +310,40 @@ private:
     /// interface samples to show the viewport.
     rhi::Image m_sceneColor;
 
-    /// Descriptor pointing at m_sceneHdr, for the tone mapping pass. Rewritten
-    /// whenever the viewport is resized, since that replaces the image.
+    /// The bloom chain: one image with several mip levels, each half the size
+    /// of the one above it, at half the viewport to begin with.
+    ///
+    /// One image rather than a list of them because that is what a mip chain
+    /// is, and because the levels are written and read in strict order - there
+    /// is never a moment when two of them are in the same layout for the same
+    /// reason.
+    rhi::Image m_bloom;
+
+    /// A view of each level on its own. m_bloom's own view covers the whole
+    /// chain, which is the wrong thing both to render into (a colour
+    /// attachment is one level) and to sample from (sampling level 0 of a
+    /// single-level view is how a pass reads exactly the level it means).
+    std::vector<vk::UniqueImageView> m_bloomMipViews;
+
+    /// One descriptor per level, so a pass can bind the level below it as its
+    /// source without rewriting a descriptor mid-frame.
+    std::vector<vk::DescriptorSet> m_bloomMipSets;
+
+    /// The HDR scene, as the bloom chain's first source.
+    ///
+    /// Points at the same image the tone mapper's set does, and exists anyway,
+    /// because a bound descriptor set has to match the layout its pipeline was
+    /// built with - and the tone mapper's set holds two bindings where the
+    /// bloom pipelines declare one.
+    vk::DescriptorSet m_bloomSourceSet;
+
+    /// How many levels the chain actually has. Usually kBloomMips, fewer when
+    /// the viewport panel is too small to be halved that many times.
+    u32 m_bloomMipCount = 0;
+
+    /// Descriptor pointing at m_sceneHdr and the finished glow, for the tone
+    /// mapping pass. Rewritten whenever the viewport is resized, since that
+    /// replaces both images.
     vk::DescriptorSet m_tonemapSet;
     Extent2D m_viewportExtent{1280, 720};
 

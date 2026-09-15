@@ -103,6 +103,12 @@ layout(set = 0, binding = 0) uniform FrameData {
     /// is not.
     float indirectStrength;
 
+    /// How much of the final image is the blurred bright pass. 0 is off.
+    float bloomStrength;
+
+    /// Where the bright pass starts, in scene radiance, before exposure.
+    float bloomThreshold;
+
     /// How many entries of `lights` below are real. The rest are stale and
     /// must not be read - the array is a fixed size, the scene is not.
     int lightCount;

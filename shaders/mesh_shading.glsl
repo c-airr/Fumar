@@ -227,12 +227,22 @@ void main() {
     vec3 ambient;
 
     if (frame.indirectStrength > 0.0) {
-        const vec3 traced = indirectLight(vWorldPosition, n);
+        // One set of rays, two answers. The hemisphere splits into the part
+        // that sees sky and the part that sees geometry, so the ambient term
+        // splits the same way: the sky half stays analytic and is merely
+        // DARKENED by how much of it is hidden, and the traced half is added on
+        // top. See indirectBounce for why sampling the sky itself was the
+        // mistake - in short, skyIrradiance() varies with the normal, and
+        // averaging samples throws that variation away.
+        float skyVisibility;
+        const vec3 bounce = indirectBounce(vWorldPosition, n, skyVisibility);
 
-        // Blended against the analytic answer rather than switched to it, so
-        // the slider is a dial rather than a toggle - and so the two can be
-        // compared directly at the same exposure.
-        ambient = mix(skyIrradiance(n), traced, frame.indirectStrength);
+        // Two sliders, one meaning each: Occlusion decides how much of the
+        // blocked sky is taken away, Indirect how much bounced light is put
+        // back. Turning both down leaves the flat ambient a GPU without ray
+        // tracing gets, which is exactly what it should leave.
+        occlusion = mix(1.0, skyVisibility, frame.occlusionStrength);
+        ambient = skyIrradiance(n) * occlusion + bounce * frame.indirectStrength;
     } else {
         occlusion = ambientOcclusion(vWorldPosition, n);
         ambient = skyIrradiance(n) * occlusion;
@@ -266,6 +276,11 @@ void main() {
         reflected = mix(reflected, traced, sharpness * frame.reflectionStrength);
     }
 
+    // Occluded like the diffuse ambient is, and for the same reason: a crease
+    // that cannot see the sky cannot pick up a sheen off it either. This was
+    // the one term the traced path used to leave unoccluded, and an unoccluded
+    // term is a constant added to every pixel in the frame - which is a haze
+    // over the whole image and the fastest way to lose contrast.
     const vec3 ambientSpecular = reflected * fresnelAmbient(nDotV, f0, roughness);
     lit += ambientSpecular * occlusion;
 

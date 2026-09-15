@@ -67,6 +67,28 @@ constexpr u32 kMaxInstances = 1024;
 /// than reading a descriptor nobody wrote.
 constexpr u32 kMaxSceneTextures = 128;
 
+/// How many times the bloom chain halves the image.
+///
+/// Six levels starting at half resolution means the smallest one is 1/64th of
+/// the viewport, and a blur of one texel there reaches across a good part of
+/// the screen. That is what sets how far the glow can spread: more levels buy
+/// reach nobody wants, fewer make a bright sky glow like a bright lamp.
+constexpr u32 kBloomMips = 6;
+
+/// Push constants for one downsample step. Matches bloom_down.frag.
+struct BloomDownPush {
+    Vec2 texelSize;
+    f32 threshold;
+    f32 knee;
+    i32 prefilter;
+};
+
+/// Push constants for one upsample step. Matches bloom_up.frag.
+struct BloomUpPush {
+    Vec2 texelSize;
+    f32 radius;
+};
+
 struct alignas(16) FrameUniforms {
     Mat4 view;
     Mat4 projection;
@@ -87,13 +109,15 @@ struct alignas(16) FrameUniforms {
     f32 reflectionStrength;
     f32 reflectionRoughnessLimit;
     f32 indirectStrength;
+    f32 bloomStrength;
+    f32 bloomThreshold;
     i32 lightCount;
     std::array<LightUniform, kMaxLights> lights;
 };
 
 /// Push constants, matching the block in shaders/object.glsl.
 ///
-/// 92 bytes used of the 128 every implementation guarantees. Worth watching:
+/// 100 bytes used of the 128 every implementation guarantees. Worth watching:
 /// push constants are the fastest way to get per-draw data to a shader
 /// precisely because the block is tiny and lives in the command buffer, so
 /// anything that grows past the limit belongs in a uniform buffer instead.
@@ -251,6 +275,11 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .depthWrite = false,
                    });
 
+    // The tone mapper reads two images, so it gets its own set layout rather
+    // than the material one every other fullscreen pass borrows.
+    const std::array<vk::DescriptorSetLayout, 2> postSetLayouts{*m_cameraSetLayout,
+                                                                *m_postSetLayout};
+
     m_tonemapPipeline = std::make_unique<rhi::GraphicsPipeline>(
         *m_device, rhi::GraphicsPipelineDesc{
                        .vertexShader = shaderDir / "fullscreen.vert.spv",
@@ -260,7 +289,47 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .colorFormat = kSceneColorFormat,
                        .vertexBindings = {},
                        .vertexAttributes = {},
-                       .setLayouts = setLayouts,
+                       .setLayouts = postSetLayouts,
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       .depthTest = false,
+                       .depthWrite = false,
+                   });
+
+    // --- the bloom chain ----------------------------------------------------
+    // One source image, one target, no frame data: everything these two need
+    // arrives in push constants, so they take a single set layout - the
+    // material one, which is exactly "one texture" - and it lands as set 0.
+    const std::array<vk::DescriptorSetLayout, 1> bloomSetLayouts{*m_materialSetLayout};
+
+    m_bloomDownPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "fullscreen.vert.spv",
+                       .fragmentShader = shaderDir / "bloom_down.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       .vertexBindings = {},
+                       .vertexAttributes = {},
+                       .setLayouts = bloomSetLayouts,
+                       .pushConstantSize = sizeof(BloomDownPush),
+                       .pushConstantStages = vk::ShaderStageFlagBits::eFragment,
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       .depthTest = false,
+                       .depthWrite = false,
+                   });
+
+    m_bloomUpPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "fullscreen.vert.spv",
+                       .fragmentShader = shaderDir / "bloom_up.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       .vertexBindings = {},
+                       .vertexAttributes = {},
+                       .setLayouts = bloomSetLayouts,
+                       .pushConstantSize = sizeof(BloomUpPush),
+                       .pushConstantStages = vk::ShaderStageFlagBits::eFragment,
+                       // The one pipeline in the engine that blends: each level
+                       // is ADDED to the one above it, and a fragment shader
+                       // cannot read the attachment it is writing.
+                       .additiveBlend = true,
                        .cullMode = vk::CullModeFlagBits::eNone,
                        .depthTest = false,
                        .depthWrite = false,
@@ -301,11 +370,17 @@ Renderer::~Renderer() {
     m_depthImage = rhi::Image{};
     m_sceneHdr = rhi::Image{};
     m_sceneColor = rhi::Image{};
+    m_bloomMipViews.clear();
+    m_bloom = rhi::Image{};
+    m_clampSampler.reset();
     m_sampler.reset();
+    m_postSetLayout.reset();
     m_materialSetLayout.reset();
     m_cameraSetLayout.reset();
     m_descriptorPool.reset();
     m_frames.reset();
+    m_bloomUpPipeline.reset();
+    m_bloomDownPipeline.reset();
     m_tonemapPipeline.reset();
     m_skyPipeline.reset();
     m_outlinePipeline.reset();
@@ -368,6 +443,59 @@ void Renderer::createViewportTarget(Extent2D size) {
                                              .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
                                              .aspect = vk::ImageAspectFlagBits::eDepth,
                                          });
+
+    createBloomChain();
+}
+
+vk::Extent2D Renderer::bloomMipExtent(u32 level) const {
+    // Half the viewport to start with - the glow is blurry by definition, so
+    // the sharp resolution is detail nobody can see and bandwidth nobody gets
+    // back - then halved per level, never below one texel.
+    return vk::Extent2D{
+        std::max(1u, (m_viewportExtent.width / 2) >> level),
+        std::max(1u, (m_viewportExtent.height / 2) >> level),
+    };
+}
+
+void Renderer::createBloomChain() {
+    const vk::Extent2D base = bloomMipExtent(0);
+
+    // A mip chain cannot have more levels than the image can be halved, and a
+    // small viewport panel runs out before six. Asking for more is not a
+    // warning but an invalid image.
+    const u32 largest = std::max(base.width, base.height);
+    m_bloomMipCount = std::min(kBloomMips, static_cast<u32>(std::floor(std::log2(largest))) + 1u);
+
+    m_bloom = rhi::Image(*m_device, rhi::ImageDesc{
+                                        .extent = base,
+                                        .format = kSceneHdrFormat,
+                                        .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                                                 vk::ImageUsageFlagBits::eSampled,
+                                        .aspect = vk::ImageAspectFlagBits::eColor,
+                                        .mipLevels = m_bloomMipCount,
+                                    });
+
+    // One view per level. The image's own view spans the whole chain, which is
+    // the wrong thing to render into - a colour attachment is exactly one level
+    // - and the wrong thing to sample, since a pass wants the level it names
+    // and not a filtered blend of it with its neighbours.
+    m_bloomMipViews.clear();
+    m_bloomMipViews.reserve(m_bloomMipCount);
+    for (u32 level = 0; level < m_bloomMipCount; ++level) {
+        m_bloomMipViews.push_back(m_device->handle().createImageViewUnique(vk::ImageViewCreateInfo{
+            .image = m_bloom.handle(),
+            .viewType = vk::ImageViewType::e2D,
+            .format = kSceneHdrFormat,
+            .subresourceRange =
+                vk::ImageSubresourceRange{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = level,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+        }));
+    }
 }
 
 bool Renderer::resizeViewport(Extent2D size) {
@@ -424,6 +552,28 @@ void Renderer::createDefaultTexture() {
         .minLod = 0.0f,
         .maxLod = 0.0f,
     });
+
+    // The same sampler with the edges clamped instead of repeated.
+    //
+    // Every post pass reads NEIGHBOURING texels, so a pixel on the left edge of
+    // the screen asks for texels past it - and with a repeating sampler what it
+    // finds there is the right edge of the frame. A bright window on one side
+    // would put a faint glow on the other, for no reason anyone could see in
+    // the scene. Materials want repeat, because that is what tiling means; post
+    // passes want clamp.
+    m_clampSampler = m_device->handle().createSamplerUnique(vk::SamplerCreateInfo{
+        .magFilter = vk::Filter::eLinear,
+        .minFilter = vk::Filter::eLinear,
+        .mipmapMode = vk::SamplerMipmapMode::eLinear,
+        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeW = vk::SamplerAddressMode::eClampToEdge,
+        .anisotropyEnable = VK_FALSE,
+        .minLod = 0.0f,
+        // Zero, not the chain length: every bloom view covers exactly one
+        // level, so "level 0" of that view already means the level meant.
+        .maxLod = 0.0f,
+    });
 }
 
 void Renderer::createDescriptors() {
@@ -454,18 +604,32 @@ void Renderer::createDescriptors() {
                                        vk::ShaderStageFlagBits::eFragment)
                               .build(handle);
 
+    // The tone mapper reads the sharp scene and the glow and mixes them, so it
+    // needs two bindings where every other fullscreen pass needs one.
+    m_postSetLayout = rhi::DescriptorSetLayoutBuilder()
+                          .binding(0, vk::DescriptorType::eCombinedImageSampler,
+                                   vk::ShaderStageFlagBits::eFragment)
+                          .binding(1, vk::DescriptorType::eCombinedImageSampler,
+                                   vk::ShaderStageFlagBits::eFragment)
+                          .build(handle);
+
     // One camera set per frame in flight, plus one material set per loaded
     // material. Pools do not grow, so the material budget is fixed up front -
     // a real asset system would allocate a pool per scene instead of guessing.
     constexpr u32 kMaterialBudget = 64;
 
-    // Plus one image set the renderer keeps for itself: the tone mapping pass
-    // reads the HDR target through a descriptor just like any material.
-    constexpr u32 kInternalImageSets = 1;
+    // Plus the image sets the renderer keeps for itself: one for the tone
+    // mapping pass, and one per level of the bloom chain so a pass can bind the
+    // level below it as its source without rewriting a descriptor mid-frame.
+    // Two of those are the scene image seen through different layouts: the
+    // tone mapper reads it alongside the glow, the bloom chain on its own.
+    constexpr u32 kInternalImageSets = 2 + kBloomMips;
     std::vector<vk::DescriptorPoolSize> poolSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
+        // One more than there are sets: the tone mapper's holds two images,
+        // the sharp scene and the glow.
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaterialBudget + kInternalImageSets},
+                               kMaterialBudget + kInternalImageSets + 1},
     };
     if (m_device->rayTracingSupported()) {
         poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eAccelerationStructureKHR,
@@ -523,10 +687,22 @@ void Renderer::allocateDescriptorSets() {
         }
     }
 
-    // Reuses the material layout - one combined image sampler is exactly what
-    // the tone mapper needs, and a second identical layout would buy nothing.
-    m_tonemapSet = m_descriptorPool->allocate(*m_materialSetLayout);
-    writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_sampler);
+    m_tonemapSet = m_descriptorPool->allocate(*m_postSetLayout);
+
+    // One set per level of the bloom chain, allocated once here and rewritten
+    // on a resize. Allocated once because the pool cannot free individual sets,
+    // so allocating on every resize would drain it in a few drags of the panel
+    // edge.
+    m_bloomMipSets.resize(kBloomMips);
+    for (vk::DescriptorSet& set : m_bloomMipSets) {
+        set = m_descriptorPool->allocate(*m_materialSetLayout);
+    }
+
+    m_bloomSourceSet = m_descriptorPool->allocate(*m_materialSetLayout);
+
+    // Fills in both of the above. Everything they point at was created by
+    // createViewportTarget, which runs before this.
+    updateTonemapDescriptor();
 
     // The camera sets were just reallocated, so whatever was written into their
     // texture array went with them.
@@ -593,7 +769,17 @@ void Renderer::refreshTextureArray() {
 
 void Renderer::updateTonemapDescriptor() {
     rhi::DescriptorWriter writer;
-    writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_sampler);
+
+    // The clamped sampler, not the repeating one the materials use: both of
+    // these are read by passes that reach past the edge of the image.
+    writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_clampSampler);
+    writer.image(m_tonemapSet, 1, *m_bloomMipViews[0], *m_clampSampler);
+    writer.image(m_bloomSourceSet, 0, m_sceneHdr.view(), *m_clampSampler);
+
+    for (u32 level = 0; level < m_bloomMipCount; ++level) {
+        writer.image(m_bloomMipSets[level], 0, *m_bloomMipViews[level], *m_clampSampler);
+    }
+
     writer.submit(m_device->handle());
 }
 
@@ -935,6 +1121,8 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         .reflectionRoughnessLimit = env.reflectionRoughnessLimit,
         .indirectStrength =
             m_device->rayTracingSupported() ? env.indirectStrength : 0.0f,
+        .bloomStrength = env.bloomStrength,
+        .bloomThreshold = env.bloomThreshold,
         // Filled in below, once the scene has been walked.
         .lightCount = 0,
         .lights = {},
@@ -1346,14 +1534,28 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     cmd.endRendering();
 }
 
-void Renderer::recordTonemap(vk::CommandBuffer cmd) {
-    const vk::Extent2D extent{m_viewportExtent.width, m_viewportExtent.height};
+void Renderer::recordBloom(vk::CommandBuffer cmd) {
+    // One level of the chain, as a subresource range - every barrier below
+    // moves exactly one, because the levels are in different layouts at
+    // different moments.
+    const auto mipRange = [](u32 level) {
+        return vk::ImageSubresourceRange{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .baseMipLevel = level,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+    };
 
-    // Two images swap roles here: the HDR target stops being written and starts
-    // being read, and the displayable one does the opposite. Both transitions
-    // belong in one barrier - the driver can then schedule them together
-    // instead of draining the pipeline twice.
-    const std::array<vk::ImageMemoryBarrier2, 2> barriers{
+    // What the pass is about to read, and what it is about to overwrite.
+    //
+    // The whole bloom image goes to eUndefined rather than its previous layout
+    // on purpose: every texel of every level is written before it is read, so
+    // there is nothing in there worth keeping from last frame, and eUndefined
+    // is what tells the driver it may throw the old contents away instead of
+    // preserving them through the transition.
+    const std::array<vk::ImageMemoryBarrier2, 2> entry{
         vk::ImageMemoryBarrier2{
             .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
@@ -1371,24 +1573,198 @@ void Renderer::recordTonemap(vk::CommandBuffer cmd) {
             .subresourceRange = kWholeColorImage,
         },
         vk::ImageMemoryBarrier2{
-            // Waits for the interface's fragment shader, which sampled this
-            // image last frame to draw the viewport panel.
+            // Waits on last frame's reads of this image - the tone mapper's,
+            // and the chain's own. Nothing is being preserved, so this is an
+            // ordering constraint and not a memory one.
             .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
-            .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
             .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
             .oldLayout = vk::ImageLayout::eUndefined,
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_sceneColor.handle(),
-            .subresourceRange = kWholeColorImage,
+            .image = m_bloom.handle(),
+            .subresourceRange =
+                vk::ImageSubresourceRange{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = 0,
+                    .levelCount = m_bloomMipCount,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
         },
     };
 
     cmd.pipelineBarrier2(vk::DependencyInfo{
-        .imageMemoryBarrierCount = static_cast<u32>(barriers.size()),
-        .pImageMemoryBarriers = barriers.data(),
+        .imageMemoryBarrierCount = static_cast<u32>(entry.size()),
+        .pImageMemoryBarriers = entry.data(),
+    });
+
+    // Draws one fullscreen triangle into one level of the chain.
+    const auto blit = [&](u32 level, vk::ImageView target, vk::Extent2D extent,
+                          vk::AttachmentLoadOp loadOp) {
+        const vk::RenderingAttachmentInfo attachment{
+            .imageView = target,
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = loadOp,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+        };
+
+        cmd.beginRendering(vk::RenderingInfo{
+            .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = extent},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &attachment,
+        });
+
+        cmd.setViewport(0, vk::Viewport{
+                               .x = 0.0f,
+                               .y = 0.0f,
+                               .width = static_cast<f32>(extent.width),
+                               .height = static_cast<f32>(extent.height),
+                               .minDepth = 0.0f,
+                               .maxDepth = 1.0f,
+                           });
+        cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = extent});
+        cmd.draw(3, 1, 0, 0);
+        cmd.endRendering();
+
+        // Written; now readable, because the next step of the chain reads
+        // exactly what this one just wrote. This is the dependency that makes
+        // the chain a chain.
+        const vk::ImageMemoryBarrier2 toRead{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_bloom.handle(),
+            .subresourceRange = mipRange(level),
+        };
+
+        cmd.pipelineBarrier2(vk::DependencyInfo{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &toRead,
+        });
+    };
+
+    // --- down ---------------------------------------------------------------
+    // Level 0 reads the scene and keeps only what is bright; every level after
+    // it reads the level above and merely blurs. Only the first step filters,
+    // because once the bright pass has been extracted, filtering again would
+    // eat into the glow it just produced.
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_bloomDownPipeline->handle());
+
+    for (u32 level = 0; level < m_bloomMipCount; ++level) {
+        const bool fromScene = level == 0;
+        const vk::Extent2D source =
+            fromScene ? vk::Extent2D{m_viewportExtent.width, m_viewportExtent.height}
+                      : bloomMipExtent(level - 1);
+
+        // m_bloomSourceSet rather than the tone mapper's, even though both
+        // point at the same image: a bound set has to match the layout the
+        // pipeline was built with, and the tone mapper's holds two bindings.
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_bloomDownPipeline->layout(), 0,
+                               fromScene ? m_bloomSourceSet : m_bloomMipSets[level - 1], {});
+
+        const BloomDownPush push{
+            // Of the SOURCE, not the target: the filter is a pattern of taps
+            // into the image being read.
+            .texelSize = Vec2{1.0f / static_cast<f32>(source.width),
+                              1.0f / static_cast<f32>(source.height)},
+            .threshold = m_environment.bloomThreshold,
+            // A shoulder just over half the threshold, rather than a number of
+            // its own: a knee that does not scale with the threshold is either
+            // a hard edge at high thresholds or the whole range at low ones.
+            .knee = m_environment.bloomThreshold * 0.6f,
+            .prefilter = fromScene ? 1 : 0,
+        };
+
+        cmd.pushConstants<BloomDownPush>(m_bloomDownPipeline->layout(),
+                                         vk::ShaderStageFlagBits::eFragment, 0, push);
+
+        blit(level, *m_bloomMipViews[level], bloomMipExtent(level), vk::AttachmentLoadOp::eDontCare);
+    }
+
+    // --- and back up --------------------------------------------------------
+    // Each level is added into the one above it, so what reaches level 0 is the
+    // sum of every level: the small ones spread wide and faint, the large ones
+    // stay tight and bright. One blur at one radius cannot be both.
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_bloomUpPipeline->handle());
+
+    for (u32 level = m_bloomMipCount; level-- > 1;) {
+        const u32 target = level - 1;
+        const vk::Extent2D source = bloomMipExtent(level);
+
+        // The target was left readable by the downsample pass, and has to go
+        // back to being an attachment. eShaderReadOnlyOptimal as the old layout
+        // rather than eUndefined: what it holds is half the answer, and the
+        // blend below adds to it.
+        const vk::ImageMemoryBarrier2 toAttachment{
+            .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite |
+                             vk::AccessFlagBits2::eColorAttachmentRead,
+            .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_bloom.handle(),
+            .subresourceRange = mipRange(target),
+        };
+
+        cmd.pipelineBarrier2(vk::DependencyInfo{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &toAttachment,
+        });
+
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_bloomUpPipeline->layout(), 0,
+                               m_bloomMipSets[level], {});
+
+        const BloomUpPush push{
+            .texelSize = Vec2{1.0f / static_cast<f32>(source.width),
+                              1.0f / static_cast<f32>(source.height)},
+            .radius = 1.0f,
+        };
+
+        cmd.pushConstants<BloomUpPush>(m_bloomUpPipeline->layout(),
+                                       vk::ShaderStageFlagBits::eFragment, 0, push);
+
+        // eLoad, not eDontCare: the downsampled level is still in there and the
+        // blend adds to it. Discarding it would throw away every level above
+        // this one and leave only the blurriest.
+        blit(target, *m_bloomMipViews[target], bloomMipExtent(target),
+             vk::AttachmentLoadOp::eLoad);
+    }
+}
+
+void Renderer::recordTonemap(vk::CommandBuffer cmd) {
+    const vk::Extent2D extent{m_viewportExtent.width, m_viewportExtent.height};
+
+    // The HDR image was already made readable by the bloom pass, which runs
+    // first and needs it too. All that is left is the image being written.
+    const vk::ImageMemoryBarrier2 toAttachment{
+        // Waits for the interface's fragment shader, which sampled this image
+        // last frame to draw the viewport panel.
+        .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = m_sceneColor.handle(),
+        .subresourceRange = kWholeColorImage,
+    };
+
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &toAttachment,
     });
 
     const vk::RenderingAttachmentInfo colorAttachment{
@@ -1535,6 +1911,7 @@ void Renderer::recordCommands(u32 imageIndex) {
     recordAccelerationStructure(cmd, m_frames->currentFrame());
 
     recordSceneRendering(cmd);
+    recordBloom(cmd);
     recordTonemap(cmd);
     recordUiRendering(cmd, imageIndex);
 }

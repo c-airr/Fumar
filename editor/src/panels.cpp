@@ -980,7 +980,7 @@ void drawWorldSettings(Renderer& renderer) {
             env.skyHorizonColor = Vec3{0.95f, 0.62f, 0.38f};
             env.groundColor = Vec3{0.20f, 0.16f, 0.13f};
             env.skyIntensity = 0.6f;
-            env.exposure = 0.55f;
+            env.exposure = 1.3f;
         }
         ImGui::SameLine();
         if (ImGui::Button("Overcast")) {
@@ -993,7 +993,7 @@ void drawWorldSettings(Renderer& renderer) {
             env.skyHorizonColor = Vec3{0.72f, 0.74f, 0.77f};
             env.groundColor = Vec3{0.30f, 0.30f, 0.30f};
             env.skyIntensity = 1.3f;
-            env.exposure = 0.5f;
+            env.exposure = 1.2f;
         }
         ImGui::SameLine();
         if (ImGui::Button("Night")) {
@@ -1005,7 +1005,7 @@ void drawWorldSettings(Renderer& renderer) {
             env.skyHorizonColor = Vec3{0.06f, 0.08f, 0.14f};
             env.groundColor = Vec3{0.02f, 0.02f, 0.03f};
             env.skyIntensity = 1.0f;
-            env.exposure = 1.6f;
+            env.exposure = 3.8f;
         }
 
         ImGui::SeparatorText("Sun");
@@ -1085,6 +1085,21 @@ void drawWorldSettings(Renderer& renderer) {
             ImGui::SetTooltip("The scene is rendered in floating point, where the sun\n"
                               "is worth dozens and a shadow a fraction of one. This is\n"
                               "what decides where that range lands on the display.");
+        }
+
+        ImGui::DragFloat("Bloom", &env.bloomStrength, 0.002f, 0.0f, 0.6f);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How much of the image is light spilling past the edges\n"
+                              "of bright things. It is the only cue a display has for\n"
+                              "\"brighter than white\". Small numbers: past about 0.15\n"
+                              "the picture looks like it is behind frosted glass.");
+        }
+
+        ImGui::DragFloat("Bloom threshold", &env.bloomThreshold, 0.01f, 0.0f, 20.0f);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Where the glow starts, in scene brightness, BEFORE\n"
+                              "exposure. Lower it far enough and everything glows,\n"
+                              "which lifts the shadows and flattens the picture.");
         }
 
         // The direction the two angles work out to. Not editable - it is

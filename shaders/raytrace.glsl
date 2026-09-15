@@ -81,10 +81,15 @@ const int kShadowSamples = 8;
 const int kOcclusionSamples = 12;
 
 /// Bounced light is the expensive one: each sample is a full traversal looking
-/// for the NEAREST surface, plus a shadow ray where it lands. Eight is enough
-/// for light that is low-frequency by nature - what bounces is broad and soft,
-/// so the noise left over is broad and soft too.
-const int kIndirectSamples = 8;
+/// for the NEAREST surface, plus a shadow ray where it lands.
+///
+/// These rays answer two questions at once - how much bounced light arrives,
+/// and how much of the sky is blocked - so the count is set by the harder of
+/// the two. Bounced light is broad and soft, and eight rays were enough for it.
+/// Sky visibility is not: it is a single number per pixel, and with eight rays
+/// it can only ever be one of nine values, which shows up as steps across a
+/// surface that should be shading smoothly.
+const int kIndirectSamples = 16;
 
 /// One pseudo-random number from a point in the WORLD.
 ///
@@ -274,7 +279,12 @@ float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sour
 /// happen to land on it turn into white speckles that are not light, only
 /// sampling error. The sun reaches a diffuse surface through the direct term,
 /// which integrates the whole disc analytically.
-vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeSunDisc) {
+///
+/// `hitGeometry` says which of the two answers came back - a surface, or the
+/// sky. The caller sampling the hemisphere needs to tell them apart rather than
+/// merely average them; see indirectBounce.
+vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeSunDisc,
+                out bool hitGeometry) {
     rayQueryEXT query;
 
     // No TerminateOnFirstHit here, unlike a shadow ray: this one has to find the
@@ -290,8 +300,11 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
 
     if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         // Nothing there: what comes back is the sky.
+        hitGeometry = false;
         return includeSunDisc ? skyWithSun(rayDirection) : skyRadiance(rayDirection);
     }
+
+    hitGeometry = true;
 
     const int instanceIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
     const int primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
@@ -371,29 +384,44 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
     return lit;
 }
 
-/// Kept for the reflection path, which always wants the sun in it.
+/// Kept for the reflection path, which always wants the sun in it, and does not
+/// care whether what it found was a surface or the sky - either way it is what
+/// the mirror shows.
 vec3 traceReflection(vec3 origin, vec3 rayDirection) {
-    return traceScene(origin, rayDirection, 400.0, true);
+    bool hitGeometry;
+    return traceScene(origin, rayDirection, 400.0, true, hitGeometry);
 }
 
-/// Light arriving at this point from everywhere except directly from a light:
-/// off the sky where the sky is visible, off whatever is in the way where it is
-/// not.
+/// Light bouncing off the geometry around this point, and how much of the sky
+/// that geometry hides.
 ///
-/// This REPLACES the analytic sky ambient and the occlusion term together,
-/// rather than adding to them, and that is the point rather than an
-/// optimisation. Those two were an approximation and a correction to it: assume
-/// an unobstructed sky, then darken where something is in the way. Sampling the
-/// hemisphere answers the actual question once - and where a surface is
-/// blocked, it returns the light coming off whatever is blocking it instead of
-/// simply less sky. That is the difference between a shadowed wall going grey
-/// and a shadowed wall picking up the colour of the red floor beside it.
+/// One set of rays, two answers, and keeping them apart is the whole design.
+/// The hemisphere above a surface divides cleanly into the part that sees sky
+/// and the part that sees something solid, so the integral divides the same
+/// way. This traces the hemisphere once and reports each half separately:
+/// `skyVisibility` is the fraction of it that reached open sky, and the return
+/// value is the light that came back off everything else.
+///
+/// Why not simply average all of it, sky included - which is what this function
+/// used to do? Because the sky is not one colour. skyIrradiance() varies with
+/// the normal, and that variation is what makes an upward face read as lit from
+/// above and a downward one as lit by bounce off the ground. Replace it with
+/// the mean of a handful of directional samples and the gradient collapses into
+/// noise around a constant: every surface in the scene gets lit by roughly the
+/// same value from every direction at once, objects stop seating into the
+/// ground, and the whole image flattens. Leaving the sky analytic and sampling
+/// only its VISIBILITY keeps the gradient exact and free, and spends the rays
+/// on the part that genuinely cannot be guessed.
+///
+/// It also makes the rays go further. Bounced light is the smaller term and the
+/// blurrier one, so the noise it carries is both dimmer and softer than the
+/// noise a sampled sky was contributing.
 ///
 /// Returns a mean radiance, the same quantity skyIrradiance returns, so callers
 /// multiply by albedo exactly as before. Cosine-weighted sampling is what makes
 /// the plain average correct: the pdf and the cosine term in the integral
 /// cancel, leaving albedo * mean(incoming).
-vec3 indirectLight(vec3 position, vec3 normal) {
+vec3 indirectBounce(vec3 position, vec3 normal, out float skyVisibility) {
     const vec3 origin = offsetOrigin(position, normal);
 
     vec3 tangent;
@@ -405,18 +433,32 @@ vec3 indirectLight(vec3 position, vec3 normal) {
     const float rotation = hash13(position + vec3(91.0)) * 6.2831853;
 
     vec3 sum = vec3(0.0);
+    float open = 0.0;
+
     for (int i = 0; i < kIndirectSamples; ++i) {
         // A disc point lifted onto the hemisphere gives a cosine-weighted
         // distribution: denser near the normal, which is where light matters
         // most, and exactly the weighting that makes the plain average right.
+        //
+        // The same weighting is what makes the miss count a correct sky
+        // visibility rather than a rough one: the fraction of cosine-weighted
+        // directions that reach the sky IS the factor the sky term wants.
         const vec2 disc = vogelDisc(i, kIndirectSamples, rotation);
         const float height = sqrt(max(1.0 - dot(disc, disc), 0.0));
         const vec3 direction =
             normalize(tangent * disc.x + bitangent * disc.y + normal * height);
 
-        sum += traceScene(origin, direction, 200.0, false);
+        bool hitGeometry;
+        const vec3 incoming = traceScene(origin, direction, 200.0, false, hitGeometry);
+
+        if (hitGeometry) {
+            sum += incoming;
+        } else {
+            open += 1.0;
+        }
     }
 
+    skyVisibility = open / float(kIndirectSamples);
     return sum / float(kIndirectSamples);
 }
 
@@ -479,10 +521,12 @@ vec3 traceReflection(vec3 origin, vec3 rayDirection) {
     return skyWithSun(rayDirection);
 }
 
-vec3 indirectLight(vec3 position, vec3 normal) {
+vec3 indirectBounce(vec3 position, vec3 normal, out float skyVisibility) {
     // Never called without ray tracing - frame.indirectStrength is forced to
-    // zero there - but defined so the shading code compiles unchanged.
-    return skyIrradiance(normal);
+    // zero there - but defined so the shading code compiles unchanged. Nothing
+    // bounces and nothing is in the way.
+    skyVisibility = 1.0;
+    return vec3(0.0);
 }
 
 float ambientOcclusion(vec3 position, vec3 normal) {

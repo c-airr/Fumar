@@ -113,7 +113,15 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
     };
 
     const vk::PipelineColorBlendAttachmentState blendAttachment{
-        .blendEnable = VK_FALSE,
+        .blendEnable = desc.additiveBlend ? VK_TRUE : VK_FALSE,
+        .srcColorBlendFactor = vk::BlendFactor::eOne,
+        .dstColorBlendFactor = vk::BlendFactor::eOne,
+        .colorBlendOp = vk::BlendOp::eAdd,
+        // Alpha carries nothing in any of fumar's colour targets, but a blend
+        // state has to name factors for it or the values are undefined.
+        .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+        .dstAlphaBlendFactor = vk::BlendFactor::eZero,
+        .alphaBlendOp = vk::BlendOp::eAdd,
         // Easy to miss and silently fatal: the default mask is zero, which
         // writes no channels at all and produces a blank image with no error.
         .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |

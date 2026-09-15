@@ -89,7 +89,9 @@ fumar_compile_shaders(fumar_shaders
         "${CMAKE_SOURCE_DIR}/shaders/outline.frag"
         "${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert"
         "${CMAKE_SOURCE_DIR}/shaders/sky.frag"
-        "${CMAKE_SOURCE_DIR}/shaders/tonemap.frag")
+        "${CMAKE_SOURCE_DIR}/shaders/tonemap.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/bloom_down.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag")
 
 # --- engine modules ---------------------------------------------------------
 # The order mirrors the dependency graph: core depends on nothing, sandbox
