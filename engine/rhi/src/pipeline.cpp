@@ -94,7 +94,11 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
     };
 
     const vk::PipelineMultisampleStateCreateInfo multisample{
-        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+        .rasterizationSamples = desc.samples,
+        // Left off deliberately. With it the fragment shader runs once per
+        // SAMPLE rather than once per pixel, which would multiply the cost of
+        // a shader that traces rays by four and buy only the smoothing of
+        // detail inside a triangle - where there is no edge to smooth.
         .sampleShadingEnable = VK_FALSE,
     };
 

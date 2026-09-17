@@ -61,6 +61,15 @@ public:
 
     const vk::PhysicalDeviceProperties& properties() const { return m_properties; }
 
+    /// What this GPU can do with one format - filter it, render to it, blit it.
+    vk::FormatProperties formatProperties(vk::Format format) const {
+        return m_physicalDevice.getFormatProperties(format);
+    }
+
+    /// How far off-axis the sampler may stretch its filter, or 1 when the GPU
+    /// cannot do it at all. See the sampler in renderer.cpp for what it buys.
+    f32 maxAnisotropy() const { return m_maxAnisotropy; }
+
     /// Whether lines thicker than one pixel can be drawn. Optional in Vulkan,
     /// so anything drawing lines has to cope with it being false.
     bool wideLinesSupported() const { return m_wideLinesSupported; }
@@ -97,6 +106,7 @@ public:
 private:
     vk::PhysicalDevice m_physicalDevice;
     vk::PhysicalDeviceProperties m_properties;
+    f32 m_maxAnisotropy = 1.0f;
     QueueFamilies m_queueFamilies;
 
     bool m_wideLinesSupported = false;

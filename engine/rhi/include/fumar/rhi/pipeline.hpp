@@ -35,6 +35,11 @@ struct GraphicsPipelineDesc {
     u32 pushConstantSize = 0;
     vk::ShaderStageFlags pushConstantStages{};
 
+    /// Samples per pixel, which must match the attachments this pipeline
+    /// renders into. A pipeline built for one sample cannot draw into a
+    /// multisampled target, and nothing catches it but the validation layers.
+    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
+
     /// Adds what the fragment shader writes to what is already there, instead
     /// of replacing it.
     ///

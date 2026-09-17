@@ -20,6 +20,13 @@ struct ImageDesc {
     vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor;
 
     u32 mipLevels = 1;
+
+    /// How many samples per pixel the image stores.
+    ///
+    /// Above one makes it a multisampled RENDER TARGET, which cannot be
+    /// sampled by a shader or copied from - it exists to be resolved into an
+    /// ordinary image at the end of the pass that wrote it.
+    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
 };
 
 /// A device-local image plus its memory and a full-resource view.
@@ -49,6 +56,16 @@ public:
 
     vk::ImageAspectFlags aspect() const { return m_aspect; }
 
+    u32 mipLevels() const { return m_mipLevels; }
+
+    vk::SampleCountFlagBits samples() const { return m_samples; }
+
+    /// How many times `extent` can be halved before it reaches a single texel.
+    ///
+    /// The full chain, which is what a texture wants: the smallest levels exist
+    /// precisely for the case where a whole texture covers a pixel or two.
+    static u32 fullMipChain(vk::Extent2D extent);
+
     bool valid() const { return static_cast<bool>(m_image); }
 
 private:
@@ -61,6 +78,8 @@ private:
     vk::Format m_format = vk::Format::eUndefined;
     vk::Extent2D m_extent;
     vk::ImageAspectFlags m_aspect;
+    u32 m_mipLevels = 1;
+    vk::SampleCountFlagBits m_samples = vk::SampleCountFlagBits::e1;
 };
 
 } // namespace fumar::rhi

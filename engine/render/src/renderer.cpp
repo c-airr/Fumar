@@ -218,6 +218,10 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        // A range must cover every stage that reads it.
                        .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
                                              vk::ShaderStageFlagBits::eFragment,
+                       // Must match the attachments of the pass this draws
+                       // into. A pipeline built for one sample simply cannot
+                       // render into a multisampled target.
+                       .samples = m_sampleCount,
                    });
 
     m_outlinePipeline = std::make_unique<rhi::GraphicsPipeline>(
@@ -232,6 +236,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .pushConstantSize = sizeof(ObjectPushConstants),
                        .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
                                              vk::ShaderStageFlagBits::eFragment,
+                       .samples = m_sampleCount,
                        // No culling: the far side of the wireframe should show
                        // through, which is what makes it read as a cage around
                        // the object rather than a half-drawn shell.
@@ -267,6 +272,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .vertexBindings = {},
                        .vertexAttributes = {},
                        .setLayouts = setLayouts,
+                       .samples = m_sampleCount,
                        .cullMode = vk::CullModeFlagBits::eNone,
                        // The sky is behind everything, so it neither tests
                        // depth (nothing has been drawn yet) nor writes it
@@ -369,6 +375,7 @@ Renderer::~Renderer() {
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
     m_sceneHdr = rhi::Image{};
+    m_sceneHdrMs = rhi::Image{};
     m_sceneColor = rhi::Image{};
     m_bloomMipViews.clear();
     m_bloom = rhi::Image{};
@@ -414,6 +421,11 @@ void Renderer::createViewportTarget(Extent2D size) {
         FUMAR_INFO("depth format: {}", vk::to_string(m_depthFormat));
     }
 
+    if (m_sampleCount == vk::SampleCountFlagBits::e1) {
+        m_sampleCount = chooseSampleCount();
+        FUMAR_INFO("anti-aliasing: {}x MSAA", static_cast<u32>(m_sampleCount));
+    }
+
     m_viewportExtent = size;
     const vk::Extent2D extent{size.width, size.height};
 
@@ -437,14 +449,62 @@ void Renderer::createViewportTarget(Extent2D size) {
                                              .aspect = vk::ImageAspectFlagBits::eColor,
                                          });
 
+    // Where the triangles actually land. Several samples per pixel, resolved
+    // into m_sceneHdr when the pass ends.
+    //
+    // A triangle edge does not fall on a pixel boundary, so a pixel it half
+    // covers is either fully shaded or not at all - which is what makes an edge
+    // a staircase. Multisampling keeps coverage per SAMPLE while still shading
+    // once per pixel, so the edge pixel ends up as a weighted mix of the
+    // triangle and what is behind it. Almost all of the quality, a fraction of
+    // the cost of rendering four times the pixels.
+    //
+    // eTransientAttachment because nothing ever reads this image: it is written
+    // and resolved inside one pass, so on hardware that can, it need never
+    // reach memory at all.
+    if (m_sampleCount != vk::SampleCountFlagBits::e1) {
+        m_sceneHdrMs = rhi::Image(*m_device, rhi::ImageDesc{
+                                                 .extent = extent,
+                                                 .format = kSceneHdrFormat,
+                                                 .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                                                          vk::ImageUsageFlagBits::eTransientAttachment,
+                                                 .aspect = vk::ImageAspectFlagBits::eColor,
+                                                 .samples = m_sampleCount,
+                                             });
+    }
+
     m_depthImage = rhi::Image(*m_device, rhi::ImageDesc{
                                              .extent = extent,
                                              .format = m_depthFormat,
                                              .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
                                              .aspect = vk::ImageAspectFlagBits::eDepth,
+                                             // Matched to the colour target:
+                                             // the two are attachments of the
+                                             // same pass and a mismatch is
+                                             // invalid.
+                                             .samples = m_sampleCount,
                                          });
 
     createBloomChain();
+}
+
+vk::SampleCountFlagBits Renderer::chooseSampleCount() const {
+    // Four is the sweet spot everyone lands on. Two leaves a visible staircase
+    // on a near-vertical edge, and eight costs twice the bandwidth of four for
+    // a difference that needs a still frame and a magnifier.
+    //
+    // The two masks are intersected because colour and depth are attachments of
+    // the same pass: a count either works for both or cannot be used.
+    const vk::SampleCountFlags supported = m_device->properties().limits.framebufferColorSampleCounts &
+                                           m_device->properties().limits.framebufferDepthSampleCounts;
+
+    if (supported & vk::SampleCountFlagBits::e4) {
+        return vk::SampleCountFlagBits::e4;
+    }
+    if (supported & vk::SampleCountFlagBits::e2) {
+        return vk::SampleCountFlagBits::e2;
+    }
+    return vk::SampleCountFlagBits::e1;
 }
 
 vk::Extent2D Renderer::bloomMipExtent(u32 level) const {
@@ -548,9 +608,23 @@ void Renderer::createDefaultTexture() {
         .addressModeU = vk::SamplerAddressMode::eRepeat,
         .addressModeV = vk::SamplerAddressMode::eRepeat,
         .addressModeW = vk::SamplerAddressMode::eRepeat,
-        .anisotropyEnable = VK_FALSE, // would need the samplerAnisotropy feature
+        // What makes the mip chain worth generating.
+        //
+        // Plain mip mapping picks a level from how fast the texture coordinates
+        // change, and has to take the FASTER of the two axes or it aliases. On
+        // a floor seen edge-on those two differ enormously - a screen pixel
+        // covers a few texels across and dozens along - so the level that stops
+        // the shimmer is far blurrier than the surface deserves, and the ground
+        // turns to mush a few metres out. Anisotropic filtering takes several
+        // samples along the stretched direction instead, which is the whole
+        // difference between a game floor and a smear.
+        .anisotropyEnable = m_device->maxAnisotropy() > 1.0f ? VK_TRUE : VK_FALSE,
+        .maxAnisotropy = std::min(m_device->maxAnisotropy(), 16.0f),
         .minLod = 0.0f,
-        .maxLod = 0.0f,
+        // No ceiling: a texture may have as many levels as it has, and clamping
+        // to zero here is exactly the bug that made every surface alias no
+        // matter how many levels were generated for it.
+        .maxLod = VK_LOD_CLAMP_NONE,
     });
 
     // The same sampler with the edges clamped instead of repeated.
@@ -1279,6 +1353,8 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            // The resolve target, whether or not anything is resolved into
+            // it: with one sample the geometry lands here directly.
             .image = m_sceneHdr.handle(),
             .subresourceRange = kWholeColorImage,
         },
@@ -1304,6 +1380,28 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         .pImageMemoryBarriers = toAttachment.data(),
     });
 
+    if (m_sceneHdrMs.valid()) {
+        // Nothing to wait on and nothing to preserve: this image exists only
+        // between the first draw of the pass and the resolve at the end of it,
+        // and never leaves the pass at all.
+        const vk::ImageMemoryBarrier2 msToAttachment{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_sceneHdrMs.handle(),
+            .subresourceRange = kWholeColorImage,
+        };
+
+        cmd.pipelineBarrier2(vk::DependencyInfo{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &msToAttachment,
+        });
+    }
+
     // Black rather than a background colour: the sky pass below covers every
     // pixel, so this is only ever seen if that pass fails - and a black frame
     // says so much more clearly than a plausible-looking grey one.
@@ -1315,9 +1413,21 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     // nothing has been drawn here yet and any geometry passes the eLess test.
     depthClear.depthStencil.depth = 1.0f;
 
+    // With anti-aliasing on, the draws go into the multisampled image and the
+    // hardware averages the samples into m_sceneHdr when the pass ends. The
+    // resolve is free in the sense that matters: it happens as the tiles are
+    // written out, so the multisampled data need never make the round trip to
+    // memory that doing it by hand would force.
+    const bool multisampled = m_sceneHdrMs.valid();
+
     const vk::RenderingAttachmentInfo colorAttachment{
-        .imageView = m_sceneHdr.view(),
+        .imageView = multisampled ? m_sceneHdrMs.view() : m_sceneHdr.view(),
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .resolveMode = multisampled ? vk::ResolveModeFlagBits::eAverage
+                                    : vk::ResolveModeFlagBits::eNone,
+        .resolveImageView = multisampled ? m_sceneHdr.view() : vk::ImageView{},
+        .resolveImageLayout = multisampled ? vk::ImageLayout::eColorAttachmentOptimal
+                                           : vk::ImageLayout::eUndefined,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
         .clearValue = colorClear,

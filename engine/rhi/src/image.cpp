@@ -5,12 +5,15 @@
 
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace fumar::rhi {
 
 Image::Image(Device& device, const ImageDesc& desc)
-    : m_device(&device), m_format(desc.format), m_extent(desc.extent), m_aspect(desc.aspect) {
+    : m_device(&device), m_format(desc.format), m_extent(desc.extent), m_aspect(desc.aspect),
+      m_mipLevels(desc.mipLevels), m_samples(desc.samples) {
     FUMAR_ASSERT(desc.extent.width > 0 && desc.extent.height > 0);
 
     const VkImageCreateInfo imageInfo{
@@ -22,7 +25,7 @@ Image::Image(Device& device, const ImageDesc& desc)
         .extent = {desc.extent.width, desc.extent.height, 1},
         .mipLevels = desc.mipLevels,
         .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .samples = static_cast<VkSampleCountFlagBits>(desc.samples),
         // OPTIMAL lets the driver choose whatever internal layout the hardware
         // samples fastest. LINEAR would be row-major and CPU-readable, but is
         // only supported for a narrow set of formats and is much slower.
@@ -62,6 +65,11 @@ Image::Image(Device& device, const ImageDesc& desc)
     });
 }
 
+u32 Image::fullMipChain(vk::Extent2D extent) {
+    const u32 largest = std::max(extent.width, extent.height);
+    return static_cast<u32>(std::floor(std::log2(largest))) + 1u;
+}
+
 Image::~Image() {
     destroy();
 }
@@ -73,7 +81,9 @@ Image::Image(Image&& other) noexcept
       m_allocation(std::exchange(other.m_allocation, nullptr)),
       m_format(other.m_format),
       m_extent(other.m_extent),
-      m_aspect(other.m_aspect) {}
+      m_aspect(other.m_aspect),
+      m_mipLevels(other.m_mipLevels),
+      m_samples(other.m_samples) {}
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
@@ -85,6 +95,8 @@ Image& Image::operator=(Image&& other) noexcept {
         m_format = other.m_format;
         m_extent = other.m_extent;
         m_aspect = other.m_aspect;
+        m_mipLevels = other.m_mipLevels;
+        m_samples = other.m_samples;
     }
     return *this;
 }

@@ -240,8 +240,16 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
     // falls back to a width of 1 otherwise.
     m_wideLinesSupported = m_physicalDevice.getFeatures().wideLines == VK_TRUE;
 
+    // Anisotropic filtering, which is what keeps a floor sharp when it is seen
+    // edge-on. Optional in the specification and present on everything with a
+    // screen attached, so it is requested when offered and skipped otherwise.
+    m_maxAnisotropy = m_physicalDevice.getFeatures().samplerAnisotropy == VK_TRUE
+                          ? m_properties.limits.maxSamplerAnisotropy
+                          : 1.0f;
+
     vk::PhysicalDeviceFeatures features10{};
     features10.fillModeNonSolid = VK_TRUE;
+    features10.samplerAnisotropy = m_maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
     features10.wideLines = m_wideLinesSupported ? VK_TRUE : VK_FALSE;
 
     // Only with ray tracing: the reflection shader holds buffer addresses, and

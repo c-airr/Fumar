@@ -1186,6 +1186,17 @@ void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& rend
         ImGui::SeparatorText("Viewport");
         ImGui::Text("%ux%u px", renderer.viewportExtent().width, renderer.viewportExtent().height);
 
+        if (renderer.sampleCount() > 1) {
+            ImGui::Text("%ux MSAA", renderer.sampleCount());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Coverage is kept per sample while shading still runs\n"
+                                  "once per pixel, so a triangle edge comes out as a\n"
+                                  "blend instead of a staircase.");
+            }
+        } else {
+            ImGui::TextUnformatted("no MSAA");
+        }
+
         ImGui::SeparatorText("Camera");
         const Camera& camera = renderer.camera();
         ImGui::Text("Location: %.2f, %.2f, %.2f", static_cast<f64>(camera.position.x),

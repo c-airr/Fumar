@@ -145,6 +145,10 @@ public:
 
     vk::Sampler viewportSampler() const { return *m_sampler; }
 
+    /// Samples per pixel the scene is rasterised with. 1 means no
+    /// anti-aliasing, which is what a GPU that supports no more gets.
+    u32 sampleCount() const { return static_cast<u32>(m_sampleCount); }
+
     Extent2D viewportExtent() const { return m_viewportExtent; }
 
     // --- selection feedback -------------------------------------------------
@@ -209,6 +213,10 @@ private:
 
     /// Size of one level of the bloom chain, in pixels.
     vk::Extent2D bloomMipExtent(u32 level) const;
+
+    /// The highest anti-aliasing level this GPU supports for both the colour
+    /// and the depth attachment, capped at four.
+    vk::SampleCountFlagBits chooseSampleCount() const;
 
     /// Points the tone mapping pass at the current HDR image. Called whenever
     /// that image is rebuilt, which invalidates the descriptor written before.
@@ -304,7 +312,21 @@ private:
     /// surface can be worth 20 and a shadow 0.02 and both survive to the tone
     /// mapper. Sized to the viewport panel, not to the window.
     rhi::Image m_sceneHdr;
+
+    /// Where the geometry is actually rasterised when anti-aliasing is on: the
+    /// same thing as m_sceneHdr but with several samples per pixel, resolved
+    /// down into it at the end of the scene pass.
+    ///
+    /// A second image rather than making m_sceneHdr multisampled, because a
+    /// multisampled image cannot be SAMPLED - which is the one thing every
+    /// pass after the scene needs to do with it.
+    rhi::Image m_sceneHdrMs;
+
     rhi::Image m_depthImage;
+
+    /// Samples per pixel for the scene pass. e1 turns anti-aliasing off and
+    /// takes the multisampled image out of the frame entirely.
+    vk::SampleCountFlagBits m_sampleCount = vk::SampleCountFlagBits::e1;
 
     /// The tone mapped result, in a displayable format. This is the image the
     /// interface samples to show the viewport.

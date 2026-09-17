@@ -46,9 +46,18 @@ public:
 
     /// Fills an image from raw pixels and leaves it in eShaderReadOnlyOptimal,
     /// ready to sample.
+    ///
+    /// When the image was created with more than one mip level, the smaller
+    /// ones are generated here from the pixels just uploaded.
     void uploadImage(Image& image, const void* pixels, usize bytes);
 
 private:
+    /// Fills levels 1..n by blitting each one from the level above, halved.
+    ///
+    /// Recorded into an already-open command buffer with level 0 in
+    /// eTransferDstOptimal; leaves every level in eShaderReadOnlyOptimal.
+    void generateMipmaps(vk::CommandBuffer cmd, Image& image);
+
     Device& m_device;
     vk::UniqueCommandPool m_pool;
     vk::CommandBuffer m_commandBuffer;
