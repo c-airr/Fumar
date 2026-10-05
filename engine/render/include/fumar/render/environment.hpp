@@ -130,6 +130,24 @@ struct Environment {
     /// highlights glow and the ground does not.
     f32 bloomThreshold = 1.1f;
 
+    // --- temporal filter ----------------------------------------------------
+
+    /// How much of the picture is carried over from the frames before it.
+    ///
+    /// Every traced term in the engine is an integral estimated from a handful
+    /// of rays, and a handful of rays is the right answer plus noise. The only
+    /// cure is more samples, and the cheapest place to find them is the frames
+    /// already rendered: reproject the last one, mix a fraction of the new
+    /// estimate into it, and a still pixel ends up averaging hundreds of rays
+    /// instead of sixteen.
+    ///
+    /// 0 turns it off, and the grain comes straight back. 0.9 keeps nine tenths
+    /// of the history, so the average runs about twenty frames deep - a fifth of
+    /// a second, short enough that the lag behind a moving sun is invisible.
+    /// Past about 0.97 the picture is cleaner still and visibly behind the
+    /// camera.
+    f32 temporalStrength = 0.9f;
+
     /// Unit vector pointing TOWARDS the sun, derived from the two angles.
     ///
     /// Elevation lifts it off the horizon and azimuth swings it around, in a

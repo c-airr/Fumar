@@ -111,6 +111,29 @@ float hash13(vec3 position) {
     return fract((p.x + p.y) * p.z);
 }
 
+/// Which way to turn a sampling spiral: for this surface point, on this frame.
+///
+/// Two jobs in one number. Across the SCREEN the hash decorrelates neighbouring
+/// pixels, so what is left of the noise is fine grain rather than blotches.
+/// Across TIME the frame index advances it, so the sixteen rays traced this
+/// frame are not the sixteen traced last frame - and that is the precondition
+/// for averaging frames together at all. Average an estimate with itself and
+/// nothing improves; the grain simply sits there, which is exactly what it did
+/// before this existed.
+///
+/// The step is the fractional part of the golden ratio. Any irrational step
+/// goes round the circle without ever repeating, but this is the number hardest
+/// to approximate with a fraction, which makes it the slowest to fall into
+/// clusters: stop after any number of frames and the rotations used so far are
+/// about as evenly spread as that many can be.
+///
+/// frame.frameIndex is held at zero whenever the temporal filter is off, and
+/// then this is exactly the static, geometry-locked pattern described above -
+/// grain that reads as texture on the object rather than as a crawl across it.
+float sampleRotation(vec3 position) {
+    return fract(hash13(position) + float(frame.frameIndex) * 0.61803399) * 6.2831853;
+}
+
 /// Evenly spaced points on a disc, from a Vogel spiral.
 ///
 /// This replaces random sampling and is most of why the noise went away. Random
@@ -202,7 +225,7 @@ float sunVisibility(vec3 position, vec3 normal, float nDotL) {
     const float spread = tan(max(frame.sunAngularRadius, 0.0001));
 
     // One random number for the whole set: which way the spiral is turned.
-    const float rotation = hash13(position) * 6.2831853;
+    const float rotation = sampleRotation(position);
 
     float visible = 0.0;
     for (int i = 0; i < kShadowSamples; ++i) {
@@ -242,7 +265,7 @@ float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sour
     vec3 bitangent;
     orthonormalBasis(axis, tangent, bitangent);
 
-    const float rotation = hash13(position + vec3(43.0)) * 6.2831853;
+    const float rotation = sampleRotation(position + vec3(43.0));
 
     // Fewer rays than the sun gets. A lamp lights a small part of the frame, so
     // the same budget spread over every light in the scene would cost far more
@@ -430,7 +453,7 @@ vec3 indirectBounce(vec3 position, vec3 normal, out float skyVisibility) {
 
     // Offset from the other sampling rotations, so the sets do not line up and
     // reinforce each other's pattern.
-    const float rotation = hash13(position + vec3(91.0)) * 6.2831853;
+    const float rotation = sampleRotation(position + vec3(91.0));
 
     vec3 sum = vec3(0.0);
     float open = 0.0;
@@ -483,7 +506,7 @@ float ambientOcclusion(vec3 position, vec3 normal) {
 
     // Offset from the shadow rays' rotation, so the two sets do not line up and
     // reinforce each other's pattern.
-    const float rotation = hash13(position + vec3(17.0)) * 6.2831853;
+    const float rotation = sampleRotation(position + vec3(17.0));
 
     float open = 0.0;
     for (int i = 0; i < kOcclusionSamples; ++i) {

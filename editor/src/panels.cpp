@@ -1102,6 +1102,15 @@ void drawWorldSettings(Renderer& renderer) {
                               "which lifts the shadows and flattens the picture.");
         }
 
+        ImGui::DragFloat("Temporal filter", &env.temporalStrength, 0.005f, 0.0f, 0.98f);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How much of each frame is carried over from the ones\n"
+                              "before it. Sixteen rays per pixel leave grain, and this\n"
+                              "is where the rest of the samples come from: at 0.9 a\n"
+                              "still pixel averages about twenty frames. Drop it to 0\n"
+                              "to see what one frame actually looks like.");
+        }
+
         // The direction the two angles work out to. Not editable - it is
         // derived - but seeing it move while dragging is what makes the
         // relationship between the sliders and the world obvious.
@@ -1195,6 +1204,27 @@ void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& rend
             }
         } else {
             ImGui::TextUnformatted("no MSAA");
+        }
+
+        // Gated on the hardware as well as the setting: with no rays there is
+        // no sampling noise, the renderer forces the filter off, and a figure
+        // here would be describing something that is not running.
+        if (renderer.rayTracingSupported() && renderer.environment().temporalStrength > 0.0f) {
+            // An exponential average has no fixed length - every frame ever
+            // rendered is still in there, with a weight that halves and halves.
+            // What stands in for a length is the EFFECTIVE sample count: the
+            // number of equally weighted frames that would reduce the noise by
+            // as much, which for a blend of b is (2 - b) / b.
+            const f32 blend = 1.0f - renderer.environment().temporalStrength;
+            const f32 frames = (2.0f - blend) / blend;
+            ImGui::Text("temporal: ~%.0f frames", static_cast<f64>(frames));
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Frames averaged together to get rid of the ray\n"
+                                  "tracing grain. Multiply by the rays per pixel for\n"
+                                  "the number of samples behind a still image.");
+            }
+        } else {
+            ImGui::TextUnformatted("no temporal filter");
         }
 
         ImGui::SeparatorText("Camera");

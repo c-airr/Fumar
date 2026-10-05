@@ -50,7 +50,18 @@ layout(set = 0, binding = 0) uniform FrameData {
     /// looking without any geometry to interpolate from.
     mat4 invViewProjection;
 
+    /// projection * view as it was LAST frame.
+    ///
+    /// What makes reusing the previous frame possible: a point in the world
+    /// pushed through this lands on the pixel that was looking at it then,
+    /// which is where whatever was worked out about it is stored. Identity on
+    /// the first frame, which is harmless because nothing has been stored yet.
+    mat4 prevViewProjection;
+
     vec4 cameraPosition;
+
+    /// Where the camera was last frame, for the same reason.
+    vec4 prevCameraPosition;
 
     /// Direction TOWARDS the sun, normalised. Pointing at the light rather
     /// than along it is the convention that makes dot(normal, sun) the
@@ -108,6 +119,23 @@ layout(set = 0, binding = 0) uniform FrameData {
 
     /// Where the bright pass starts, in scene radiance, before exposure.
     float bloomThreshold;
+
+    /// How much of the picture is carried over from the previous frames.
+    ///
+    /// 0 turns the temporal filter off and every frame stands alone - which is
+    /// sixteen rays per pixel and the grain that comes with them. At 0.9 a tenth
+    /// of each frame is new, so the estimate behind a still pixel is an average
+    /// of roughly twenty frames: three hundred rays, for the price of sixteen.
+    float temporalStrength;
+
+    /// Which frame this is, counted modulo a small period.
+    ///
+    /// The sampling patterns are turned by it, so consecutive frames trace
+    /// DIFFERENT rays - otherwise averaging them would average the same
+    /// estimate with itself and converge on nothing. Held at zero when the
+    /// temporal filter is off, which freezes the pattern back onto the geometry
+    /// where it belongs if nothing is going to average it.
+    int frameIndex;
 
     /// How many entries of `lights` below are real. The rest are stale and
     /// must not be read - the array is a fixed size, the scene is not.

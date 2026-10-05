@@ -121,6 +121,7 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         {"exposure", env.exposure},
         {"bloom_strength", env.bloomStrength},
         {"bloom_threshold", env.bloomThreshold},
+        {"temporal_strength", env.temporalStrength},
         {"shadow_strength", env.shadowStrength},
         {"occlusion_strength", env.occlusionStrength},
         {"occlusion_radius", env.occlusionRadius},
@@ -451,6 +452,7 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         env.exposure = source.value("exposure", env.exposure);
         env.bloomStrength = source.value("bloom_strength", env.bloomStrength);
         env.bloomThreshold = source.value("bloom_threshold", env.bloomThreshold);
+        env.temporalStrength = source.value("temporal_strength", env.temporalStrength);
         env.shadowStrength = source.value("shadow_strength", env.shadowStrength);
         env.occlusionStrength = source.value("occlusion_strength", env.occlusionStrength);
         env.occlusionRadius = source.value("occlusion_radius", env.occlusionRadius);

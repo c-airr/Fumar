@@ -211,6 +211,13 @@ private:
     /// viewport target, since the chain is sized from it.
     void createBloomChain();
 
+    /// The depth image the temporal pass samples: the resolved copy when
+    /// anti-aliasing is on, and the depth attachment itself when it is not.
+    ///
+    /// A multisampled image cannot be sampled at all, so with MSAA the pass
+    /// resolves depth into a single-sample image alongside the colour.
+    const rhi::Image& sampledDepth() const;
+
     /// Size of one level of the bloom chain, in pixels.
     vk::Extent2D bloomMipExtent(u32 level) const;
 
@@ -218,9 +225,10 @@ private:
     /// and the depth attachment, capped at four.
     vk::SampleCountFlagBits chooseSampleCount() const;
 
-    /// Points the tone mapping pass at the current HDR image. Called whenever
-    /// that image is rebuilt, which invalidates the descriptor written before.
-    void updateTonemapDescriptor();
+    /// Points every pass after the scene at the images it reads: the temporal
+    /// filter, the bloom chain and the tone mapper. Called whenever those
+    /// images are rebuilt, which invalidates the descriptors written before.
+    void updatePostDescriptors();
 
     /// Rewrites the array of every texture in the scene, which is how a ray
     /// reaches the one belonging to whatever it hit.
@@ -243,6 +251,16 @@ private:
     /// buffer.
     void recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex);
     void recordSceneRendering(vk::CommandBuffer cmd);
+
+    /// Mixes the frame just rendered into the running average of the ones
+    /// before it, which is where the ray tracing noise goes.
+    ///
+    /// Runs between the scene and the bloom chain, so everything downstream
+    /// reads the accumulated image rather than the raw one. Always runs, even
+    /// at zero strength: at zero it copies, and the alternative is two
+    /// different images for the rest of the frame to read depending on a
+    /// setting.
+    void recordTemporal(vk::CommandBuffer cmd);
 
     /// Builds the glow: halve the HDR image five times, blurring as it goes,
     /// then add the levels back up. Runs between the scene and the tone mapper,
@@ -284,6 +302,9 @@ private:
     std::unique_ptr<rhi::GraphicsPipeline> m_bloomDownPipeline;
     std::unique_ptr<rhi::GraphicsPipeline> m_bloomUpPipeline;
 
+    /// Averages the scene with the frames before it. See recordTemporal.
+    std::unique_ptr<rhi::GraphicsPipeline> m_temporalPipeline;
+
     /// Same geometry, rasterised as lines. Used to outline the hovered and
     /// selected objects without a second render target or a stencil pass.
     std::unique_ptr<rhi::GraphicsPipeline> m_outlinePipeline;
@@ -297,6 +318,10 @@ private:
     /// the glow together, and a layout with one binding cannot say that.
     vk::UniqueDescriptorSetLayout m_postSetLayout;
 
+    /// Three: this frame, the accumulated history, and the depth that connects
+    /// them. See temporal.frag.
+    vk::UniqueDescriptorSetLayout m_temporalSetLayout;
+
     vk::UniqueSampler m_sampler;
 
     /// Clamped at the edges, unlike m_sampler, which repeats.
@@ -307,6 +332,15 @@ private:
     /// would glow faintly onto the other. Materials want repeat, because that
     /// is what tiling means; post passes want clamp.
     vk::UniqueSampler m_clampSampler;
+
+    /// Nearest neighbour, clamped. For reading the depth buffer.
+    ///
+    /// Not a style choice: linear filtering of a depth format is optional in
+    /// Vulkan and most drivers do not offer it, so sampling depth through a
+    /// linear sampler is a validation error rather than a blurry result. It
+    /// would be the wrong thing anyway - the average of two depths is a
+    /// distance at which there is no surface.
+    vk::UniqueSampler m_pointSampler;
 
     /// Where the scene is actually drawn: a floating-point image, so a sunlit
     /// surface can be worth 20 and a shadow 0.02 and both survive to the tone
@@ -323,6 +357,49 @@ private:
     rhi::Image m_sceneHdrMs;
 
     rhi::Image m_depthImage;
+
+    /// Depth at one sample per pixel, resolved out of m_depthImage at the end
+    /// of the scene pass. Only exists when anti-aliasing is on - without it
+    /// m_depthImage is already single-sampled and is read directly.
+    ///
+    /// The temporal pass needs depth to turn a pixel back into a point in the
+    /// world, and a multisampled image cannot be sampled. The resolve takes
+    /// sample zero rather than an average, which is the only mode Vulkan
+    /// requires every implementation to support - and the right one regardless,
+    /// since the mean of several depths is a distance at which nothing is.
+    rhi::Image m_depthResolved;
+
+    /// The running average the temporal filter maintains, two deep.
+    ///
+    /// Two images and not one because a pass cannot read the image it writes.
+    /// Each frame reads one and writes the other, and they swap - which is why
+    /// everything downstream is told which one is current rather than being
+    /// handed a fixed image.
+    ///
+    /// rgb is accumulated radiance and alpha is the distance to the surface
+    /// that produced it, which is how the next frame decides whether what is
+    /// stored belongs to what it is looking at.
+    std::array<rhi::Image, 2> m_accum;
+
+    /// Which of m_accum holds this frame's result. The other holds last
+    /// frame's, and is the history being read.
+    u32 m_accumIndex = 0;
+
+    /// False for exactly one frame after the images are created, when there is
+    /// no history yet - whatever is in the image is uninitialised memory, not a
+    /// picture, and reading it would show as a flash of noise.
+    bool m_historyValid = false;
+
+    /// Frames rendered since startup. Advances the sampling patterns so
+    /// consecutive frames trace different rays, which is the whole point of
+    /// averaging them.
+    u32 m_frameCounter = 0;
+
+    /// The camera as it was last frame, for the temporal pass to reproject
+    /// with. Captured at the end of updateFrameUniforms, so it is always
+    /// exactly one frame behind.
+    Mat4 m_prevViewProjection = identity();
+    Vec3 m_prevCameraPosition{};
 
     /// Samples per pixel for the scene pass. e1 turns anti-aliasing off and
     /// takes the multisampled image out of the frame entirely.
@@ -351,22 +428,27 @@ private:
     /// source without rewriting a descriptor mid-frame.
     std::vector<vk::DescriptorSet> m_bloomMipSets;
 
-    /// The HDR scene, as the bloom chain's first source.
+    /// The accumulated scene, as the bloom chain's first source - one per
+    /// m_accum image, selected by whichever is current.
     ///
     /// Points at the same image the tone mapper's set does, and exists anyway,
     /// because a bound descriptor set has to match the layout its pipeline was
     /// built with - and the tone mapper's set holds two bindings where the
     /// bloom pipelines declare one.
-    vk::DescriptorSet m_bloomSourceSet;
+    std::array<vk::DescriptorSet, 2> m_bloomSourceSets{};
+
+    /// This frame's scene, the history, and the depth - one set per history
+    /// image, since which of the two is being read alternates.
+    std::array<vk::DescriptorSet, 2> m_temporalSets{};
 
     /// How many levels the chain actually has. Usually kBloomMips, fewer when
     /// the viewport panel is too small to be halved that many times.
     u32 m_bloomMipCount = 0;
 
-    /// Descriptor pointing at m_sceneHdr and the finished glow, for the tone
-    /// mapping pass. Rewritten whenever the viewport is resized, since that
-    /// replaces both images.
-    vk::DescriptorSet m_tonemapSet;
+    /// Descriptors pointing at the accumulated scene and the finished glow, for
+    /// the tone mapping pass - again one per history image. Rewritten whenever
+    /// the viewport is resized, since that replaces every image they name.
+    std::array<vk::DescriptorSet, 2> m_tonemapSets{};
     Extent2D m_viewportExtent{1280, 720};
 
     vk::Format m_depthFormat = vk::Format::eUndefined;

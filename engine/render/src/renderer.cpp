@@ -93,7 +93,9 @@ struct alignas(16) FrameUniforms {
     Mat4 view;
     Mat4 projection;
     Mat4 invViewProjection;
+    Mat4 prevViewProjection;
     Vec4 cameraPosition;
+    Vec4 prevCameraPosition;
     Vec4 sunDirection;
     Vec4 sunColor;
     Vec4 skyZenithColor;
@@ -111,9 +113,20 @@ struct alignas(16) FrameUniforms {
     f32 indirectStrength;
     f32 bloomStrength;
     f32 bloomThreshold;
+    f32 temporalStrength;
+    i32 frameIndex;
     i32 lightCount;
     std::array<LightUniform, kMaxLights> lights;
 };
+
+/// How many frames the sampling pattern takes to come back round.
+///
+/// The pattern is advanced by the golden ratio each frame, which never repeats
+/// - but the index it is multiplied by cannot grow without bound or it loses
+/// precision as a float. Wrapping at 64 repeats a set of 64 rotations that are
+/// still evenly spread, and the temporal average only ever reaches about twenty
+/// frames back, so nothing lives long enough to see the repeat.
+constexpr u32 kSamplePatternPeriod = 64;
 
 /// Push constants, matching the block in shaders/object.glsl.
 ///
@@ -301,6 +314,29 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .depthWrite = false,
                    });
 
+    // --- the temporal filter ------------------------------------------------
+    // Set 0 is the frame data, for this frame's camera and last frame's; set 1
+    // is the three images it reads. No depth attachment and no push constants:
+    // everything it needs is in those two sets.
+    const std::array<vk::DescriptorSetLayout, 2> temporalSetLayouts{*m_cameraSetLayout,
+                                                                    *m_temporalSetLayout};
+
+    m_temporalPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "fullscreen.vert.spv",
+                       .fragmentShader = shaderDir / "temporal.frag.spv",
+                       // One sample, unlike the scene pipelines above: the
+                       // multisampling is already resolved by the time this
+                       // runs, and what it writes is read as a texture.
+                       .colorFormat = kSceneHdrFormat,
+                       .vertexBindings = {},
+                       .vertexAttributes = {},
+                       .setLayouts = temporalSetLayouts,
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       .depthTest = false,
+                       .depthWrite = false,
+                   });
+
     // --- the bloom chain ----------------------------------------------------
     // One source image, one target, no frame data: everything these two need
     // arrives in push constants, so they take a single set layout - the
@@ -374,13 +410,19 @@ Renderer::~Renderer() {
     m_lightMarker = Mesh{};
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
+    m_depthResolved = rhi::Image{};
     m_sceneHdr = rhi::Image{};
     m_sceneHdrMs = rhi::Image{};
     m_sceneColor = rhi::Image{};
+    for (rhi::Image& image : m_accum) {
+        image = rhi::Image{};
+    }
     m_bloomMipViews.clear();
     m_bloom = rhi::Image{};
+    m_pointSampler.reset();
     m_clampSampler.reset();
     m_sampler.reset();
+    m_temporalSetLayout.reset();
     m_postSetLayout.reset();
     m_materialSetLayout.reset();
     m_cameraSetLayout.reset();
@@ -388,6 +430,7 @@ Renderer::~Renderer() {
     m_frames.reset();
     m_bloomUpPipeline.reset();
     m_bloomDownPipeline.reset();
+    m_temporalPipeline.reset();
     m_tonemapPipeline.reset();
     m_skyPipeline.reset();
     m_outlinePipeline.reset();
@@ -415,8 +458,15 @@ void Renderer::createViewportTarget(Extent2D size) {
             vk::Format::eD32SfloatS8Uint,
             vk::Format::eD24UnormS8Uint,
         };
-        m_depthFormat = m_device->findSupportedFormat(candidates, vk::ImageTiling::eOptimal,
-                                                      vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+        // eSampledImage as well as the attachment bit, because the temporal
+        // pass READS the depth buffer to turn a pixel back into a point in the
+        // world. Sampling a depth format is not something Vulkan promises for
+        // every one of them, so it goes into the search rather than being
+        // discovered later as a validation error.
+        m_depthFormat = m_device->findSupportedFormat(
+            candidates, vk::ImageTiling::eOptimal,
+            vk::FormatFeatureFlagBits::eDepthStencilAttachment |
+                vk::FormatFeatureFlagBits::eSampledImage);
         FUMAR_VERIFY_MSG(m_depthFormat != vk::Format::eUndefined, "no usable depth format");
         FUMAR_INFO("depth format: {}", vk::to_string(m_depthFormat));
     }
@@ -473,10 +523,19 @@ void Renderer::createViewportTarget(Extent2D size) {
                                              });
     }
 
+    // With anti-aliasing on, the depth attachment is multisampled and cannot be
+    // sampled by a shader at all, so it is resolved into the image below and
+    // this one needs no eSampled. Without it, this IS the image the temporal
+    // pass reads.
+    const bool multisampled = m_sampleCount != vk::SampleCountFlagBits::e1;
+
     m_depthImage = rhi::Image(*m_device, rhi::ImageDesc{
                                              .extent = extent,
                                              .format = m_depthFormat,
-                                             .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                                             .usage = multisampled
+                                                          ? vk::ImageUsageFlags{vk::ImageUsageFlagBits::eDepthStencilAttachment}
+                                                          : vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                                                                vk::ImageUsageFlagBits::eSampled,
                                              .aspect = vk::ImageAspectFlagBits::eDepth,
                                              // Matched to the colour target:
                                              // the two are attachments of the
@@ -485,7 +544,39 @@ void Renderer::createViewportTarget(Extent2D size) {
                                              .samples = m_sampleCount,
                                          });
 
+    if (multisampled) {
+        m_depthResolved = rhi::Image(*m_device,
+                                     rhi::ImageDesc{
+                                         .extent = extent,
+                                         .format = m_depthFormat,
+                                         .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                                                  vk::ImageUsageFlagBits::eSampled,
+                                         .aspect = vk::ImageAspectFlagBits::eDepth,
+                                     });
+    }
+
+    // The pair the temporal filter alternates between. Both are written as
+    // colour attachments and read as textures, and neither is transient: the
+    // whole point is that one of them survives into the next frame.
+    for (rhi::Image& image : m_accum) {
+        image = rhi::Image(*m_device, rhi::ImageDesc{
+                                          .extent = extent,
+                                          .format = kSceneHdrFormat,
+                                          .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                                                   vk::ImageUsageFlagBits::eSampled,
+                                          .aspect = vk::ImageAspectFlagBits::eColor,
+                                      });
+    }
+
+    // Brand new images hold uninitialised memory, not a picture of anything.
+    // One frame of running without history, and then there is some.
+    m_historyValid = false;
+
     createBloomChain();
+}
+
+const rhi::Image& Renderer::sampledDepth() const {
+    return m_depthResolved.valid() ? m_depthResolved : m_depthImage;
 }
 
 vk::SampleCountFlagBits Renderer::chooseSampleCount() const {
@@ -570,10 +661,10 @@ bool Renderer::resizeViewport(Extent2D size) {
     m_device->waitIdle();
     createViewportTarget(size);
 
-    // createViewportTarget replaced the HDR image, so the descriptor the tone
-    // mapping pass reads it through now points at a freed view. Safe to rewrite
-    // here and only here, because of the waitIdle above.
-    updateTonemapDescriptor();
+    // createViewportTarget replaced every off-screen image, so the descriptors
+    // the passes after the scene read them through now point at freed views.
+    // Safe to rewrite here and only here, because of the waitIdle above.
+    updatePostDescriptors();
 
     FUMAR_DEBUG("viewport target resized to {}x{}", size.width, size.height);
     return true;
@@ -648,6 +739,27 @@ void Renderer::createDefaultTexture() {
         // level, so "level 0" of that view already means the level meant.
         .maxLod = 0.0f,
     });
+
+    // For the depth buffer, which the temporal pass reads to turn a pixel back
+    // into a point in the world.
+    //
+    // Nearest, and not as an approximation: linear filtering of a depth format
+    // is OPTIONAL in Vulkan and most drivers do not offer it, so a linear
+    // sampler here is a validation error rather than a soft result. It would
+    // also be meaningless - halfway between the depth of a near surface and a
+    // far one there is no surface at all, and reconstructing a position from
+    // that average puts the point in mid-air.
+    m_pointSampler = m_device->handle().createSamplerUnique(vk::SamplerCreateInfo{
+        .magFilter = vk::Filter::eNearest,
+        .minFilter = vk::Filter::eNearest,
+        .mipmapMode = vk::SamplerMipmapMode::eNearest,
+        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeW = vk::SamplerAddressMode::eClampToEdge,
+        .anisotropyEnable = VK_FALSE,
+        .minLod = 0.0f,
+        .maxLod = 0.0f,
+    });
 }
 
 void Renderer::createDescriptors() {
@@ -687,23 +799,40 @@ void Renderer::createDescriptors() {
                                    vk::ShaderStageFlagBits::eFragment)
                           .build(handle);
 
+    // The temporal pass reads three: the frame just rendered, the running
+    // average of the ones before it, and the depth that says which pixel of the
+    // second corresponds to which pixel of the first.
+    m_temporalSetLayout = rhi::DescriptorSetLayoutBuilder()
+                              .binding(0, vk::DescriptorType::eCombinedImageSampler,
+                                       vk::ShaderStageFlagBits::eFragment)
+                              .binding(1, vk::DescriptorType::eCombinedImageSampler,
+                                       vk::ShaderStageFlagBits::eFragment)
+                              .binding(2, vk::DescriptorType::eCombinedImageSampler,
+                                       vk::ShaderStageFlagBits::eFragment)
+                              .build(handle);
+
     // One camera set per frame in flight, plus one material set per loaded
     // material. Pools do not grow, so the material budget is fixed up front -
     // a real asset system would allocate a pool per scene instead of guessing.
     constexpr u32 kMaterialBudget = 64;
 
-    // Plus the image sets the renderer keeps for itself: one for the tone
-    // mapping pass, and one per level of the bloom chain so a pass can bind the
-    // level below it as its source without rewriting a descriptor mid-frame.
-    // Two of those are the scene image seen through different layouts: the
-    // tone mapper reads it alongside the glow, the bloom chain on its own.
-    constexpr u32 kInternalImageSets = 2 + kBloomMips;
+    // Plus the image sets the renderer keeps for itself, none of which belong
+    // to a material: one per level of the bloom chain, so a pass can bind the
+    // level below it as its source without rewriting a descriptor mid-frame,
+    // and then two each for the tone mapper, the bloom chain's first source and
+    // the temporal pass - two because the accumulated image alternates between
+    // a pair, and a descriptor cannot be rewritten mid-flight.
+    constexpr u32 kInternalImageSets = 6 + kBloomMips;
+
+    // More descriptors than sets, because three of those sets hold more than
+    // one image each: the tone mapper reads the scene and the glow, and the
+    // temporal pass reads the scene, the history and the depth.
+    constexpr u32 kInternalImageDescriptors = 2 * (2 + 1 + 3) + kBloomMips;
+
     std::vector<vk::DescriptorPoolSize> poolSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
-        // One more than there are sets: the tone mapper's holds two images,
-        // the sharp scene and the glow.
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaterialBudget + kInternalImageSets + 1},
+                               kMaterialBudget + kInternalImageDescriptors},
     };
     if (m_device->rayTracingSupported()) {
         poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eAccelerationStructureKHR,
@@ -761,7 +890,15 @@ void Renderer::allocateDescriptorSets() {
         }
     }
 
-    m_tonemapSet = m_descriptorPool->allocate(*m_postSetLayout);
+    // In pairs, because the image these name is one of the two the temporal
+    // filter alternates between. Which one is current changes every frame, and
+    // rewriting a descriptor a frame in flight may be reading is not allowed -
+    // so both exist and the recording picks one.
+    for (u32 slot = 0; slot < 2; ++slot) {
+        m_tonemapSets[slot] = m_descriptorPool->allocate(*m_postSetLayout);
+        m_bloomSourceSets[slot] = m_descriptorPool->allocate(*m_materialSetLayout);
+        m_temporalSets[slot] = m_descriptorPool->allocate(*m_temporalSetLayout);
+    }
 
     // One set per level of the bloom chain, allocated once here and rewritten
     // on a resize. Allocated once because the pool cannot free individual sets,
@@ -772,11 +909,9 @@ void Renderer::allocateDescriptorSets() {
         set = m_descriptorPool->allocate(*m_materialSetLayout);
     }
 
-    m_bloomSourceSet = m_descriptorPool->allocate(*m_materialSetLayout);
-
-    // Fills in both of the above. Everything they point at was created by
+    // Fills in all of the above. Everything they point at was created by
     // createViewportTarget, which runs before this.
-    updateTonemapDescriptor();
+    updatePostDescriptors();
 
     // The camera sets were just reallocated, so whatever was written into their
     // texture array went with them.
@@ -841,14 +976,27 @@ void Renderer::refreshTextureArray() {
     FUMAR_DEBUG("texture array refreshed, {} texture(s) in the scene", count);
 }
 
-void Renderer::updateTonemapDescriptor() {
+void Renderer::updatePostDescriptors() {
     rhi::DescriptorWriter writer;
 
-    // The clamped sampler, not the repeating one the materials use: both of
-    // these are read by passes that reach past the edge of the image.
-    writer.image(m_tonemapSet, 0, m_sceneHdr.view(), *m_clampSampler);
-    writer.image(m_tonemapSet, 1, *m_bloomMipViews[0], *m_clampSampler);
-    writer.image(m_bloomSourceSet, 0, m_sceneHdr.view(), *m_clampSampler);
+    // The clamped sampler, not the repeating one the materials use: every one
+    // of these is read by a pass that reaches past the edge of the image, and
+    // what a repeating sampler finds there is the opposite edge of the frame.
+    for (u32 slot = 0; slot < 2; ++slot) {
+        // `slot` is which accumulated image is CURRENT. The tone mapper and the
+        // bloom chain read that one; the temporal pass reads the other, which is
+        // last frame's, and writes this one.
+        const u32 history = slot ^ 1u;
+
+        writer.image(m_tonemapSets[slot], 0, m_accum[slot].view(), *m_clampSampler);
+        writer.image(m_tonemapSets[slot], 1, *m_bloomMipViews[0], *m_clampSampler);
+
+        writer.image(m_bloomSourceSets[slot], 0, m_accum[slot].view(), *m_clampSampler);
+
+        writer.image(m_temporalSets[slot], 0, m_sceneHdr.view(), *m_clampSampler);
+        writer.image(m_temporalSets[slot], 1, m_accum[history].view(), *m_clampSampler);
+        writer.image(m_temporalSets[slot], 2, sampledDepth().view(), *m_pointSampler);
+    }
 
     for (u32 level = 0; level < m_bloomMipCount; ++level) {
         writer.image(m_bloomMipSets[level], 0, *m_bloomMipViews[level], *m_clampSampler);
@@ -1175,7 +1323,9 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         // every one of the two million pixels the sky covers, so computing it
         // once per frame on the CPU is free by comparison.
         .invViewProjection = inverse(projection * view),
+        .prevViewProjection = m_prevViewProjection,
         .cameraPosition = point(m_camera.position),
+        .prevCameraPosition = point(m_prevCameraPosition),
         .sunDirection = direction(env.sunDirection()),
         .sunColor = Vec4{env.sunColor.x, env.sunColor.y, env.sunColor.z, 1.0f},
         .skyZenithColor = Vec4{env.skyZenithColor.x, env.skyZenithColor.y, env.skyZenithColor.z, 1.0f},
@@ -1197,6 +1347,24 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
             m_device->rayTracingSupported() ? env.indirectStrength : 0.0f,
         .bloomStrength = env.bloomStrength,
         .bloomThreshold = env.bloomThreshold,
+        // Zero on the frame after the images were created, because there is no
+        // history to carry over yet - the pair holds uninitialised memory, and
+        // averaging that in would be a flash of whatever was in it. Zero means
+        // "this frame only", which is exactly right once.
+        //
+        // Also zero when the GPU cannot trace: with no rays there is no
+        // sampling noise, and nothing left for the filter to do but add lag.
+        .temporalStrength = (m_historyValid && m_device->rayTracingSupported())
+                                ? env.temporalStrength
+                                : 0.0f,
+        // Turns the sampling patterns, so each frame traces different rays and
+        // the average over frames is an average of different estimates. Held at
+        // zero when the filter is off, which locks the pattern to the geometry -
+        // grain that sits still looks like texture, grain that moves looks like
+        // a fault.
+        .frameIndex = (m_historyValid && env.temporalStrength > 0.0f)
+                          ? static_cast<i32>(m_frameCounter % kSamplePatternPeriod)
+                          : 0,
         // Filled in below, once the scene has been walked.
         .lightCount = 0,
         .lights = {},
@@ -1253,6 +1421,13 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
     // A plain memcpy into persistently mapped memory. No fence is needed: this
     // slot's previous frame was already waited on before we got here.
     m_perFrame[frameIndex].cameraUniforms.write(&uniforms, sizeof(uniforms));
+
+    // Last, so that everything above read the PREVIOUS values. This is the
+    // whole of the temporal filter's state on the CPU side: where the camera
+    // was when the picture it is about to reuse was taken.
+    m_prevViewProjection = projection * view;
+    m_prevCameraPosition = m_camera.position;
+    ++m_frameCounter;
 }
 
 void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex) {
@@ -1381,24 +1556,42 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     });
 
     if (m_sceneHdrMs.valid()) {
-        // Nothing to wait on and nothing to preserve: this image exists only
-        // between the first draw of the pass and the resolve at the end of it,
-        // and never leaves the pass at all.
-        const vk::ImageMemoryBarrier2 msToAttachment{
-            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
-            .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_sceneHdrMs.handle(),
-            .subresourceRange = kWholeColorImage,
+        const std::array<vk::ImageMemoryBarrier2, 2> msToAttachment{
+            // Nothing to wait on and nothing to preserve: this image exists
+            // only between the first draw of the pass and the resolve at the
+            // end of it, and never leaves the pass at all.
+            vk::ImageMemoryBarrier2{
+                .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+                .oldLayout = vk::ImageLayout::eUndefined,
+                .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = m_sceneHdrMs.handle(),
+                .subresourceRange = kWholeColorImage,
+            },
+            // Where depth is resolved to, which the temporal pass read last
+            // frame - hence the wait on a fragment shader rather than on
+            // anything to do with depth.
+            vk::ImageMemoryBarrier2{
+                .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+                .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+                .dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                vk::PipelineStageFlagBits2::eLateFragmentTests,
+                .dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+                .oldLayout = vk::ImageLayout::eUndefined,
+                .newLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = m_depthResolved.handle(),
+                .subresourceRange = kWholeDepthImage,
+            },
         };
 
         cmd.pipelineBarrier2(vk::DependencyInfo{
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &msToAttachment,
+            .imageMemoryBarrierCount = static_cast<u32>(msToAttachment.size()),
+            .pImageMemoryBarriers = msToAttachment.data(),
         });
     }
 
@@ -1433,13 +1626,31 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         .clearValue = colorClear,
     };
 
+    // Depth is resolved as well as colour, because the temporal pass needs it:
+    // depth is the only thing that can turn a pixel back into a point in the
+    // world, which is what makes reprojecting the previous frame possible.
+    //
+    // eSampleZero, not eAverage. It is the one depth resolve mode Vulkan
+    // requires every implementation to support, and it is also the correct one
+    // - averaging the depths of a near surface and a far one gives a distance
+    // at which there is no surface at all.
     const vk::RenderingAttachmentInfo depthAttachment{
         .imageView = m_depthImage.view(),
         .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+        .resolveMode = multisampled ? vk::ResolveModeFlagBits::eSampleZero
+                                    : vk::ResolveModeFlagBits::eNone,
+        .resolveImageView = multisampled ? m_depthResolved.view() : vk::ImageView{},
+        .resolveImageLayout = multisampled ? vk::ImageLayout::eDepthAttachmentOptimal
+                                           : vk::ImageLayout::eUndefined,
         .loadOp = vk::AttachmentLoadOp::eClear,
-        // eDontCare: depth is scratch space for this frame only, and saying we
-        // do not need it back lets the driver skip writing it out to memory.
-        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        // With anti-aliasing on, the multisampled depth really is scratch space
+        // for this pass - the resolve happens as the pass ends regardless of
+        // the store, so saying it is not needed lets the driver skip writing
+        // several samples per pixel out to memory. Without anti-aliasing there
+        // is nothing to resolve INTO and this image is what gets sampled, so it
+        // has to survive the pass.
+        .storeOp = multisampled ? vk::AttachmentStoreOp::eDontCare
+                                : vk::AttachmentStoreOp::eStore,
         .clearValue = depthClear,
     };
 
@@ -1644,6 +1855,131 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     cmd.endRendering();
 }
 
+void Renderer::recordTemporal(vk::CommandBuffer cmd) {
+    const vk::Extent2D extent{m_viewportExtent.width, m_viewportExtent.height};
+
+    // The pair swaps every frame: what was written last frame is now the
+    // history being read, and what was read then is about to be overwritten.
+    // Nothing outside this function needs to know which is which beyond "the
+    // current one", which is what m_accumIndex names.
+    m_accumIndex ^= 1u;
+    const u32 current = m_accumIndex;
+    const u32 history = current ^ 1u;
+
+    const std::array<vk::ImageMemoryBarrier2, 4> entry{
+        // The frame that was just rendered, about to be read as a texture.
+        // eColorAttachmentOptimal as the old layout, not eUndefined: its
+        // contents are the entire input.
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_sceneHdr.handle(),
+            .subresourceRange = kWholeColorImage,
+        },
+        // Depth, likewise. Written by the depth test rather than by a shader,
+        // so the stages it is waited on at are the fragment test ones.
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                            vk::PipelineStageFlagBits2::eLateFragmentTests,
+            .srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .oldLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = sampledDepth().handle(),
+            .subresourceRange = kWholeDepthImage,
+        },
+        // Last frame's average, which is already readable: the bloom chain put
+        // it in this layout last frame and nothing has moved it since. So this
+        // transitions nothing in the ordinary case, and exists for the first
+        // frame after the images are created, when the layout really is
+        // undefined - the shader names this binding, and the validation layers
+        // check the layout of everything a shader COULD read, not of what it
+        // does read with the history switched off.
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .oldLayout = m_historyValid ? vk::ImageLayout::eShaderReadOnlyOptimal
+                                        : vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_accum[history].handle(),
+            .subresourceRange = kWholeColorImage,
+        },
+        // Where this frame's average goes. Every pixel is written by the
+        // fullscreen draw, so nothing is preserved; the wait is on the bloom
+        // chain and the tone mapper, which read this same image two frames ago.
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_accum[current].handle(),
+            .subresourceRange = kWholeColorImage,
+        },
+    };
+
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = static_cast<u32>(entry.size()),
+        .pImageMemoryBarriers = entry.data(),
+    });
+
+    const vk::RenderingAttachmentInfo colorAttachment{
+        .imageView = m_accum[current].view(),
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eDontCare,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+    };
+
+    cmd.beginRendering(vk::RenderingInfo{
+        .renderArea = vk::Rect2D{.offset = {0, 0}, .extent = extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachment,
+    });
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_temporalPipeline->handle());
+    cmd.setViewport(0, vk::Viewport{
+                           .x = 0.0f,
+                           .y = 0.0f,
+                           .width = static_cast<f32>(extent.width),
+                           .height = static_cast<f32>(extent.height),
+                           .minDepth = 0.0f,
+                           .maxDepth = 1.0f,
+                       });
+    cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = extent});
+
+    // Set 0 for the camera matrices - this frame's and last frame's, which is
+    // what the reprojection is - and set 1 for the three images.
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_temporalPipeline->layout(), 0,
+                           m_perFrame[m_frames->currentFrame()].cameraSet, {});
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_temporalPipeline->layout(), 1,
+                           m_temporalSets[current], {});
+
+    cmd.draw(3, 1, 0, 0);
+    cmd.endRendering();
+
+    // There is now something in the pair worth reading next frame. Left to the
+    // end so that a frame which never got this far - the first one after a
+    // resize - cannot leave the flag set with nothing behind it.
+    m_historyValid = true;
+}
+
 void Renderer::recordBloom(vk::CommandBuffer cmd) {
     // One level of the chain, as a subresource range - every barrier below
     // moves exactly one, because the levels are in different layouts at
@@ -1679,7 +2015,10 @@ void Renderer::recordBloom(vk::CommandBuffer cmd) {
             .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_sceneHdr.handle(),
+            // The temporally accumulated scene, not the raw one: the bloom and
+            // the tone mapper both work from what the temporal pass produced,
+            // which is the same picture with the sampling noise averaged out.
+            .image = m_accum[m_accumIndex].handle(),
             .subresourceRange = kWholeColorImage,
         },
         vk::ImageMemoryBarrier2{
@@ -1774,11 +2113,12 @@ void Renderer::recordBloom(vk::CommandBuffer cmd) {
             fromScene ? vk::Extent2D{m_viewportExtent.width, m_viewportExtent.height}
                       : bloomMipExtent(level - 1);
 
-        // m_bloomSourceSet rather than the tone mapper's, even though both
+        // m_bloomSourceSets rather than the tone mapper's, even though both
         // point at the same image: a bound set has to match the layout the
         // pipeline was built with, and the tone mapper's holds two bindings.
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_bloomDownPipeline->layout(), 0,
-                               fromScene ? m_bloomSourceSet : m_bloomMipSets[level - 1], {});
+        cmd.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, m_bloomDownPipeline->layout(), 0,
+            fromScene ? m_bloomSourceSets[m_accumIndex] : m_bloomMipSets[level - 1], {});
 
         const BloomDownPush push{
             // Of the SOURCE, not the target: the filter is a pattern of taps
@@ -1855,8 +2195,8 @@ void Renderer::recordBloom(vk::CommandBuffer cmd) {
 void Renderer::recordTonemap(vk::CommandBuffer cmd) {
     const vk::Extent2D extent{m_viewportExtent.width, m_viewportExtent.height};
 
-    // The HDR image was already made readable by the bloom pass, which runs
-    // first and needs it too. All that is left is the image being written.
+    // The accumulated scene was already made readable by the bloom pass, which
+    // runs first and needs it too. All that is left is the image being written.
     const vk::ImageMemoryBarrier2 toAttachment{
         // Waits for the interface's fragment shader, which sampled this image
         // last frame to draw the viewport panel.
@@ -1910,7 +2250,7 @@ void Renderer::recordTonemap(vk::CommandBuffer cmd) {
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_tonemapPipeline->layout(), 0,
                            m_perFrame[m_frames->currentFrame()].cameraSet, {});
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_tonemapPipeline->layout(), 1,
-                           m_tonemapSet, {});
+                           m_tonemapSets[m_accumIndex], {});
 
     cmd.draw(3, 1, 0, 0);
 
@@ -2012,15 +2352,24 @@ void Renderer::recordUiRendering(vk::CommandBuffer cmd, u32 imageIndex) {
 void Renderer::recordCommands(u32 imageIndex) {
     const vk::CommandBuffer cmd = m_frames->commandBuffer();
 
-    // Three passes, each reading what the one before it wrote - which is
+    // A chain of passes, each reading what the one before it wrote - which is
     // exactly why they cannot be merged. The scene goes into the HDR target,
-    // the tone mapper turns that into a displayable image, and the interface
-    // draws into the window with that image as one of its textures.
+    // the temporal filter averages it with the frames before it, the bloom
+    // chain extracts its glow, the tone mapper turns the result into a
+    // displayable image, and the interface draws into the window with that
+    // image as one of its textures.
     // Before anything is drawn: the rays traced while shading need this
     // frame's picture of the scene to already exist.
     recordAccelerationStructure(cmd, m_frames->currentFrame());
 
     recordSceneRendering(cmd);
+
+    // Before the bloom, and that order is not a preference: the glow is built
+    // from the bright parts of the picture, and a speckle of sampling noise one
+    // frame is a bright part the next. Blurring noise before averaging it away
+    // would spread it over the screen instead.
+    recordTemporal(cmd);
+
     recordBloom(cmd);
     recordTonemap(cmd);
     recordUiRendering(cmd, imageIndex);
