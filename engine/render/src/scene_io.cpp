@@ -2,11 +2,14 @@
 
 #include "fumar/core/log.hpp"
 #include "fumar/platform/paths.hpp"
+#include "fumar/render/gltf_writer.hpp"
 #include "fumar/render/renderer.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
 #include <fstream>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -75,6 +78,18 @@ std::string toPortablePath(const std::string& absolute) {
     return text;
 }
 
+/// A mesh name made safe to use as a file name: letters, digits, dashes and
+/// underscores kept, everything else - spaces, slashes, colons - turned into
+/// underscores.
+std::string fileNameFor(const std::string& name) {
+    std::string result;
+    for (const char c : name) {
+        const auto u = static_cast<unsigned char>(c);
+        result += (std::isalnum(u) != 0 || c == '-' || c == '_') ? c : '_';
+    }
+    return result.empty() ? std::string("mesh") : result;
+}
+
 std::filesystem::path fromPortablePath(const std::string& stored) {
     const std::filesystem::path path(stored);
     if (path.is_absolute()) {
@@ -131,6 +146,33 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
     };
 
     // --- meshes -------------------------------------------------------------
+    // A modelled mesh has no recipe to write down, only geometry, so it goes
+    // into a .glb of its own beside the scene, and the scene refers to that
+    // file exactly as it would to any imported model. Next time the scene is
+    // loaded it IS an imported model.
+    //
+    // Modelled meshes no node uses any more - what each Modeler session left
+    // behind for undo - are not written at all. Undo history does not survive
+    // a reload, so nothing could ever bring them back.
+    std::vector<bool> used(resources.meshCount(), false);
+    scene.traverse([&](NodeId id, u32) {
+        const MeshHandle handle = scene.node(id).mesh;
+        if (resources.has(handle)) {
+            used[handle.index] = true;
+        }
+    });
+
+    // File names already taken, by imported meshes and by those written in
+    // this save - two meshes both called "Block A" must not land in one file.
+    const std::filesystem::path meshDirectory = path.parent_path() / (path.stem().string() + "_meshes");
+    std::set<std::filesystem::path> claimed;
+    for (u32 i = 0; i < static_cast<u32>(resources.meshCount()); ++i) {
+        const MeshSource& source = resources.meshSource(MeshHandle{i});
+        if (source.imported()) {
+            claimed.insert(std::filesystem::path(source.file).lexically_normal());
+        }
+    }
+
     Json meshes = Json::array();
     for (u32 i = 0; i < static_cast<u32>(resources.meshCount()); ++i) {
         const MeshSource& source = resources.meshSource(MeshHandle{i});
@@ -139,6 +181,35 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         if (!source.name.empty()) {
             entry["name"] = source.name;
         }
+
+        if (source.edited) {
+            if (!used[i]) {
+                // Keeps the index, so nodes' mesh numbers still line up.
+                entry["orphan"] = true;
+                meshes.push_back(std::move(entry));
+                continue;
+            }
+
+            std::error_code ec;
+            std::filesystem::create_directories(meshDirectory, ec);
+
+            const std::string stem = fileNameFor(source.name);
+            std::filesystem::path file = (meshDirectory / (stem + ".glb")).lexically_normal();
+            for (u32 n = 2; claimed.contains(file); ++n) {
+                file = (meshDirectory / (stem + "_" + std::to_string(n) + ".glb")).lexically_normal();
+            }
+            claimed.insert(file);
+
+            if (writeGlb(file, resources.mesh(MeshHandle{i}), source.name)) {
+                entry["file"] = toPortablePath(file.string());
+                entry["primitive"] = 0;
+            } else {
+                entry["orphan"] = true;
+            }
+            meshes.push_back(std::move(entry));
+            continue;
+        }
+
         if (source.imported()) {
             entry["file"] = toPortablePath(source.file);
             entry["primitive"] = source.primitive;
@@ -332,6 +403,11 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
                 }
             }
             meshes.push_back(found);
+            continue;
+        }
+
+        if (entry.value("orphan", false)) {
+            meshes.push_back(MeshHandle{});
             continue;
         }
 

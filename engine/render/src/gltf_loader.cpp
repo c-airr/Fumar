@@ -8,6 +8,7 @@
 #include "fumar/rhi/upload_context.hpp"
 
 #include <cgltf.h>
+#include <nlohmann/json.hpp>
 
 #include <array>
 #include <cstring>
@@ -141,8 +142,31 @@ rhi::Image loadImage(const cgltf_image& image, const std::filesystem::path& base
     return loadTextureFromFile(device, upload, baseDirectory / uri);
 }
 
+/// The polygon sizes fumar writes into a mesh's extras - see writeGlb - or
+/// nothing, for a file from anywhere else.
+std::vector<u32> readPolygonSizes(const cgltf_extras& extras) {
+    if (extras.data == nullptr) {
+        return {};
+    }
+    // Without exceptions: extras are free-form, and a file that puts something
+    // unexpected there is not broken - it just was not written by fumar.
+    const nlohmann::json json = nlohmann::json::parse(extras.data, nullptr, false);
+    if (!json.is_object() || !json.contains("fumarPolygons") || !json["fumarPolygons"].is_array()) {
+        return {};
+    }
+    std::vector<u32> sizes;
+    for (const auto& size : json["fumarPolygons"]) {
+        if (!size.is_number_unsigned()) {
+            return {};
+        }
+        sizes.push_back(size.get<u32>());
+    }
+    return sizes;
+}
+
 /// Builds one Mesh from a glTF primitive, or an empty one if it cannot.
-Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::UploadContext& upload) {
+Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::UploadContext& upload,
+               std::span<const u32> polygonSizes) {
     std::vector<std::array<f32, 3>> positions;
     std::vector<std::array<f32, 3>> normals;
     std::vector<std::array<f32, 2>> uvs;
@@ -203,7 +227,7 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
         generateNormals(vertices, indices);
     }
 
-    return Mesh(device, upload, vertices, indices);
+    return Mesh(device, upload, vertices, indices, polygonSizes);
 }
 
 } // namespace
@@ -333,7 +357,10 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
                 continue;
             }
 
-            Mesh mesh = buildMesh(primitive, context.device, context.upload);
+            // The faces the triangles came from, when fumar wrote the file.
+            const std::vector<u32> polygonSizes = readPolygonSizes(primitive.extras);
+
+            Mesh mesh = buildMesh(primitive, context.device, context.upload, polygonSizes);
             if (!mesh.valid()) {
                 continue;
             }

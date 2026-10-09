@@ -169,7 +169,9 @@ void drawMaterialsPanel(EditorState& state, Renderer& renderer);
 /// each step. Variant "finish" then closes the session and undoes it at the
 /// scene level, checking the cube comes back. Variant "helmet" opens the
 /// starter scene's helmet instead and times it: the large mesh is where
-/// anything quadratic would show.
+/// anything quadratic would show. Variant "save" saves the scene after the
+/// loop cut, loads it back and reopens the block, which is the round trip
+/// through a .glb file.
 ///
 /// Exists because the editor cannot be tested by synthesising key presses
 /// on this machine, and the operations' own tests stop short of the GPU: this

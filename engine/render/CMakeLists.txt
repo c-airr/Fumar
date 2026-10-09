@@ -10,6 +10,7 @@
 add_library(fumar_render STATIC
     src/camera.cpp
     src/gltf_loader.cpp
+    src/gltf_writer.cpp
     src/mesh.cpp
     src/renderer.cpp
     src/resources.cpp

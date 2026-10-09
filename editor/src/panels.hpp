@@ -133,6 +133,9 @@ struct EditorState {
     /// Level, selecting a different node, loading a scene.
     std::optional<EditSession> edit;
 
+    /// Where FUMAR_MODELER_SMOKE=save writes its scene. Unused otherwise.
+    std::string smokeScene;
+
     /// True while the main loop is idling - nothing has happened for a while,
     /// or the window is in the background - and redraws only a few times a
     /// second. Shown in the statistics, where the frame rate would otherwise

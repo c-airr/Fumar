@@ -3,7 +3,9 @@
 #include "panels.hpp"
 
 #include "fumar/core/log.hpp"
+#include "fumar/platform/paths.hpp"
 #include "fumar/render/renderer.hpp"
+#include "fumar/render/scene_io.hpp"
 #include "fumar/ui/imgui_layer.hpp"
 
 #include <ImGuizmo.h>
@@ -1226,6 +1228,43 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         report("loop cut");
         break;
     }
+    case 80:
+        if (variant != "save") {
+            break;
+        }
+        exitEditSession(state, renderer);
+        state.smokeScene = (executableDirectory() / "scenes" / "modeler_smoke.fumar").string();
+        FUMAR_INFO("modeler smoke: saved: {}", saveScene(renderer, state.smokeScene) ? "ok" : "FAILED");
+        break;
+    case 85:
+        if (variant != "save") {
+            break;
+        }
+        state.selected = kInvalidNode;
+        state.history.clear();
+        FUMAR_INFO("modeler smoke: reloaded: {}", loadScene(renderer, state.smokeScene) ? "ok" : "FAILED");
+        break;
+    case 88:
+        if (variant != "save") {
+            break;
+        }
+        scene.traverse([&](NodeId id, u32) {
+            if (scene.node(id).name == "Block A") {
+                state.selected = id;
+            }
+        });
+        state.workspace = Workspace::Modeler;
+        enterEditSession(state, renderer);
+        if (state.edit.has_value()) {
+            report("after save and reload");
+            // Read from the file's extras, not reconstructed: planar quads
+            // would come back as quads either way, so the face count alone
+            // would not show whether the polygons were actually saved.
+            const usize sizes = renderer.resources().mesh(state.edit->originalMesh).polygonSizes().size();
+            FUMAR_INFO("modeler smoke: the file carried {} polygon sizes for {} faces", sizes,
+                       state.edit->geometry.faceCount());
+        }
+        return false;
     case 90:
         if (!finish) {
             return false;
