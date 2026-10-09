@@ -9,6 +9,7 @@
 add_executable(fumar_editor
     src/history.cpp
     src/main.cpp
+    src/modeler.cpp
     src/panels.cpp)
 
 target_link_libraries(fumar_editor PRIVATE

@@ -15,7 +15,8 @@
 add_library(fumar_geometry STATIC
     src/editable_mesh.cpp
     src/operations.cpp
-    src/primitives.cpp)
+    src/primitives.cpp
+    src/raycast.cpp)
 
 add_library(fumar::geometry ALIAS fumar_geometry)
 

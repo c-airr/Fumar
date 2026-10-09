@@ -129,7 +129,7 @@ bool supportsRequiredFeatures(vk::PhysicalDevice device) {
     // lines, which is how the editor draws wireframe outlines. It is optional
     // in the specification but present on every desktop GPU.
     return features13.dynamicRendering == VK_TRUE && features13.synchronization2 == VK_TRUE &&
-           features10.fillModeNonSolid == VK_TRUE;
+           features13.shaderDemoteToHelperInvocation == VK_TRUE && features10.fillModeNonSolid == VK_TRUE;
 }
 
 /// Ranks a GPU. Higher is better; zero means unusable.
@@ -229,8 +229,14 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
 
     // Features are opt-in: a capability the GPU supports still has to be
     // switched on here, or using it is undefined behaviour. Vulkan 1.3 folded
-    // both of these in from extensions.
+    // these in from extensions, and requires every 1.3 device to have them.
+    //
+    // shaderDemoteToHelperInvocation is what `discard` compiles to for a
+    // Vulkan 1.3 target: the fragment stops writing, but stays alive as a
+    // helper so its neighbours' derivatives - fwidth, texture LOD - still have
+    // the values they need. The floor grid relies on both at once.
     vk::PhysicalDeviceVulkan13Features features13{
+        .shaderDemoteToHelperInvocation = VK_TRUE,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };

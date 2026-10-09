@@ -5,10 +5,12 @@
 #include "fumar/scene/scene.hpp"
 
 #include "history.hpp"
+#include "modeler.hpp"
 
 #include <imgui.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -120,6 +122,16 @@ struct EditorState {
 
     /// Shown briefly after a save, so the action is visibly acknowledged.
     f32 saveFlashSeconds = 0.0f;
+
+    // --- modeler ------------------------------------------------------------
+
+    /// Level or Modeler: which panels are up, and what Tab does.
+    Workspace workspace = Workspace::Level;
+
+    /// The mesh open for modelling, if any. Only ever set in the Modeler, and
+    /// closed whenever anything would leave it stranded - switching back to
+    /// Level, selecting a different node, loading a scene.
+    std::optional<EditSession> edit;
 
     /// True while the main loop is idling - nothing has happened for a while,
     /// or the window is in the background - and redraws only a few times a

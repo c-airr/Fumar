@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <utility>
 #include <format>
 
@@ -263,7 +265,11 @@ void handleShortcuts(EditorState& state, bool navigating) {
         return;
     }
 
-    if (!navigating) {
+    // Not with a modifier held: Ctrl+R is a loop cut and Alt+E an extrude in
+    // the Modeler, and neither should also swap the gizmo.
+    const bool plainKey = !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt;
+
+    if (!navigating && plainKey) {
         if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
             state.gizmoMode = GizmoMode::Select;
         }
@@ -276,6 +282,13 @@ void handleShortcuts(EditorState& state, bool navigating) {
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
             state.gizmoMode = GizmoMode::Scale;
         }
+    }
+
+    // With a mesh open, undo, delete and the rest act on the mesh, and the
+    // Modeler's own shortcuts handle them. Acting on the scene as well would
+    // delete the object a vertex was meant to be deleted from.
+    if (state.edit.has_value()) {
+        return;
     }
 
     // Written as a modifier check plus a key press rather than with
@@ -316,6 +329,20 @@ void handleShortcuts(EditorState& state, bool navigating) {
 /// Run between frames, never during one: undo and paste both destroy and create
 /// nodes, and the panels have already been described from the tree as it was.
 void applyEditActions(EditorState& state, Scene& scene) {
+    // Undo from the Edit menu while modelling means undo the last change to
+    // the mesh, the same as Ctrl+Z does. The scene-level actions wait until
+    // the session ends.
+    if (state.edit.has_value()) {
+        if (std::exchange(state.undoRequested, false)) {
+            undoEdit(state);
+        }
+        if (std::exchange(state.redoRequested, false)) {
+            redoEdit(state);
+        }
+        state.copyRequested = state.pasteRequested = state.duplicateRequested = state.deleteRequested = false;
+        return;
+    }
+
     const bool hasSelection = state.selected != kInvalidNode && scene.isAlive(state.selected);
 
     if (std::exchange(state.copyRequested, false) && hasSelection) {
@@ -361,13 +388,33 @@ void applyEditActions(EditorState& state, Scene& scene) {
     }
 }
 
+/// The value of an environment variable, or empty when it is not set.
+std::string environmentValue(const char* name) {
+#if defined(_WIN32)
+    // _dupenv_s rather than getenv, which MSVC's runtime deprecates.
+    char* value = nullptr;
+    usize length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+        return {};
+    }
+    std::string result(value);
+    std::free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : std::string{};
+#endif
+}
+
 /// Turns the cursor position in the viewport into a selection.
 ///
 /// Runs every frame for the hover highlight, and commits to a selection only on
 /// a click. Doing the pick on hover as well is what makes objects light up as
 /// the cursor passes over them.
 void updatePicking(EditorState& state, Renderer& renderer, bool cameraActive) {
-    if (!state.viewportHovered || cameraActive) {
+    // With a mesh open, clicks pick vertices, edges and faces instead - see
+    // drawEditViewport - and the scene is not there to pick from anyway.
+    if (!state.viewportHovered || cameraActive || state.edit.has_value()) {
         state.hovered = kInvalidNode;
         renderer.setHighlighted(kInvalidNode);
         return;
@@ -447,6 +494,11 @@ int main() {
     // playing out. See the pacing block below.
     auto lastActivity = Clock::now();
 
+    // See runModelerSmoke for what the values mean.
+    const std::string smokeSetting = environmentValue("FUMAR_MODELER_SMOKE");
+    bool smokeRunning = !smokeSetting.empty();
+    u32 smokeFrame = 0;
+
     while (!window.shouldClose()) {
         // --- pacing -----------------------------------------------------------
         // Every frame traces sixteen rays a pixel for global illumination plus
@@ -470,7 +522,7 @@ int main() {
         constexpr f32 kIdleAfterSeconds = 1.0f;
         constexpr u32 kIdleRedrawMs = 250;
 
-        const bool animating = state.scriptsRunning || state.saveFlashSeconds > 0.0f ||
+        const bool animating = smokeRunning || state.scriptsRunning || state.saveFlashSeconds > 0.0f ||
                                window.mouseButtonDown(MouseButton::Left) ||
                                window.mouseButtonDown(MouseButton::Right) ||
                                window.mouseButtonDown(MouseButton::Middle);
@@ -535,9 +587,16 @@ int main() {
         drawOutlinerPanel(state, renderer);
         drawDetailsPanel(state, renderer.scene(), renderer, scripts, native);
         // The order here becomes the order of the tabs along the bottom.
-        drawContentPanel(state, renderer);
-        drawScriptsPanel(state, scripts, native);
-        drawStatsPanel(state, renderer.scene(), renderer);
+        if (state.workspace == Workspace::Level) {
+            drawContentPanel(state, renderer);
+            drawScriptsPanel(state, scripts, native);
+            drawStatsPanel(state, renderer.scene(), renderer);
+        } else {
+            // Where the content browser and the statistics were, the
+            // materials; where the scripts were, the modelling tools.
+            drawMaterialsPanel(state, renderer);
+            drawModelingToolsPanel(state, renderer);
+        }
 
         // Which of them is in FRONT is a separate question, decided by whichever
         // was focused last - so on a fresh layout it would be Statistics purely
@@ -557,9 +616,12 @@ int main() {
 
         // Held right mouse means the camera is being flown, which is what
         // stops WASD from doubling as the tool shortcuts.
-        handleShortcuts(state, window.hasFocus() &&
-                                   (window.mouseButtonDown(MouseButton::Right) ||
-                                    window.relativeMouse()));
+        const bool navigating =
+            window.hasFocus() && (window.mouseButtonDown(MouseButton::Right) || window.relativeMouse());
+        handleShortcuts(state, navigating);
+        if (window.hasFocus()) {
+            handleModelerShortcuts(state, renderer, navigating);
+        }
 
         // F5 recompiles, the way every editor with a build step does it.
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
@@ -641,7 +703,27 @@ int main() {
         }
 
         updatePicking(state, renderer, cameraActive);
-        renderer.setSelected(state.selected);
+
+        if (smokeRunning) {
+            smokeRunning = runModelerSmoke(state, renderer, smokeFrame++, smokeSetting);
+        }
+
+        // A mesh is open only while it can be: in the Modeler, on the node it
+        // was opened on, while that node exists. Anything else closes it -
+        // switching to Level, clicking another node in the outliner, undoing
+        // the node away.
+        if (state.edit.has_value() &&
+            (state.workspace != Workspace::Modeler || state.selected != state.edit->node ||
+             !renderer.scene().isAlive(state.edit->node))) {
+            exitEditSession(state, renderer);
+        }
+
+        // The outline is the Level's way of showing a selection. While
+        // modelling, the overlay of vertices and edges does that job.
+        renderer.setSelected(state.edit.has_value() ? kInvalidNode : state.selected);
+
+        // One upload of whatever the mesh became this frame.
+        flushEditSession(state, renderer);
 
         ui.endFrame();
         renderer.drawFrame();
@@ -683,6 +765,7 @@ int main() {
 
         if (state.openRequested) {
             state.openRequested = false;
+            exitEditSession(state, renderer);
             if (loadScene(renderer, state.openPath)) {
                 state.scenePath = state.openPath;
                 state.selected = kInvalidNode;
@@ -703,6 +786,7 @@ int main() {
 
         if (state.newSceneRequested) {
             state.newSceneRequested = false;
+            exitEditSession(state, renderer);
             renderer.resetScene();
             createStarterScene(renderer);
             state.scenePath.clear();

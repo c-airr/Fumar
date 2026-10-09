@@ -13,6 +13,7 @@
 #include "fumar/geometry/editable_mesh.hpp"
 #include "fumar/geometry/operations.hpp"
 #include "fumar/geometry/primitives.hpp"
+#include "fumar/geometry/raycast.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -435,6 +436,41 @@ void flipping() {
     check(inward, "and every face points inward");
 }
 
+void raycasting() {
+    section("ray casting");
+
+    const EditableMesh cube = makeCube();
+    const RayCaster caster(cube);
+
+    const auto front = caster.closest(Vec3{0.0f, 0.0f, 5.0f}, Vec3{0.0f, 0.0f, -1.0f});
+    check(front.has_value() && approx(front->t, 4.5f) && front->face == faceFacing(cube, {0, 0, 1}),
+          "a ray down -Z hits the front face 4.5 units away");
+
+    check(!caster.closest(Vec3{3.0f, 0.0f, 5.0f}, Vec3{0.0f, 0.0f, -1.0f}).has_value(),
+          "a ray beside the cube misses it");
+
+    // From the front, the far corner is hidden and the near one is not. The
+    // ray is aimed AT the corner with t = 1 there, stopping just short so the
+    // corner's own faces do not count.
+    const Vec3 eye{0.2f, 0.3f, 5.0f};
+    const Vec3 nearCorner{0.5f, 0.5f, 0.5f};
+    const Vec3 farCorner{-0.5f, -0.5f, -0.5f};
+    check(!caster.occluded(eye, nearCorner - eye, 0.999f), "a corner facing the eye is visible");
+    check(caster.occluded(eye, farCorner - eye, 0.999f), "the corner behind the cube is hidden");
+
+    // Many triangles, so the tree has real depth: every face of a dense
+    // sphere must still be reachable along its own normal.
+    const EditableMesh sphere = makeUvSphere(1.0f, 48, 24);
+    const RayCaster sphereCaster(sphere);
+    bool everyFaceFound = true;
+    for (u32 f = 0; f < sphere.faces.size(); ++f) {
+        const Vec3 centre = faceCentroid(sphere, sphere.faces[f]);
+        const auto hit = sphereCaster.closest(centre * 3.0f, -centre);
+        everyFaceFound = everyFaceFound && hit.has_value() && hit->face == f;
+    }
+    check(everyFaceFound, "all 1152 faces of a dense sphere are hit through the tree");
+}
+
 void chains() {
     section("operations one after another");
 
@@ -478,6 +514,7 @@ int main() {
     filling();
     subdivision();
     flipping();
+    raycasting();
     chains();
 
     std::printf(failures == 0 ? "\nall good\n" : "\n%d check(s) failed\n", failures);

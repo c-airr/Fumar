@@ -315,6 +315,31 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .depthWrite = false,
                    });
 
+    // --- the floor grid -----------------------------------------------------
+    // Drawn inside the scene pass, after the geometry: tested against its
+    // depth so the object hides the grid, but writing none, so nothing drawn
+    // later is hidden by a floor that is only lines. One set, because all it
+    // needs is the camera.
+    const std::array<vk::DescriptorSetLayout, 1> gridSetLayouts{*m_cameraSetLayout};
+    m_gridPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "fullscreen.vert.spv",
+                       .fragmentShader = shaderDir / "grid.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       .depthFormat = m_depthFormat,
+                       .vertexBindings = {},
+                       .vertexAttributes = {},
+                       .setLayouts = gridSetLayouts,
+                       .samples = m_sampleCount,
+                       .alphaBlend = true,
+                       .cullMode = vk::CullModeFlagBits::eNone,
+                       .depthTest = true,
+                       .depthWrite = false,
+                       // Equal as well: the floor point found for a pixel can
+                       // land exactly on the depth of a mesh resting on it.
+                       .depthCompare = vk::CompareOp::eLessOrEqual,
+                   });
+
     // --- the temporal filter ------------------------------------------------
     // Set 0 is the frame data, for this frame's camera and last frame's; set 1
     // is the three images it reads. No depth attachment and no push constants:
@@ -433,6 +458,7 @@ Renderer::~Renderer() {
     m_bloomUpPipeline.reset();
     m_bloomDownPipeline.reset();
     m_temporalPipeline.reset();
+    m_gridPipeline.reset();
     m_tonemapPipeline.reset();
     m_skyPipeline.reset();
     m_outlinePipeline.reset();
@@ -1901,6 +1927,12 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
             drawOutline(m_highlighted, 0.5f);
         }
         drawOutline(m_selected, 1.0f);
+    }
+
+    if (m_gridVisible) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_gridPipeline->handle());
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_gridPipeline->layout(), 0, frameSet, {});
+        cmd.draw(3, 1, 0, 0);
     }
 
     cmd.endRendering();

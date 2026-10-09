@@ -264,6 +264,11 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
     ImGui::DockBuilderDockWindow("Details", rightBottom);
     ImGui::DockBuilderDockWindow("Scripts", left);
 
+    // The Modeler's panels share those spaces: only one workspace's windows
+    // exist at a time, so a dock node shows whichever of them is up.
+    ImGui::DockBuilderDockWindow("Modeling Tools", left);
+    ImGui::DockBuilderDockWindow("Materials", bottom);
+
     // Tab order, left to right.
     ImGui::DockBuilderDockWindow("Content", bottom);
     ImGui::DockBuilderDockWindow("Statistics", bottom);
@@ -491,6 +496,18 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
             ImGui::EndMenu();
         }
 
+        // The two workspaces, as tabs. Where Unreal puts its mode switch and
+        // Blender its workspace tabs: always visible, one click.
+        ImGui::TextDisabled("|");
+        if (toolButton("Level", state.workspace == Workspace::Level,
+                       "Put the scene together: place objects, attach scripts, play.")) {
+            state.workspace = Workspace::Level;
+        }
+        if (toolButton("Modeler", state.workspace == Workspace::Modeler,
+                       "Shape meshes. Select an object and press Tab to model it.")) {
+            state.workspace = Workspace::Modeler;
+        }
+
         // The file being edited, in the middle of the bar where a title would
         // normally sit.
         ImGui::TextDisabled("|");
@@ -506,7 +523,11 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
         }
 
         const char* hint =
-            "right mouse: look  |  WASD: move  |  Q W E R: tools  |  Ctrl+D: duplicate  |  F5: compile";
+            state.edit.has_value()
+                ? "1 2 3: vertex/edge/face  |  Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  X delete  |  Tab: done"
+            : state.workspace == Workspace::Modeler
+                ? "select an object, then Tab to model it  |  right mouse: look  |  WASD: move"
+                : "right mouse: look  |  WASD: move  |  Q W E R: tools  |  Ctrl+D: duplicate  |  F5: compile";
         const f32 hintWidth = ImGui::CalcTextSize(hint).x;
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() - hintWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
         ImGui::TextDisabled("%s", hint);
@@ -563,13 +584,17 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     // Placing things belongs where you are looking, not in a panel on the far
     // side of the window. A menu rather than a row of buttons: the list of what
     // can be placed only grows, and a toolbar that grows with it stops being a
-    // toolbar.
-    if (toolButton("Place", ImGui::IsPopupOpen("##place_menu"), "Add an object to the scene")) {
-        ImGui::OpenPopup("##place_menu");
-    }
-    if (ImGui::BeginPopup("##place_menu")) {
-        drawSpawnMenuItems(state, renderer);
-        ImGui::EndPopup();
+    // toolbar. Not while a mesh is open: there is no scene to place things in.
+    if (!state.edit.has_value()) {
+        if (toolButton("Place", ImGui::IsPopupOpen("##place_menu"), "Add an object to the scene")) {
+            ImGui::OpenPopup("##place_menu");
+        }
+        if (ImGui::BeginPopup("##place_menu")) {
+            drawSpawnMenuItems(state, renderer);
+            ImGui::EndPopup();
+        }
+    } else {
+        ImGui::TextColored(kAccentBright, "modelling");
     }
 
     if (state.gizmoMode == GizmoMode::Scale) {
@@ -578,31 +603,35 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     }
 
     // Compile and Play sit at the right end of the toolbar, the way a build
-    // button does in every editor.
+    // button does in every editor - in the Level workspace, which is where the
+    // game is. The Modeler has nothing to compile or play.
     const f32 rightGroupWidth = 190.0f;
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x - rightGroupWidth + ImGui::GetCursorPosX());
+    const bool levelTools = state.workspace == Workspace::Level;
+    if (levelTools) {
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - rightGroupWidth + ImGui::GetCursorPosX());
 
-    if (toolButton("Compile", false,
-                   "Recompile the Lua scripts and rebuild the C++ game library (F5).\n"
-                   "Lua takes milliseconds; C++ takes seconds, and the editor\n"
-                   "stops while the compiler runs.")) {
-        scripts.compileAll();
-        native.rebuild(renderer.scene());
-    }
-    ImGui::SameLine();
-
-    if (toolButton(state.scriptsRunning ? "Stop" : "Play", state.scriptsRunning,
-                   "Run the scripts attached to nodes")) {
-        state.scriptsRunning = !state.scriptsRunning;
-        if (state.scriptsRunning) {
-            // Fresh run: on_start fires again for everything.
-            scripts.restart();
+        if (toolButton("Compile", false,
+                       "Recompile the Lua scripts and rebuild the C++ game library (F5).\n"
+                       "Lua takes milliseconds; C++ takes seconds, and the editor\n"
+                       "stops while the compiler runs.")) {
+            scripts.compileAll();
+            native.rebuild(renderer.scene());
         }
-    }
-
-    if (!scripts.errors().empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(kError, "%zu error(s)", scripts.errors().size());
+
+        if (toolButton(state.scriptsRunning ? "Stop" : "Play", state.scriptsRunning,
+                       "Run the scripts attached to nodes")) {
+            state.scriptsRunning = !state.scriptsRunning;
+            if (state.scriptsRunning) {
+                // Fresh run: on_start fires again for everything.
+                scripts.restart();
+            }
+        }
+
+        if (!scripts.errors().empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(kError, "%zu error(s)", scripts.errors().size());
+        }
     }
 
     ImGui::EndChild();
@@ -635,8 +664,13 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     bool gizmoActive = false;
 
     Scene& scene = renderer.scene();
-    if (state.gizmoMode != GizmoMode::Select && state.selected != kInvalidNode &&
-        scene.isAlive(state.selected)) {
+    if (state.edit.has_value()) {
+        // A mesh is open: the gizmo, the picking and the overlay are the
+        // Modeler's, and act on vertices, edges and faces instead of nodes.
+        gizmoActive = drawEditViewport(state, renderer, Vec2{imageOrigin.x, imageOrigin.y},
+                                       Vec2{available.x, available.y}, imageHovered);
+    } else if (state.gizmoMode != GizmoMode::Select && state.selected != kInvalidNode &&
+               scene.isAlive(state.selected)) {
 
         ImGuizmo::SetOrthographic(false);
         ImGuizmo::SetDrawlist();
@@ -814,11 +848,69 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         }
 
         ImGui::SeparatorText("Rendering");
-        if (node.mesh.valid() && renderer.resources().has(node.mesh)) {
-            ImGui::Text("Mesh: #%u (%u indices)", node.mesh.index,
-                        renderer.resources().mesh(node.mesh).indexCount());
-        } else {
-            ImGui::TextDisabled("No mesh - this node only groups others.");
+        {
+            // Any mesh in the project can go on any node, which is how a shape
+            // made in the Modeler ends up on more than the object it was made
+            // on. Meshes are listed by name; modelled ones are named after the
+            // object they were modelled on.
+            const ResourceRegistry& resources = renderer.resources();
+            const auto meshLabel = [&resources](MeshHandle handle) {
+                if (!resources.has(handle)) {
+                    return std::string("(none)");
+                }
+                const MeshSource& source = resources.meshSource(handle);
+                std::string label = source.name.empty() ? "mesh #" + std::to_string(handle.index) : source.name;
+                if (source.edited) {
+                    label += "  (modelled)";
+                }
+                return label;
+            };
+
+            // Every session leaves the mesh it replaced behind, so that undo
+            // can put it back. Modelled meshes nothing uses any more are those
+            // leftovers - listing them would bury the list in near-duplicates.
+            std::vector<bool> used(resources.meshCount(), false);
+            scene.traverse([&](NodeId id, u32) {
+                const MeshHandle handle = scene.node(id).mesh;
+                if (resources.has(handle)) {
+                    used[handle.index] = true;
+                }
+            });
+
+            // The mesh being modelled stays where it is until the session ends.
+            const bool modellingThis = state.edit.has_value() && state.edit->node == state.selected;
+            ImGui::BeginDisabled(modellingThis);
+            if (ImGui::BeginCombo("Mesh", meshLabel(node.mesh).c_str())) {
+                if (ImGui::Selectable("(none)", !node.mesh.valid())) {
+                    state.history.record(scene, state.selected);
+                    node.mesh = MeshHandle{};
+                }
+                for (u32 i = 0; i < static_cast<u32>(resources.meshCount()); ++i) {
+                    const MeshHandle handle{i};
+                    if (resources.meshSource(handle).edited && !used[i]) {
+                        continue;
+                    }
+                    ImGui::PushID(static_cast<int>(i));
+                    if (ImGui::Selectable(meshLabel(handle).c_str(), node.mesh == handle)) {
+                        state.history.record(scene, state.selected);
+                        node.mesh = handle;
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("%s", modellingThis ? "Being modelled - press Tab to finish first."
+                                                : "The shape this object draws. Pick a modelled mesh to give\n"
+                                                  "this object the shape made on another one.");
+            }
+
+            if (resources.has(node.mesh)) {
+                ImGui::TextDisabled("%u triangles", resources.mesh(node.mesh).indexCount() / 3);
+            } else {
+                ImGui::TextDisabled("No mesh - this node only groups others.");
+            }
         }
 
         if (node.material.valid() && renderer.resources().has(node.material)) {

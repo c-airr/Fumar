@@ -116,10 +116,14 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
         .maxDepthBounds = 1.0f,
     };
 
+    // Additive: one plus one. Alpha: source times its alpha, plus what was
+    // there times what is left over.
+    const bool blending = desc.additiveBlend || desc.alphaBlend;
     const vk::PipelineColorBlendAttachmentState blendAttachment{
-        .blendEnable = desc.additiveBlend ? VK_TRUE : VK_FALSE,
-        .srcColorBlendFactor = vk::BlendFactor::eOne,
-        .dstColorBlendFactor = vk::BlendFactor::eOne,
+        .blendEnable = blending ? VK_TRUE : VK_FALSE,
+        .srcColorBlendFactor = desc.additiveBlend ? vk::BlendFactor::eOne : vk::BlendFactor::eSrcAlpha,
+        .dstColorBlendFactor =
+            desc.additiveBlend ? vk::BlendFactor::eOne : vk::BlendFactor::eOneMinusSrcAlpha,
         .colorBlendOp = vk::BlendOp::eAdd,
         // Alpha carries nothing in any of fumar's colour targets, but a blend
         // state has to name factors for it or the values are undefined.

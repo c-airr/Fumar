@@ -101,6 +101,11 @@ public:
     void setIsolated(NodeId id) { m_isolated = id; }
     NodeId isolated() const { return m_isolated; }
 
+    /// A floor grid on y = 0, hidden behind geometry like a real floor would
+    /// be. The Modeler turns it on: with the rest of the scene gone, it is the
+    /// only thing that says which way is down and how big anything is.
+    void setGridVisible(bool visible) { m_gridVisible = visible; }
+
     /// Registers a material.
     ///
     /// With no texture the material is a flat colour: the shader multiplies its
@@ -345,6 +350,9 @@ private:
     /// Averages the scene with the frames before it. See recordTemporal.
     std::unique_ptr<rhi::GraphicsPipeline> m_temporalPipeline;
 
+    /// The Modeler's floor grid. See shaders/grid.frag.
+    std::unique_ptr<rhi::GraphicsPipeline> m_gridPipeline;
+
     /// Same geometry, rasterised as lines. Used to outline the hovered and
     /// selected objects without a second render target or a stencil pass.
     std::unique_ptr<rhi::GraphicsPipeline> m_outlinePipeline;
@@ -581,6 +589,7 @@ private:
     NodeId m_selected = kInvalidNode;
     NodeId m_highlighted = kInvalidNode;
     NodeId m_isolated = kInvalidNode;
+    bool m_gridVisible = false;
 
     /// Geometry replaced by updateMesh, waiting until the GPU has finished
     /// every frame that could still be reading it.

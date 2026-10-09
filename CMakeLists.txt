@@ -91,6 +91,7 @@ fumar_compile_shaders(fumar_shaders
         "${CMAKE_SOURCE_DIR}/shaders/sky.frag"
         "${CMAKE_SOURCE_DIR}/shaders/tonemap.frag"
         "${CMAKE_SOURCE_DIR}/shaders/temporal.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/grid.frag"
         "${CMAKE_SOURCE_DIR}/shaders/bloom_down.frag"
         "${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag")
 

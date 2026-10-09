@@ -48,6 +48,12 @@ struct GraphicsPipelineDesc {
     /// the sum has to happen in the blend unit rather than in the shader.
     bool additiveBlend = false;
 
+    /// Mixes what the fragment shader writes over what is there, by its alpha:
+    /// alpha 1 replaces, alpha 0 leaves the target untouched. For drawing
+    /// something translucent over the finished scene - the Modeler's floor
+    /// grid is the one user. Ignored when additiveBlend is set.
+    bool alphaBlend = false;
+
     vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
 
     /// eFill for solid triangles, eLine to rasterise their edges instead.
