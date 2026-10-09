@@ -355,9 +355,17 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
             }
 
             // The file and a running index, so a saved scene can find this
-            // exact primitive again after a reload.
-            scene.node(target).mesh =
-                resources.addMesh(std::move(mesh), importedMesh(pathString, primitiveCounter++));
+            // exact primitive again after a reload. The name is what the file
+            // calls the mesh, falling back to the node holding it - it is what
+            // the Details panel lists when a mesh is being picked by hand.
+            MeshSource meshSource = importedMesh(pathString, primitiveCounter++);
+            meshSource.name = (source.mesh->name != nullptr && source.mesh->name[0] != '\0')
+                                  ? std::string(source.mesh->name)
+                                  : scene.node(nodeIds[i]).name;
+            if (p > 0) {
+                meshSource.name += "_part" + std::to_string(p);
+            }
+            scene.node(target).mesh = resources.addMesh(std::move(mesh), std::move(meshSource));
             scene.node(target).material = material;
             ++primitiveCount;
         }

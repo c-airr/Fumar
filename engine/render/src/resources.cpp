@@ -13,6 +13,16 @@ MeshHandle ResourceRegistry::addMesh(Mesh mesh, MeshSource source) {
     return MeshHandle{index};
 }
 
+Mesh ResourceRegistry::replaceMesh(MeshHandle handle, Mesh mesh) {
+    FUMAR_ASSERT_MSG(has(handle), "mesh handle {} is not registered", handle.index);
+    return std::exchange(m_meshes[handle.index], std::move(mesh));
+}
+
+void ResourceRegistry::setMeshSource(MeshHandle handle, MeshSource source) {
+    FUMAR_ASSERT_MSG(has(handle), "mesh handle {} is not registered", handle.index);
+    m_meshSources[handle.index] = std::move(source);
+}
+
 TextureHandle ResourceRegistry::addTexture(rhi::Image texture) {
     const u32 index = static_cast<u32>(m_textures.size());
     m_textures.push_back(std::move(texture));

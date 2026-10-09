@@ -19,13 +19,24 @@ namespace fumar {
 /// to disk is a description of how to produce the mesh again, which is exactly
 /// what this is.
 struct MeshSource {
-    /// "cube", "plane" or "cylinder" for generated meshes; empty when imported.
+    /// What the mesh is called where a person has to pick it: the Details
+    /// panel's mesh list, the name of the file it is saved to.
+    std::string name;
+
+    /// "cube", "plane", "cylinder" or "sphere" for generated meshes; empty when
+    /// imported or edited.
     std::string shape;
 
     /// Shape parameters. Their meaning depends on the shape: plane uses x for
     /// half-size and y for UV tiling, cylinder uses x, y and z for radius,
-    /// height and segment count.
+    /// height and segment count, sphere x, y and z for radius, segments and
+    /// rings.
     Vec4 parameters{};
+
+    /// Shaped by hand in the Modeler, so there is no recipe to rebuild it from
+    /// - only the geometry itself. Saving a scene writes such a mesh to a file
+    /// of its own, after which it is an imported mesh like any other.
+    bool edited = false;
 
     /// Source file, for imported meshes.
     std::string file;
@@ -44,8 +55,17 @@ struct MeshSource {
 /// call has to be revisited when the struct grows.
 inline MeshSource proceduralMesh(std::string shape, Vec4 parameters = {}) {
     MeshSource source;
+    source.name = shape;
     source.shape = std::move(shape);
     source.parameters = parameters;
+    return source;
+}
+
+/// A mesh made in the Modeler.
+inline MeshSource editedMesh(std::string name) {
+    MeshSource source;
+    source.name = std::move(name);
+    source.edited = true;
     return source;
 }
 
@@ -129,6 +149,16 @@ public:
     /// Registers a mesh together with a description of how to rebuild it.
     /// The description is what a saved scene stores in place of the handle.
     MeshHandle addMesh(Mesh mesh, MeshSource source = {});
+
+    /// Swaps in new geometry under an existing handle, and hands back the old.
+    ///
+    /// Hands it back rather than destroying it because the GPU may still be
+    /// drawing the frame before this one with those buffers, and tracing rays
+    /// against its acceleration structure. The caller keeps it alive until
+    /// that frame is done - see Renderer::updateMesh.
+    [[nodiscard]] Mesh replaceMesh(MeshHandle handle, Mesh mesh);
+
+    void setMeshSource(MeshHandle handle, MeshSource source);
     TextureHandle addTexture(rhi::Image texture);
     MaterialHandle addMaterial(Material material);
 

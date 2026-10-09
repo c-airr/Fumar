@@ -113,16 +113,29 @@ struct EditableMesh {
     /// Without them a mesh could only ever be a surface.
     std::vector<EdgeKey> looseEdges;
 
+    /// Faces meeting at less than this angle are shaded as one smooth surface;
+    /// sharper than this and the edge between them stays crisp. Zero shades
+    /// every face flat.
+    ///
+    /// One number instead of a smooth/flat switch because real objects need
+    /// both at once: a cylinder wants its side smooth and its rim sharp, and a
+    /// sphere and a cube want opposite answers from the same mesh code. Thirty
+    /// degrees is what Blender settled on for "smooth by angle" - every face of
+    /// a 24-segment sphere is within 15 degrees of its neighbour, every corner
+    /// of a box is 90.
+    f32 smoothAngleDegrees = 30.0f;
+
     usize vertexCount() const { return positions.size(); }
     usize faceCount() const { return faces.size(); }
 
     EdgeTable buildEdges() const;
 
-    /// Corners per face, fanned into triangles, with a flat normal per face.
+    /// Corners per face, fanned into triangles, with a normal per corner.
     ///
-    /// Flat because that is what a modelling tool shows: you need to see the
-    /// faces you are editing. Smooth shading is a property to add later, and
-    /// it would be a per-vertex average computed here.
+    /// Each corner's normal averages the faces around its vertex that lie
+    /// within smoothAngleDegrees of its own face - see there. Every corner is
+    /// still a vertex of its own, so a crisp edge and a smooth one cost the
+    /// same and can sit side by side on one mesh.
     TriangleMesh triangulate() const;
 
     /// Drops vertices nothing refers to and renumbers the rest.

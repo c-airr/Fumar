@@ -2,6 +2,7 @@
 
 #include "fumar/core/assert.hpp"
 #include "fumar/core/log.hpp"
+#include "fumar/geometry/primitives.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/platform/window.hpp"
 #include "fumar/rhi/descriptor.hpp"
@@ -383,7 +384,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
     // registry on purpose: it belongs to the editor's presentation of the
     // scene, not to the scene, and would otherwise be saved into scene files
     // and listed in the content panel as though somebody had made it.
-    m_lightMarker = makeCube(*m_device, *m_upload);
+    m_lightMarker = makeMesh(*m_device, *m_upload, geometry::makeCube());
 
     FUMAR_INFO("renderer ready");
 }
@@ -407,6 +408,7 @@ Renderer::~Renderer() {
         frame.instanceData = rhi::Buffer{};
         frame.topLevel = rhi::TopLevelStructure{};
     }
+    m_retiredMeshes.clear();
     m_lightMarker = Mesh{};
     m_defaultTexture = rhi::Image{};
     m_depthImage = rhi::Image{};
@@ -1046,9 +1048,11 @@ void Renderer::resetScene() {
 
     m_selected = kInvalidNode;
     m_highlighted = kInvalidNode;
+    m_isolated = kInvalidNode;
 
     m_scene = Scene{};
     m_resources.clear();
+    m_retiredMeshes.clear();
 
     // The instance list still points at bottom level structures belonging to
     // the meshes just released. Nothing traces against them before the next
@@ -1066,18 +1070,61 @@ void Renderer::resetScene() {
 }
 
 MeshHandle Renderer::createCubeMesh() {
-    return m_resources.addMesh(makeCube(*m_device, *m_upload), proceduralMesh("cube"));
+    return createMesh(geometry::makeCube(), proceduralMesh("cube"));
 }
 
 MeshHandle Renderer::createPlaneMesh(f32 halfSize, f32 uvTiling) {
-    return m_resources.addMesh(makePlane(*m_device, *m_upload, halfSize, uvTiling),
-                               proceduralMesh("plane", Vec4{halfSize, uvTiling, 0.0f, 0.0f}));
+    return createMesh(geometry::makePlane(halfSize, uvTiling),
+                      proceduralMesh("plane", Vec4{halfSize, uvTiling, 0.0f, 0.0f}));
 }
 
 MeshHandle Renderer::createCylinderMesh(f32 radius, f32 height, u32 segments) {
-    return m_resources.addMesh(
-        makeCylinder(*m_device, *m_upload, radius, height, segments),
-        proceduralMesh("cylinder", Vec4{radius, height, static_cast<f32>(segments), 0.0f}));
+    return createMesh(geometry::makeCylinder(radius, height, segments),
+                      proceduralMesh("cylinder", Vec4{radius, height, static_cast<f32>(segments), 0.0f}));
+}
+
+MeshHandle Renderer::createSphereMesh(f32 radius, u32 segments, u32 rings) {
+    return createMesh(geometry::makeUvSphere(radius, segments, rings),
+                      proceduralMesh("sphere", Vec4{radius, static_cast<f32>(segments),
+                                                    static_cast<f32>(rings), 0.0f}));
+}
+
+MeshHandle Renderer::createMesh(const geometry::EditableMesh& mesh, MeshSource source) {
+    return m_resources.addMesh(makeMesh(*m_device, *m_upload, mesh), std::move(source));
+}
+
+void Renderer::updateMesh(MeshHandle handle, const geometry::EditableMesh& mesh) {
+    if (!m_resources.has(handle)) {
+        return;
+    }
+
+    // Built first and swapped second, so there is never a moment when the
+    // handle points at nothing. The upload context waits for its own copy to
+    // finish, so the new buffers are complete by the time they are swapped in.
+    Mesh replacement = makeMesh(*m_device, *m_upload, mesh);
+    m_retiredMeshes.push_back(RetiredMesh{
+        .frame = m_frameCounter,
+        .mesh = m_resources.replaceMesh(handle, std::move(replacement)),
+    });
+}
+
+void Renderer::releaseRetiredMeshes() {
+    // A mesh retired when the counter read N may be referenced by frames up to
+    // N - 1. Each frame waits for the one kFramesInFlight before it, so by the
+    // time the counter reaches N + kFramesInFlight, all of those are done.
+    std::erase_if(m_retiredMeshes, [this](const RetiredMesh& retired) {
+        return retired.frame + rhi::kFramesInFlight <= m_frameCounter;
+    });
+}
+
+template <typename Function>
+void Renderer::forEachRenderedDrawable(Function&& function) const {
+    m_scene.forEachDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
+        if (m_isolated != kInvalidNode && id != m_isolated) {
+            return;
+        }
+        function(id, node, worldTransform);
+    });
 }
 
 MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
@@ -1376,9 +1423,13 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
     // hidden and reparented by machinery that knows nothing about lighting.
     // Walking the tree is the only way to stay right without that machinery
     // having to tell anyone.
+    //
+    // None at all while an object is isolated: the Modeler shows it under the
+    // sky alone, and a lamp somewhere in the hidden scene lighting it from
+    // nowhere visible would only be confusing.
     u32 lightCount = 0;
     m_scene.traverse([&](NodeId id, u32) {
-        if (lightCount >= kMaxLights) {
+        if (lightCount >= kMaxLights || m_isolated != kInvalidNode) {
             return;
         }
         const Node& node = m_scene.node(id);
@@ -1444,7 +1495,7 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
     m_instances.clear();
     m_instanceRecords.clear();
 
-    m_scene.forEachDrawable([&](NodeId, const Node& node, const Mat4& worldTransform) {
+    forEachRenderedDrawable([&](NodeId, const Node& node, const Mat4& worldTransform) {
         if (!m_resources.has(node.mesh) || m_instances.size() >= kMaxInstances) {
             return;
         }
@@ -1705,7 +1756,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     // sorting the scene by material would take this further.
     vk::DescriptorSet boundMaterial;
 
-    m_scene.forEachDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
+    forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
         if (!m_resources.has(node.mesh)) {
             return;
         }
@@ -1772,7 +1823,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     };
 
     // Lights first, so an outline drawn over one still wins.
-    const bool anyLight = m_scene.nodeCount() > 0 && m_lightMarker.valid();
+    const bool anyLight = m_scene.nodeCount() > 0 && m_lightMarker.valid() && m_isolated == kInvalidNode;
     if (anyLight) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->handle());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 0,
@@ -2401,6 +2452,10 @@ void Renderer::drawFrame() {
     // Wait until the GPU is done with the frame that last used this slot, so
     // its command buffer, semaphores and uniform buffer are free to reuse.
     m_frames->waitForFrameSlot();
+
+    // Which also means the frames before it are done, and with them anything
+    // that could still have been reading a mesh replaced since.
+    releaseRetiredMeshes();
 
     const auto imageIndex = m_swapchain->acquireNextImage(m_frames->imageAvailable());
     if (!imageIndex) {

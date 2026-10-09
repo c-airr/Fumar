@@ -2,6 +2,7 @@
 
 #include "fumar/core/math.hpp"
 #include "fumar/core/types.hpp"
+#include "fumar/geometry/editable_mesh.hpp"
 #include "fumar/rhi/acceleration_structure.hpp"
 #include "fumar/rhi/buffer.hpp"
 #include "fumar/rhi/vk_common.hpp"
@@ -61,8 +62,12 @@ struct Bounds {
 class Mesh {
 public:
     Mesh() = default;
+
+    /// `polygonSizes` says how the triangles group into the faces they were
+    /// cut from - see geometry::TriangleMesh. Empty when nobody knows, as for a
+    /// mesh imported from another tool.
     Mesh(rhi::Device& device, rhi::UploadContext& upload, std::span<const Vertex> vertices,
-         std::span<const u32> indices);
+         std::span<const u32> indices, std::span<const u32> polygonSizes = {});
 
     Mesh(const Mesh&) = delete;
     Mesh& operator=(const Mesh&) = delete;
@@ -94,6 +99,22 @@ public:
     const rhi::Buffer& vertexBuffer() const { return m_vertexBuffer; }
     const rhi::Buffer& indexBuffer() const { return m_indexBuffer; }
 
+    /// The same vertices and indices the GPU has, kept on the CPU.
+    ///
+    /// The buffers above live in device-local memory, which the CPU cannot read
+    /// back without a staging copy and a wait. Anything that needs the geometry
+    /// on this side - opening a mesh in the Modeler, saving one to a file - reads
+    /// these instead. Costs the size of the mesh in RAM, which for anything
+    /// modelled by hand is nothing.
+    std::span<const Vertex> vertices() const { return m_vertices; }
+    std::span<const u32> indices() const { return m_indices; }
+    std::span<const u32> polygonSizes() const { return m_polygonSizes; }
+
+    /// The faces this mesh was made of, rebuilt from the copy above: exactly
+    /// when the polygon sizes are known, by joining coplanar triangles when
+    /// they are not.
+    geometry::EditableMesh toEditable() const;
+
     bool valid() const { return m_indexCount > 0; }
 
 private:
@@ -102,26 +123,21 @@ private:
     rhi::BottomLevelStructure m_blas;
     u32 m_indexCount = 0;
     Bounds m_bounds;
+
+    std::vector<Vertex> m_vertices;
+    std::vector<u32> m_indices;
+    std::vector<u32> m_polygonSizes;
 };
 
-/// A unit cube with correct per-face normals and UVs.
+/// Uploads an editable mesh: triangulated, with a normal per corner as its
+/// smoothing angle decides, and its polygon sizes remembered so the faces can
+/// be recovered later.
 ///
-/// Built from 24 vertices rather than 8: a corner shared between three faces
-/// needs a different normal for each of them, so the position is duplicated
-/// once per face. Sharing all eight would give smooth-shaded, rounded-looking
-/// corners instead of flat faces.
-Mesh makeCube(rhi::Device& device, rhi::UploadContext& upload);
-
-/// A flat ground plane of the given half-extent, lying in the XZ plane.
-Mesh makePlane(rhi::Device& device, rhi::UploadContext& upload, f32 halfSize, f32 uvTiling = 1.0f);
-
-/// A cylinder standing on the XZ plane, centred on the origin.
-///
-/// The side is built from `segments` quads whose normals point straight out
-/// from the axis, so it shades smoothly; the caps are separate fans with flat
-/// normals, because a cap and the side meeting at an edge need different
-/// normals there - sharing them would round the rim over.
-Mesh makeCylinder(rhi::Device& device, rhi::UploadContext& upload, f32 radius, f32 height,
-                  u32 segments = 32);
+/// Every mesh the engine generates goes through here - the cube, the sphere,
+/// whatever the Modeler produces - so there is one way to turn faces into
+/// buffers rather than one hand-written generator per shape. Returns an empty
+/// mesh, which draws nothing, when there are no faces at all: a model whose
+/// every face was deleted is a legitimate thing to have open.
+Mesh makeMesh(rhi::Device& device, rhi::UploadContext& upload, const geometry::EditableMesh& mesh);
 
 } // namespace fumar

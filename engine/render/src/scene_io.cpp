@@ -136,6 +136,9 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         const MeshSource& source = resources.meshSource(MeshHandle{i});
 
         Json entry;
+        if (!source.name.empty()) {
+            entry["name"] = source.name;
+        }
         if (source.imported()) {
             entry["file"] = toPortablePath(source.file);
             entry["primitive"] = source.primitive;
@@ -341,9 +344,23 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
             meshes.push_back(renderer.createPlaneMesh(p.x, p.y));
         } else if (shape == "cylinder") {
             meshes.push_back(renderer.createCylinderMesh(p.x, p.y, static_cast<u32>(p.z)));
+        } else if (shape == "sphere") {
+            meshes.push_back(renderer.createSphereMesh(p.x, static_cast<u32>(p.y), static_cast<u32>(p.z)));
         } else {
             FUMAR_WARN("unknown mesh shape '{}' in scene", shape);
             meshes.push_back(MeshHandle{});
+        }
+    }
+
+    // Names, once every mesh exists. A separate pass because the branches
+    // above register meshes in three different ways, and only one place should
+    // have to know that a name rides along with all of them.
+    const Json meshEntries = root.value("meshes", Json::array());
+    for (usize i = 0; i < meshes.size() && i < meshEntries.size(); ++i) {
+        if (renderer.resources().has(meshes[i]) && meshEntries[i].contains("name")) {
+            MeshSource named = renderer.resources().meshSource(meshes[i]);
+            named.name = meshEntries[i]["name"].get<std::string>();
+            renderer.resources().setMeshSource(meshes[i], std::move(named));
         }
     }
 

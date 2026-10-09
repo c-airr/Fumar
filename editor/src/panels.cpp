@@ -65,6 +65,7 @@ enum class SpawnKind : u8 {
     Empty,
     Cube,
     Cylinder,
+    Sphere,
     Plane,
     PointLight,
     SpotLight,
@@ -88,12 +89,14 @@ NodeId spawn(EditorState& state, Renderer& renderer, SpawnKind kind) {
     // same vertices to the GPU again every single time.
     static MeshHandle cubeMesh;
     static MeshHandle cylinderMesh;
+    static MeshHandle sphereMesh;
     static MeshHandle planeMesh;
     static MaterialHandle stoneMaterial;
 
     if (!renderer.resources().has(cubeMesh)) {
         cubeMesh = renderer.createCubeMesh();
         cylinderMesh = renderer.createCylinderMesh(0.5f, 2.0f);
+        sphereMesh = renderer.createSphereMesh(0.5f);
         planeMesh = renderer.createPlaneMesh(1.0f);
         stoneMaterial = renderer.createMaterial("Stone", Vec4{0.30f, 0.30f, 0.32f, 1.0f});
     }
@@ -105,6 +108,7 @@ NodeId spawn(EditorState& state, Renderer& renderer, SpawnKind kind) {
     case SpawnKind::Empty: name = "Empty"; break;
     case SpawnKind::Cube: name = "Cube"; break;
     case SpawnKind::Cylinder: name = "Cylinder"; break;
+    case SpawnKind::Sphere: name = "Sphere"; break;
     case SpawnKind::Plane: name = "Plane"; break;
     case SpawnKind::PointLight: name = "Point Light"; break;
     case SpawnKind::SpotLight: name = "Spot Light"; break;
@@ -124,6 +128,10 @@ NodeId spawn(EditorState& state, Renderer& renderer, SpawnKind kind) {
         break;
     case SpawnKind::Cylinder:
         node.mesh = cylinderMesh;
+        node.material = stoneMaterial;
+        break;
+    case SpawnKind::Sphere:
+        node.mesh = sphereMesh;
         node.material = stoneMaterial;
         break;
     case SpawnKind::Plane:
@@ -169,6 +177,9 @@ void drawSpawnMenuItems(EditorState& state, Renderer& renderer) {
     }
     if (ImGui::MenuItem("Cylinder")) {
         spawn(state, renderer, SpawnKind::Cylinder);
+    }
+    if (ImGui::MenuItem("Sphere")) {
+        spawn(state, renderer, SpawnKind::Sphere);
     }
     if (ImGui::MenuItem("Plane")) {
         spawn(state, renderer, SpawnKind::Plane);

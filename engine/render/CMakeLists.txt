@@ -29,6 +29,9 @@ target_link_libraries(fumar_render
         fumar::platform
         fumar::rhi
         fumar::scene
+        # Meshes are made from editable polygon meshes, and the renderer's own
+        # interface takes them - so anything using the renderer sees them too.
+        fumar::geometry
     # PRIVATE: the glTF parser and image decoder are used only inside .cpp
     # files, so their headers stay out of everyone else's include path.
     PRIVATE

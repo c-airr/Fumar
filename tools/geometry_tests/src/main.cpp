@@ -165,6 +165,36 @@ void roundTrip() {
     check(cylinderBack.faceCount() == 10 && cylinderBack.faces[8].size() == 8,
           "cylinder caps come back as single octagons");
 
+    // Smoothing by angle: a box keeps its corners, a cylinder's side is smooth
+    // while its rim stays sharp, and a sphere's normals point straight out.
+    bool cubeFlat = true;
+    for (usize i = 0; i < triangles.normals.size(); ++i) {
+        const Vec3 n = triangles.normals[i];
+        cubeFlat = cubeFlat && approx(std::abs(n.x) + std::abs(n.y) + std::abs(n.z), 1.0f);
+    }
+    check(cubeFlat, "a cube's corners stay sharp: every normal is a face normal");
+
+    const TriangleMesh smoothSphere = makeUvSphere(1.0f, 24, 12).triangulate();
+    bool radial = true;
+    for (usize i = 0; i < smoothSphere.positions.size(); ++i) {
+        radial = radial && dot(smoothSphere.normals[i], normalize(smoothSphere.positions[i])) > 0.995f;
+    }
+    check(radial, "a sphere's normals point straight out from its centre");
+
+    const TriangleMesh roundSide = makeCylinder(0.5f, 1.0f, 32).triangulate();
+    bool sideSmooth = true;
+    bool capsFlat = true;
+    for (usize i = 0; i < roundSide.normals.size(); ++i) {
+        const Vec3 n = roundSide.normals[i];
+        if (std::abs(n.y) > 0.5f) {
+            capsFlat = capsFlat && approx(std::abs(n.y), 1.0f);
+        } else {
+            const Vec3 out = normalize(Vec3{roundSide.positions[i].x, 0.0f, roundSide.positions[i].z});
+            sideSmooth = sideSmooth && dot(n, out) > 0.999f;
+        }
+    }
+    check(sideSmooth && capsFlat, "a cylinder is smooth round its side and sharp at its rims");
+
     // A tetrahedron has no two triangles in one plane, so nothing is joined.
     const std::vector<Vec3> tetra{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     const std::vector<u32> tetraIndices{0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3};

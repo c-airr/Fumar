@@ -69,6 +69,37 @@ public:
     MeshHandle createCubeMesh();
     MeshHandle createPlaneMesh(f32 halfSize, f32 uvTiling = 1.0f);
     MeshHandle createCylinderMesh(f32 radius, f32 height, u32 segments = 32);
+    MeshHandle createSphereMesh(f32 radius, u32 segments = 24, u32 rings = 12);
+
+    /// Registers a mesh built from faces - anything the Modeler produced.
+    MeshHandle createMesh(const geometry::EditableMesh& mesh, MeshSource source);
+
+    /// Replaces the geometry behind a handle, for every node that uses it.
+    ///
+    /// Safe to call every frame while a vertex is being dragged. The old
+    /// buffers are not freed here: the previous frame may still be on the GPU
+    /// drawing them and tracing rays against them, so they wait in a queue for
+    /// kFramesInFlight frames and are freed once nothing can be reading them.
+    /// Freeing them on the spot would need a full GPU stall per drag step.
+    ///
+    /// The acceleration structure is rebuilt from scratch each time. Updating
+    /// it in place (a refit) would be cheaper for a mesh whose topology did not
+    /// change, and is the obvious next step if dragging large meshes ever
+    /// stutters; at the sizes anyone models by hand, a rebuild is a fraction of
+    /// a millisecond.
+    void updateMesh(MeshHandle handle, const geometry::EditableMesh& mesh);
+
+    // --- isolation ----------------------------------------------------------
+
+    /// Draws only this node and nothing else - no other geometry, no lamps,
+    /// no light markers. kInvalidNode draws the whole scene again.
+    ///
+    /// What the Modeler shows while a mesh is open: the object alone, where it
+    /// is, under the sky. Other objects are not just hidden from the camera but
+    /// left out of the ray tracing too, so no shadow or bounce light from a
+    /// wall that is not on screen lands on the thing being modelled.
+    void setIsolated(NodeId id) { m_isolated = id; }
+    NodeId isolated() const { return m_isolated; }
 
     /// Registers a material.
     ///
@@ -250,6 +281,15 @@ private:
     /// trace against. Recorded before the scene pass, into the same command
     /// buffer.
     void recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex);
+
+    /// forEachDrawable, minus whatever isolation is hiding. Every pass that
+    /// draws or traces the scene goes through this, so isolating an object is
+    /// one comparison rather than a flag threaded through every pass.
+    template <typename Function>
+    void forEachRenderedDrawable(Function&& function) const;
+
+    /// Frees retired meshes that no frame in flight can still be using.
+    void releaseRetiredMeshes();
     void recordSceneRendering(vk::CommandBuffer cmd);
 
     /// Mixes the frame just rendered into the running average of the ones
@@ -540,6 +580,16 @@ private:
 
     NodeId m_selected = kInvalidNode;
     NodeId m_highlighted = kInvalidNode;
+    NodeId m_isolated = kInvalidNode;
+
+    /// Geometry replaced by updateMesh, waiting until the GPU has finished
+    /// every frame that could still be reading it.
+    struct RetiredMesh {
+        /// m_frameCounter when it was replaced.
+        u32 frame = 0;
+        Mesh mesh;
+    };
+    std::vector<RetiredMesh> m_retiredMeshes;
 
     /// Set when the swapchain no longer matches the surface. Kept as state
     /// rather than handled on the spot, because a rebuild can fail (minimised

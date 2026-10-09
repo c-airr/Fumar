@@ -65,23 +65,52 @@ Vec3 faceCentroid(const EditableMesh& mesh, const Face& face) {
 TriangleMesh EditableMesh::triangulate() const {
     TriangleMesh out;
 
-    for (const Face& face : faces) {
+    // A face whose corners all lie in a line has no direction it faces. Up is
+    // as good a guess as any and keeps NaNs out of the lighting.
+    std::vector<Vec3> normals(faces.size());
+    for (usize f = 0; f < faces.size(); ++f) {
+        normals[f] = faceNormal(*this, faces[f]);
+        if (lengthSquared(normals[f]) == 0.0f) {
+            normals[f] = Vec3{0.0f, 1.0f, 0.0f};
+        }
+    }
+
+    // Which faces touch each vertex, so a corner can look at its neighbours.
+    std::vector<std::vector<u32>> facesAt(positions.size());
+    if (smoothAngleDegrees > 0.0f) {
+        for (u32 f = 0; f < faces.size(); ++f) {
+            for (const u32 v : faces[f].verts) {
+                facesAt[v].push_back(f);
+            }
+        }
+    }
+    const f32 smoothCos = std::cos(radians(smoothAngleDegrees));
+
+    for (usize f = 0; f < faces.size(); ++f) {
+        const Face& face = faces[f];
         if (face.size() < 3) {
             continue;
         }
 
-        // A face whose corners all lie in a line has no direction it faces.
-        // Up is as good a guess as any and keeps NaNs out of the lighting.
-        Vec3 normal = faceNormal(*this, face);
-        if (lengthSquared(normal) == 0.0f) {
-            normal = Vec3{0.0f, 1.0f, 0.0f};
-        }
-
-        // Every corner gets its own vertex, so each face can carry its own
-        // normal. Sharing vertices between faces would average the normals at
-        // the edges and round over every corner the modeller made sharp.
+        // Every corner gets its own vertex, so each one can carry its own
+        // normal - which is what lets a sharp edge stay sharp next to a smooth
+        // one. Sharing vertices between faces would force one normal per
+        // position and round over every corner the modeller made crisp.
         const u32 base = static_cast<u32>(out.positions.size());
         for (usize i = 0; i < face.size(); ++i) {
+            Vec3 normal = normals[f];
+            if (smoothAngleDegrees > 0.0f) {
+                Vec3 sum{0.0f, 0.0f, 0.0f};
+                for (const u32 neighbour : facesAt[face.verts[i]]) {
+                    if (dot(normals[neighbour], normals[f]) >= smoothCos) {
+                        sum += normals[neighbour];
+                    }
+                }
+                if (lengthSquared(sum) > 1e-12f) {
+                    normal = normalize(sum);
+                }
+            }
+
             out.positions.push_back(positions[face.verts[i]]);
             out.normals.push_back(normal);
             out.uvs.push_back(i < face.uvs.size() ? face.uvs[i] : Vec2{0.0f, 0.0f});
