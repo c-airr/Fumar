@@ -136,13 +136,16 @@ Window& Window::operator=(Window&& other) noexcept {
     return *this;
 }
 
-void Window::pumpEvents() {
+u32 Window::pumpEvents() {
     // The delta covers one frame, so it starts at zero every time and
     // accumulates whatever motion events arrive below.
     m_mouseDelta = Vec2{};
 
+    u32 count = 0;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        ++count;
+
         // The hook sees the event first, so a UI layer can record it. It does
         // not get to swallow it: whether the UI wants keyboard or mouse focus
         // is a question the UI answers separately, and hiding events here would
@@ -208,16 +211,17 @@ void Window::pumpEvents() {
             break;
         }
     }
+    return count;
 }
 
-void Window::waitEvents(u32 timeoutMs) {
+u32 Window::waitEvents(u32 timeoutMs) {
     SDL_Event event;
     // Blocks for up to the timeout waiting for the first event, then the usual
     // drain picks up anything else that has queued behind it.
     if (SDL_WaitEventTimeout(&event, static_cast<Sint32>(timeoutMs))) {
         SDL_PushEvent(&event);
     }
-    pumpEvents();
+    return pumpEvents();
 }
 
 bool Window::keyDown(Key key) const {

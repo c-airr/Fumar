@@ -121,6 +121,12 @@ struct EditorState {
     /// Shown briefly after a save, so the action is visibly acknowledged.
     f32 saveFlashSeconds = 0.0f;
 
+    /// True while the main loop is idling - nothing has happened for a while,
+    /// or the window is in the background - and redraws only a few times a
+    /// second. Shown in the statistics, where the frame rate would otherwise
+    /// look like the engine had collapsed.
+    bool throttled = false;
+
     // --- script editor ------------------------------------------------------
 
     /// The script file open in the editor, or empty for none.

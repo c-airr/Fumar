@@ -1182,8 +1182,19 @@ void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& rend
         const f32 frameMs = 1000.0f / ImGui::GetIO().Framerate;
         state.smoothedFrameMs = state.smoothedFrameMs * 0.92f + frameMs * 0.08f;
 
-        ImGui::Text("%.2f ms/frame (%.0f fps)", static_cast<f64>(state.smoothedFrameMs),
-                    static_cast<f64>(1000.0f / state.smoothedFrameMs));
+        if (state.throttled) {
+            // The frame rate here is the idle redraw rate, not a measure of
+            // anything - showing "4 fps" would read as the engine struggling.
+            ImGui::TextDisabled("idle: redrawing 4x a second");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Nothing has changed for a second, or the window is in\n"
+                                  "the background, so the scene is not being redrawn at\n"
+                                  "full rate. Move the mouse over the editor to wake it.");
+            }
+        } else {
+            ImGui::Text("%.2f ms/frame (%.0f fps)", static_cast<f64>(state.smoothedFrameMs),
+                        static_cast<f64>(1000.0f / state.smoothedFrameMs));
+        }
 
         ImGui::SeparatorText("Scene");
         ImGui::Text("Nodes: %zu", scene.nodeCount());

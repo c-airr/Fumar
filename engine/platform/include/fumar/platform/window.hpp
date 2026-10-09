@@ -73,7 +73,10 @@ public:
 
     /// Drains the OS event queue. Call once per frame - a window that stops
     /// pumping events is what the system reports as "not responding".
-    void pumpEvents();
+    ///
+    /// Returns how many events there were, which is how the application tells
+    /// a user doing something from a user doing nothing.
+    u32 pumpEvents();
 
     /// Called for every OS event before the window acts on it.
     ///
@@ -86,9 +89,10 @@ public:
     void setEventHook(EventHook hook) { m_eventHook = std::move(hook); }
 
     /// Blocks until an event arrives or the timeout expires, then handles the
-    /// queue as pumpEvents() does. Used while minimised, where there is nothing
-    /// to draw and spinning would burn a core for nothing.
-    void waitEvents(u32 timeoutMs);
+    /// queue as pumpEvents() does. Used whenever there is nothing new to draw -
+    /// minimised, in the background, or simply left alone - where spinning
+    /// would burn a GPU for a picture that has not changed.
+    u32 waitEvents(u32 timeoutMs);
 
     /// Files dropped onto the window since the last call, and clears the list.
     ///

@@ -443,8 +443,44 @@ int main() {
 
     auto lastFrameTime = Clock::now();
 
+    // When something last happened: an event, a script running, an animation
+    // playing out. See the pacing block below.
+    auto lastActivity = Clock::now();
+
     while (!window.shouldClose()) {
-        window.pumpEvents();
+        // --- pacing -----------------------------------------------------------
+        // Every frame traces sixteen rays a pixel for global illumination plus
+        // shadows, occlusion and reflections. At the display's refresh rate
+        // that is a large share of the GPU - and drawing the same converged
+        // picture again and again buys nothing at all.
+        //
+        // So the loop only runs flat out while something is happening. A
+        // second of nothing - no input, no script, nothing animating - and it
+        // waits for an event instead, redrawing a few times a second so that
+        // anything progressing on its own (a C++ build, a file being reloaded)
+        // still shows up. The first event wakes it immediately.
+        //
+        // The second is not arbitrary: the temporal filter needs a few dozen
+        // frames to converge after the last change, and stopping before that
+        // would freeze the image half way to clean.
+        //
+        // In the background the same applies regardless, which is what Unreal
+        // calls "use less CPU when in background". A running game slows to the
+        // same few frames a second until the window is focused again.
+        constexpr f32 kIdleAfterSeconds = 1.0f;
+        constexpr u32 kIdleRedrawMs = 250;
+
+        const bool animating = state.scriptsRunning || state.saveFlashSeconds > 0.0f ||
+                               window.mouseButtonDown(MouseButton::Left) ||
+                               window.mouseButtonDown(MouseButton::Right) ||
+                               window.mouseButtonDown(MouseButton::Middle);
+        const f32 quietSeconds = std::chrono::duration<f32>(Clock::now() - lastActivity).count();
+
+        state.throttled = !window.hasFocus() || (!animating && quietSeconds > kIdleAfterSeconds);
+        const u32 events = state.throttled ? window.waitEvents(kIdleRedrawMs) : window.pumpEvents();
+        if (events > 0 || animating) {
+            lastActivity = Clock::now();
+        }
 
         if (window.minimized()) {
             window.waitEvents(100);
