@@ -67,6 +67,11 @@ jobs:
       - name: Build
         run: cmake --build --preset windows-release
 
+      # The modelling operations, checked without a GPU. Run here and on Linux;
+      # the ARM64 build is the same code and adds nothing but runner time.
+      - name: Test geometry
+        run: build/windows-release/bin/geometry_tests.exe
+
       - name: Package
         shell: pwsh
         run: |
@@ -176,6 +181,9 @@ jobs:
 
       - name: Build
         run: cmake --build --preset linux-release
+
+      - name: Test geometry
+        run: build/linux-release/bin/geometry_tests
 
       - name: Package
         run: |
