@@ -51,6 +51,11 @@ struct WindowDesc {
     u32 width = 1280;
     u32 height = 720;
     bool resizable = true;
+
+    /// Whether Escape closes the window once the cursor is already free. Right
+    /// for the sandbox, where it is the only way out; wrong for the editor,
+    /// where Escape means "deselect" and quitting would lose unsaved work.
+    bool escapeCloses = true;
 };
 
 /// An OS window plus its event stream.
@@ -171,6 +176,7 @@ private:
     bool m_shouldClose = false;
     bool m_minimized = false;
     bool m_resized = false;
+    bool m_escapeCloses = true;
     Vec2 m_mouseDelta;
     EventHook m_eventHook;
     std::vector<std::string> m_droppedFiles;

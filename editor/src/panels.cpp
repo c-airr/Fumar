@@ -524,7 +524,8 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
 
         const char* hint =
             state.edit.has_value()
-                ? "1 2 3: vertex/edge/face  |  Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  X delete  |  Tab: done"
+                ? "middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
+                  "Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  Tab: done"
             : state.workspace == Workspace::Modeler
                 ? "select an object, then Tab to model it  |  right mouse: look  |  WASD: move"
                 : "right mouse: look  |  WASD: move  |  Q W E R: tools  |  Ctrl+D: duplicate  |  F5: compile";

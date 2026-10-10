@@ -685,6 +685,47 @@ bool modeButton(const char* label, bool active, const char* tooltip, f32 width) 
     return pressed;
 }
 
+/// Puts the camera `orbitDistance` back from the target along the way it
+/// already looks. Everything that moves the Modeler's camera changes the
+/// target, the distance or the angle and then calls this, so the three can
+/// never disagree.
+void placeOrbitCamera(const EditSession& session, Camera& camera) {
+    camera.position = session.orbitTarget - camera.forward() * session.orbitDistance;
+}
+
+/// Aims the camera at some of the mesh's vertices - all of them when
+/// `vertices` is empty - and backs off until their bounding sphere fits the
+/// view, with `margin` to spare.
+void frameVertices(EditSession& session, const Renderer& renderer, const std::set<u32>& vertices, f32 margin) {
+    const auto& positions = session.geometry.positions;
+    if (positions.empty()) {
+        return;
+    }
+    const Mat4& world = renderer.scene().worldTransform(session.node);
+    Vec3 low{1e30f, 1e30f, 1e30f};
+    Vec3 high{-1e30f, -1e30f, -1e30f};
+    const auto include = [&](u32 v) {
+        const Vec3 w = xyz(world * point(positions[v]));
+        low = min(low, w);
+        high = max(high, w);
+    };
+    if (vertices.empty()) {
+        for (u32 v = 0; v < positions.size(); ++v) {
+            include(v);
+        }
+    } else {
+        for (const u32 v : vertices) {
+            include(v);
+        }
+    }
+
+    // A floor on the radius, or one vertex would put the camera inside it.
+    const f32 radius = std::max(length(high - low) * 0.5f, 0.1f);
+    const f32 halfFov = radians(renderer.camera().fovYDegrees) * 0.5f;
+    session.orbitTarget = (low + high) * 0.5f;
+    session.orbitDistance = radius / std::sin(halfFov) * margin;
+}
+
 /// Puts a panel into the same dock node as another one, the first time it is
 /// ever shown. For layouts saved before the panel existed: without this it
 /// would open floating in the middle of the screen.
@@ -720,24 +761,10 @@ bool enterEditSession(EditorState& state, Renderer& renderer) {
     node.mesh = session.mesh;
     session.levelCamera = renderer.camera();
 
-    // Frame the object: keep looking the way the camera already looks, and
-    // back off until its bounding sphere fits the view.
-    const Mat4& world = scene.worldTransform(state.selected);
-    Vec3 low{1e30f, 1e30f, 1e30f};
-    Vec3 high{-1e30f, -1e30f, -1e30f};
-    for (const Vec3 p : session.geometry.positions) {
-        const Vec3 w = xyz(world * point(p));
-        low = min(low, w);
-        high = max(high, w);
-    }
-    if (!session.geometry.positions.empty()) {
-        const Vec3 centre = (low + high) * 0.5f;
-        const f32 radius = std::max(length(high - low) * 0.5f, 0.1f);
-        const f32 halfFov = radians(renderer.camera().fovYDegrees) * 0.5f;
-        // Room to spare round it: the shape is about to grow.
-        const f32 distance = radius / std::sin(halfFov) * 1.8f;
-        renderer.camera().position = centre - renderer.camera().forward() * distance;
-    }
+    // Frame the object, looking at it the way the camera already looked. Room
+    // to spare round it: the shape is about to grow.
+    frameVertices(session, renderer, {}, 1.8f);
+    placeOrbitCamera(session, renderer.camera());
 
     renderer.setIsolated(state.selected);
     renderer.setGridVisible(true);
@@ -875,9 +902,53 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
         if (pressed(ImGuiKey_Escape)) {
             session.selection.clear();
         }
+        // F frames what is selected, or the whole mesh when nothing is - the
+        // way out after orbiting somewhere the object can no longer be found.
+        if (pressed(ImGuiKey_F)) {
+            frameVertices(session, renderer, geo::coveredVertices(session.geometry, session.selection, session.mode),
+                          session.selection.empty() ? 1.8f : 2.5f);
+            placeOrbitCamera(session, renderer.camera());
+        }
     }
 
     return true;
+}
+
+void orbitEditCamera(EditorState& state, Renderer& renderer, Vec2 mouseDelta, bool pan) {
+    if (!state.edit.has_value()) {
+        return;
+    }
+    EditSession& session = *state.edit;
+    Camera& camera = renderer.camera();
+
+    if (pan) {
+        // Scaled so a point at the target's depth stays under the cursor: the
+        // view is 2 d tan(fov/2) tall there, spread over the viewport's height.
+        const f32 viewHeight = static_cast<f32>(std::max(state.viewportSize.height, 1u));
+        const f32 metresPerPixel =
+            2.0f * session.orbitDistance * std::tan(radians(camera.fovYDegrees) * 0.5f) / viewHeight;
+        session.orbitTarget -= camera.right() * (mouseDelta.x * metresPerPixel);
+        session.orbitTarget += camera.up() * (mouseDelta.y * metresPerPixel);
+    } else {
+        // The fly camera's own look, then the camera put back on the sphere
+        // round the target: turning to the right carries it off to the left,
+        // so the object turns the way the mouse went.
+        camera.yaw += mouseDelta.x * camera.lookSensitivity * 2.0f;
+        camera.pitch = clamp(camera.pitch - mouseDelta.y * camera.lookSensitivity * 2.0f, -89.0f, 89.0f);
+    }
+    placeOrbitCamera(session, camera);
+}
+
+void zoomEditCamera(EditorState& state, Renderer& renderer, f32 wheel) {
+    if (!state.edit.has_value() || wheel == 0.0f) {
+        return;
+    }
+    EditSession& session = *state.edit;
+    // Stops short of the target, which would leave nothing to look along, and
+    // of the far plane, beyond which the object would vanish.
+    session.orbitDistance =
+        clamp(session.orbitDistance * std::pow(0.85f, wheel), 0.05f, renderer.camera().farPlane * 0.5f);
+    placeOrbitCamera(session, renderer.camera());
 }
 
 bool drawEditViewport(EditorState& state, Renderer& renderer, Vec2 origin, Vec2 size, bool imageHovered) {
@@ -1226,6 +1297,38 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         session.mode = geo::SelectMode::Face;
         perform(state, Operation::LoopCut);
         report("loop cut");
+        break;
+    }
+    case 75: {
+        if (!state.edit.has_value()) {
+            break;
+        }
+        // What dragging with the middle button, then with Shift, then a few
+        // wheel notches would do. Whatever the moves, the camera has to stay
+        // on its sphere and keep looking straight at the target.
+        const EditSession& session = *state.edit;
+        const auto check = [&](const char* step) {
+            const Camera& camera = renderer.camera();
+            const Vec3 toTarget = session.orbitTarget - camera.position;
+            FUMAR_INFO("modeler smoke: {} -> yaw {:.1f}, pitch {:.1f}, distance {:.3f} (orbit {:.3f}), aim {:.5f}", step,
+                       camera.yaw, camera.pitch, length(toTarget), session.orbitDistance,
+                       dot(normalize(toTarget), camera.forward()));
+        };
+        check("framed");
+        FUMAR_INFO("modeler smoke: camera at ({:.2f}, {:.2f}, {:.2f}), target ({:.2f}, {:.2f}, {:.2f})",
+                   renderer.camera().position.x, renderer.camera().position.y, renderer.camera().position.z,
+                   session.orbitTarget.x, session.orbitTarget.y, session.orbitTarget.z);
+        if (variant != "orbit") {
+            break;
+        }
+        orbitEditCamera(state, renderer, Vec2{250.0f, -120.0f}, false);
+        check("orbited");
+        const Vec3 before = session.orbitTarget;
+        orbitEditCamera(state, renderer, Vec2{-80.0f, 40.0f}, true);
+        FUMAR_INFO("modeler smoke: panned the target by {:.3f} m", length(session.orbitTarget - before));
+        check("panned");
+        zoomEditCamera(state, renderer, 3.0f);
+        check("zoomed in");
         break;
     }
     case 80:

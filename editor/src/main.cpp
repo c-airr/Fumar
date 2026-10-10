@@ -446,6 +446,9 @@ int main() {
         .width = 1600,
         .height = 900,
         .resizable = true,
+        // Escape deselects here; an editor closes from its menu or title bar,
+        // where quitting by accident is not one keypress away.
+        .escapeCloses = false,
     });
 
     Renderer renderer(window);
@@ -567,11 +570,15 @@ int main() {
         // point it calls ShowCursor and the pointer comes back as a grey
         // unbound arrow instead of disappearing. Last frame's hover and script
         // ownership are enough: both already lag the UI by one frame elsewhere.
+        // The Modeler's orbit also answers to the middle button, the one
+        // Blender orbits with, so it is captured too.
+        const bool cameraButton =
+            window.mouseButtonDown(MouseButton::Right) ||
+            (state.edit.has_value() && window.mouseButtonDown(MouseButton::Middle));
         const bool wantRelative =
             window.hasFocus() &&
             ((scriptDrivesCamera && state.scriptsRunning) ||
-             (window.mouseButtonDown(MouseButton::Right) &&
-              (window.relativeMouse() || state.viewportHovered)));
+             (cameraButton && (window.relativeMouse() || state.viewportHovered)));
 
         if (wantRelative != window.relativeMouse()) {
             window.setRelativeMouse(wantRelative);
@@ -616,8 +623,7 @@ int main() {
 
         // Held right mouse means the camera is being flown, which is what
         // stops WASD from doubling as the tool shortcuts.
-        const bool navigating =
-            window.hasFocus() && (window.mouseButtonDown(MouseButton::Right) || window.relativeMouse());
+        const bool navigating = window.hasFocus() && (cameraButton || window.relativeMouse());
         handleShortcuts(state, navigating);
         if (window.hasFocus()) {
             handleModelerShortcuts(state, renderer, navigating);
@@ -695,10 +701,18 @@ int main() {
         // applies look/move while active and must not fight that decision.
         const bool cameraActive =
             !scriptDrivesCamera && window.hasFocus() &&
-            (window.relativeMouse() ||
-             (state.viewportHovered && window.mouseButtonDown(MouseButton::Right)));
+            (window.relativeMouse() || (state.viewportHovered && cameraButton));
 
-        if (cameraActive) {
+        if (state.edit.has_value()) {
+            // Modelling: no flying, only turning round the object. Shift turns
+            // the drag into a pan, as in Blender; the wheel zooms.
+            if (cameraActive && window.relativeMouse()) {
+                orbitEditCamera(state, renderer, window.mouseDelta(), window.keyDown(Key::LeftShift));
+            }
+            if (window.hasFocus() && state.viewportHovered && !window.relativeMouse()) {
+                zoomEditCamera(state, renderer, ImGui::GetIO().MouseWheel);
+            }
+        } else if (cameraActive) {
             renderer.camera().update(window, deltaSeconds);
         }
 

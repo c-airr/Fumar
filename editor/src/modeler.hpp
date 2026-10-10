@@ -67,6 +67,13 @@ struct EditSession {
     /// the object on the way in, and leaving should not strand the view there.
     Camera levelCamera;
 
+    /// The Modeler's camera orbits instead of flying: it always looks at
+    /// `orbitTarget` from `orbitDistance` away, and dragging turns it round
+    /// that point. Walking about is how a level is explored; one object is
+    /// looked at from every side, and an orbit cannot lose sight of it.
+    Vec3 orbitTarget{0.0f, 0.0f, 0.0f};
+    f32 orbitDistance = 5.0f;
+
     /// Set when the geometry changed this frame. The upload to the GPU
     /// happens once, before the frame is drawn, however many times the mesh
     /// was touched on the way there.
@@ -145,6 +152,16 @@ void flushEditSession(EditorState& state, Renderer& renderer);
 /// Returns true when it consumed the scene-level shortcuts too (undo, delete),
 /// which then must not also act on the scene.
 bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigating);
+
+/// One frame of dragging the Modeler's camera, by `mouseDelta` pixels: turns
+/// it round the target, or with `pan` slides the target across the view so
+/// the object follows the cursor.
+void orbitEditCamera(EditorState& state, Renderer& renderer, Vec2 mouseDelta, bool pan);
+
+/// Moves the Modeler's camera towards the target (positive `wheel`) or away
+/// from it, by a fraction of the distance, so a notch means as much close up
+/// as it does from afar.
+void zoomEditCamera(EditorState& state, Renderer& renderer, f32 wheel);
 
 /// Everything the viewport does while a mesh is open: the overlay of vertices,
 /// edges and faces, picking them, box selection, and the gizmo on the

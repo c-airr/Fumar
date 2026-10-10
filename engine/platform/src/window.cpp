@@ -79,7 +79,7 @@ Uint32 toButtonMask(MouseButton button) {
 
 } // namespace
 
-Window::Window(const WindowDesc& desc) {
+Window::Window(const WindowDesc& desc) : m_escapeCloses(desc.escapeCloses) {
     acquireSdl();
 
     // Activation clicks (the first click that focuses the window) are otherwise
@@ -117,7 +117,8 @@ Window::Window(Window&& other) noexcept
     : m_window(std::exchange(other.m_window, nullptr)),
       m_shouldClose(other.m_shouldClose),
       m_minimized(other.m_minimized),
-      m_resized(other.m_resized) {
+      m_resized(other.m_resized),
+      m_escapeCloses(other.m_escapeCloses) {
     // The moved-from window no longer owns anything, so its destructor must not
     // decrement the SDL reference count - hence the exchange above.
 }
@@ -132,6 +133,7 @@ Window& Window::operator=(Window&& other) noexcept {
         m_shouldClose = other.m_shouldClose;
         m_minimized = other.m_minimized;
         m_resized = other.m_resized;
+        m_escapeCloses = other.m_escapeCloses;
     }
     return *this;
 }
@@ -201,7 +203,7 @@ u32 Window::pumpEvents() {
                 // impossible to escape without quitting.
                 if (relativeMouse()) {
                     setRelativeMouse(false);
-                } else {
+                } else if (m_escapeCloses) {
                     m_shouldClose = true;
                 }
             }
