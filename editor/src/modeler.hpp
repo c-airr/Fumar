@@ -34,6 +34,15 @@ enum class GizmoMode : u8 {
     Scale,
 };
 
+/// The Modeler's camera, which orbits instead of flying: it always looks at
+/// `target` from `distance` away, and dragging turns it round that point.
+/// Walking about is how a level is explored; one object is looked at from
+/// every side, and an orbit cannot lose sight of it.
+struct OrbitView {
+    Vec3 target{0.0f, 0.0f, 0.0f};
+    f32 distance = 5.0f;
+};
+
 /// The geometry as it was before an edit, for undo inside a session.
 struct EditSnapshot {
     geometry::EditableMesh mesh;
@@ -51,15 +60,25 @@ struct EditHover {
 
 /// One mesh open in the Modeler.
 ///
-/// Opening a mesh gives the node a copy of its own - the other three blocks
-/// that share the starter scene's cube are not changed by modelling one of
-/// them - and that copy is what this edits and re-uploads as it changes. The
-/// handle the node had before is kept, untouched, so that undoing at the
+/// In the Modeler the selected object is always open: the mesh is edited
+/// where it stands, among the rest of the scene. Tab isolates it - everything
+/// else steps aside - for when the scene is in the way.
+///
+/// The first change gives the node a copy of the mesh of its own - the other
+/// three blocks that share the starter scene's cube are not changed by
+/// modelling one of them - and that copy is what is edited and re-uploaded
+/// from then on. Not before: clicking through objects to look at them must
+/// neither copy meshes nor fill the history with steps that change nothing.
+/// The handle the node had before is kept, untouched, so that undoing at the
 /// level of the scene puts the old shape back: the whole session is one step.
 struct EditSession {
     NodeId node = kInvalidNode;
+
+    /// What the node draws: the mesh it came with until the first change,
+    /// its own copy after.
     MeshHandle mesh;
     MeshHandle originalMesh;
+    bool ownsMesh = false;
 
     geometry::EditableMesh geometry;
     geometry::Selection selection;
@@ -71,21 +90,12 @@ struct EditSession {
     std::vector<EditSnapshot> undo;
     std::vector<EditSnapshot> redo;
 
-    /// The level's camera, put back when the session ends. The Modeler frames
-    /// the object on the way in, and leaving should not strand the view there.
-    Camera levelCamera;
-
-    /// The level's tool, also put back at the end. A mesh opens with Select,
-    /// as in Blender: no gizmo stuck on the selection until W, E or R asks
-    /// for one.
-    GizmoMode levelGizmoMode = GizmoMode::Select;
-
-    /// The Modeler's camera orbits instead of flying: it always looks at
-    /// `orbitTarget` from `orbitDistance` away, and dragging turns it round
-    /// that point. Walking about is how a level is explored; one object is
-    /// looked at from every side, and an orbit cannot lose sight of it.
-    Vec3 orbitTarget{0.0f, 0.0f, 0.0f};
-    f32 orbitDistance = 5.0f;
+    /// Shown on its own, the rest of the scene hidden (Tab). The view framed
+    /// on the way in is the object's; the one it left is kept, and put back
+    /// on the way out, so going back to the scene returns to where it was.
+    bool isolated = false;
+    Camera sceneCamera;
+    OrbitView sceneOrbit;
 
     /// Set when the geometry changed this frame. The upload to the GPU
     /// happens once, before the frame is drawn, however many times the mesh
@@ -146,11 +156,23 @@ struct EditSession {
     u64 casterVersion = ~0ull;
 };
 
-/// Opens the selected node's mesh for modelling. False if it has none.
+/// Opens the selected node's mesh for modelling, where it stands. False if it
+/// has none.
 bool enterEditSession(EditorState& state, Renderer& renderer);
 
-/// Closes the open mesh, keeping what was made, and puts the scene back.
+/// Closes the open mesh, keeping what was made, and puts the scene back if it
+/// was isolated.
 void exitEditSession(EditorState& state, Renderer& renderer);
+
+/// Keeps the open mesh in step with the editor, once a frame: in the Modeler
+/// the selected object is open, and nothing else is. Opens it when something
+/// with a mesh is selected, moves over when the selection changes, closes it
+/// on leaving the Modeler or when the node goes away. Also sets the Modeler
+/// up and takes it down as the workspace switches.
+void syncEditSession(EditorState& state, Renderer& renderer);
+
+/// Tab: shows the open object on its own, or brings the scene back.
+void toggleIsolation(EditorState& state, Renderer& renderer);
 
 /// Undo and redo inside the open mesh - what Ctrl+Z means while modelling.
 void undoEdit(EditorState& state);
@@ -161,7 +183,7 @@ void redoEdit(EditorState& state);
 /// upload a frame and not one per vertex.
 void flushEditSession(EditorState& state, Renderer& renderer);
 
-/// Tab, the selection modes, the operations and undo, while in the Modeler.
+/// Tab, the selection modes and the operations, while in the Modeler.
 /// Returns true when it consumed the scene-level shortcuts too (undo, delete),
 /// which then must not also act on the scene.
 bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigating);
@@ -193,11 +215,13 @@ void drawMaterialsPanel(EditorState& state, Renderer& renderer);
 
 /// Drives the Modeler without anyone at the keyboard, one step per call.
 ///
-/// Opens Block A of the starter scene, extrudes its top, lifts it, insets it
-/// and cuts a loop round its side - the same path a person takes, through the
-/// same functions the shortcuts call - and logs the mesh's soundness after
-/// each step. Variant "finish" then closes the session and undoes it at the
-/// scene level, checking the cube comes back. Variant "helmet" opens the
+/// Selects Block A of the starter scene in the Modeler, checks it opened where
+/// it stands without copying anything, isolates it, extrudes its top, lifts
+/// it, insets it and cuts a loop round its side - the same path a person
+/// takes, through the same functions the shortcuts call - and logs the mesh's
+/// soundness after each step. Variant "finish" then brings the scene back,
+/// returns to Level and undoes the session at the scene level, checking the
+/// cube comes back. Variant "helmet" opens the
 /// starter scene's helmet instead and times it: the large mesh is where
 /// anything quadratic would show. Variant "save" saves the scene after the
 /// loop cut, loads it back and reopens the block, which is the round trip

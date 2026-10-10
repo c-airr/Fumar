@@ -120,10 +120,22 @@ struct EditorState {
     /// Level or Modeler: which panels are up, and what Tab does.
     Workspace workspace = Workspace::Level;
 
-    /// The mesh open for modelling, if any. Only ever set in the Modeler, and
-    /// closed whenever anything would leave it stranded - switching back to
-    /// Level, selecting a different node, loading a scene.
+    /// The mesh open for modelling, if any: in the Modeler, the selected
+    /// object's. Kept in step by syncEditSession.
     std::optional<EditSession> edit;
+
+    /// The Modeler's camera. Here rather than in the session: clicking from
+    /// one object to the next should not move the view.
+    OrbitView orbit;
+
+    /// Whether the Modeler is set up - compared with `workspace` each frame
+    /// to catch the switch either way.
+    bool modelerActive = false;
+
+    /// The Level's tool, put back on leaving the Modeler. The Modeler starts
+    /// with Select, as Blender does: no gizmo stuck on the selection until W,
+    /// E or R asks for one.
+    GizmoMode levelGizmoMode = GizmoMode::Translate;
 
     /// Where FUMAR_MODELER_SMOKE=save writes its scene. Unused otherwise.
     std::string smokeScene;

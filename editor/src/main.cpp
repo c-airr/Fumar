@@ -328,18 +328,24 @@ void handleShortcuts(EditorState& state, bool navigating) {
 /// Run between frames, never during one: undo and paste both destroy and create
 /// nodes, and the panels have already been described from the tree as it was.
 void applyEditActions(EditorState& state, Scene& scene) {
-    // Undo from the Edit menu while modelling means undo the last change to
-    // the mesh, the same as Ctrl+Z does. The scene-level actions wait until
-    // the session ends.
+    // Undo while modelling takes back the last change to the mesh. Once the
+    // mesh has nothing left to take back, it carries on into the scene's
+    // history - the objects modelled before this one, a step each - and the
+    // session, whose node that rebuilds, is reopened by syncEditSession. The
+    // other scene-level actions wait until the session ends.
     if (state.edit.has_value()) {
-        if (std::exchange(state.undoRequested, false)) {
+        if (state.undoRequested && !state.edit->undo.empty()) {
+            state.undoRequested = false;
             undoEdit(state);
         }
-        if (std::exchange(state.redoRequested, false)) {
+        if (state.redoRequested && !state.edit->redo.empty()) {
+            state.redoRequested = false;
             redoEdit(state);
         }
         state.copyRequested = state.pasteRequested = state.duplicateRequested = state.deleteRequested = false;
-        return;
+        if (!state.undoRequested && !state.redoRequested) {
+            return;
+        }
     }
 
     const bool hasSelection = state.selected != kInvalidNode && scene.isAlive(state.selected);
@@ -411,9 +417,13 @@ std::string environmentValue(const char* name) {
 /// a click. Doing the pick on hover as well is what makes objects light up as
 /// the cursor passes over them.
 void updatePicking(EditorState& state, Renderer& renderer, bool cameraActive) {
-    // With a mesh open, clicks pick vertices, edges and faces instead - see
-    // drawEditViewport - and the scene is not there to pick from anyway.
-    if (!state.viewportHovered || cameraActive || state.edit.has_value()) {
+    // With a mesh open, clicks pick vertices, edges and faces instead, and
+    // drawEditViewport lights up the other objects itself.
+    if (state.edit.has_value()) {
+        state.hovered = kInvalidNode;
+        return;
+    }
+    if (!state.viewportHovered || cameraActive) {
         state.hovered = kInvalidNode;
         renderer.setHighlighted(kInvalidNode);
         return;
@@ -573,7 +583,7 @@ int main() {
         // Blender orbits with, so it is captured too.
         const bool cameraButton =
             window.mouseButtonDown(MouseButton::Right) ||
-            (state.edit.has_value() && window.mouseButtonDown(MouseButton::Middle));
+            (state.workspace == Workspace::Modeler && window.mouseButtonDown(MouseButton::Middle));
         const bool wantRelative =
             window.hasFocus() &&
             ((scriptDrivesCamera && state.scriptsRunning) ||
@@ -592,6 +602,11 @@ int main() {
         // other side of the object as the view turns round it; fixed along
         // +X, +Y and +Z they stay where the hand expects them.
         ImGuizmo::AllowAxisFlip(false);
+
+        // Before any panel looks at it: whatever last frame selected, switched
+        // to or undid, the open mesh follows here, so the whole frame sees one
+        // consistent session.
+        syncEditSession(state, renderer);
 
         drawDockspace(state, sceneDirectory);
         drawViewportPanel(state, renderer, scripts, native);
@@ -707,7 +722,7 @@ int main() {
             !scriptDrivesCamera && window.hasFocus() &&
             (window.relativeMouse() || (state.viewportHovered && cameraButton));
 
-        if (state.edit.has_value()) {
+        if (state.workspace == Workspace::Modeler) {
             // Modelling: no flying, only turning round the object. Shift turns
             // the drag into a pan, as in Blender; the wheel zooms.
             if (cameraActive && window.relativeMouse()) {
@@ -724,16 +739,6 @@ int main() {
 
         if (smokeRunning) {
             smokeRunning = runModelerSmoke(state, renderer, smokeFrame++, smokeSetting);
-        }
-
-        // A mesh is open only while it can be: in the Modeler, on the node it
-        // was opened on, while that node exists. Anything else closes it -
-        // switching to Level, clicking another node in the outliner, undoing
-        // the node away.
-        if (state.edit.has_value() &&
-            (state.workspace != Workspace::Modeler || state.selected != state.edit->node ||
-             !renderer.scene().isAlive(state.edit->node))) {
-            exitEditSession(state, renderer);
         }
 
         // The outline is the Level's way of showing a selection. While
@@ -797,7 +802,6 @@ int main() {
                 state.clipboard = SceneSnapshot{};
 
                 scripts.restart();
-            native.restart();
                 native.restart();
             }
         }

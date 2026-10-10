@@ -109,6 +109,14 @@ Projector makeProjector(const EditSession& session, const Renderer& renderer, Ve
     return projector;
 }
 
+/// The ray from the camera through the cursor, in world space.
+Ray cursorRay(const Renderer& renderer, const Projector& projector, Vec2 mouse) {
+    const f32 aspect = projector.size.y > 0.0f ? projector.size.x / projector.size.y : 1.0f;
+    const Vec2 normalised{(mouse.x - projector.origin.x) / projector.size.x,
+                          (mouse.y - projector.origin.y) / projector.size.y};
+    return renderer.camera().rayThrough(normalised, aspect);
+}
+
 f32 distanceToSegment(Vec2 p, Vec2 a, Vec2 b) {
     const Vec2 ab = b - a;
     const f32 lengthSq = dot(ab, ab);
@@ -473,10 +481,7 @@ void updateHover(EditSession& session, const Renderer& renderer, const Projector
         break;
     case geo::SelectMode::Face: {
         refreshCaster(session);
-        const f32 aspect = projector.size.y > 0.0f ? projector.size.x / projector.size.y : 1.0f;
-        const Vec2 normalised{(mouse.x - projector.origin.x) / projector.size.x,
-                              (mouse.y - projector.origin.y) / projector.size.y};
-        const Ray ray = renderer.camera().rayThrough(normalised, aspect);
+        const Ray ray = cursorRay(renderer, projector, mouse);
         const Vec3 origin = xyz(projector.toObject * point(ray.origin));
         const Vec3 along = xyz(projector.toObject * direction(ray.direction));
         if (const auto hit = session.caster.closest(origin, along)) {
@@ -685,25 +690,33 @@ bool modeButton(const char* label, bool active, const char* tooltip, f32 width) 
     return pressed;
 }
 
-/// Puts the camera `orbitDistance` back from the target along the way it
-/// already looks. Everything that moves the Modeler's camera changes the
-/// target, the distance or the angle and then calls this, so the three can
-/// never disagree.
-void placeOrbitCamera(const EditSession& session, Camera& camera) {
-    camera.position = session.orbitTarget - camera.forward() * session.orbitDistance;
+/// Puts the camera `distance` back from the target along the way it already
+/// looks. Everything that moves the Modeler's camera changes the target, the
+/// distance or the angle and then calls this, so the three can never disagree.
+void placeOrbitCamera(const OrbitView& orbit, Camera& camera) {
+    camera.position = orbit.target - camera.forward() * orbit.distance;
 }
 
-/// Aims the camera at some of the mesh's vertices - all of them when
-/// `vertices` is empty - and backs off until their bounding sphere fits the
-/// view, with `margin` to spare.
-void frameVertices(EditSession& session, const Renderer& renderer, const std::set<u32>& vertices, f32 margin) {
+/// Moves the pivot along the line of sight to the depth of `point`, without
+/// moving the camera. Turning and zooming then behave as if centred on the
+/// object there - zoom steps scale with the distance - and nothing on screen
+/// jumps the way re-aiming at the object would make it.
+void pivotAtDepth(OrbitView& orbit, const Camera& camera, Vec3 point) {
+    orbit.distance = std::max(dot(point - camera.position, camera.forward()), 0.5f);
+    orbit.target = camera.position + camera.forward() * orbit.distance;
+}
+
+/// The world-space box round some of the mesh's vertices - all of them when
+/// `vertices` is empty. False for a mesh with none.
+bool worldBounds(const EditSession& session, const Renderer& renderer, const std::set<u32>& vertices, Vec3& low,
+                 Vec3& high) {
     const auto& positions = session.geometry.positions;
     if (positions.empty()) {
-        return;
+        return false;
     }
     const Mat4& world = renderer.scene().worldTransform(session.node);
-    Vec3 low{1e30f, 1e30f, 1e30f};
-    Vec3 high{-1e30f, -1e30f, -1e30f};
+    low = Vec3{1e30f, 1e30f, 1e30f};
+    high = Vec3{-1e30f, -1e30f, -1e30f};
     const auto include = [&](u32 v) {
         const Vec3 w = xyz(world * point(positions[v]));
         low = min(low, w);
@@ -718,12 +731,47 @@ void frameVertices(EditSession& session, const Renderer& renderer, const std::se
             include(v);
         }
     }
+    return true;
+}
 
+/// Aims the camera at some of the mesh's vertices - all of them when
+/// `vertices` is empty - and backs off until their bounding sphere fits the
+/// view, with `margin` to spare.
+void frameVertices(EditorState& state, Renderer& renderer, const std::set<u32>& vertices, f32 margin) {
+    Vec3 low;
+    Vec3 high;
+    if (!worldBounds(*state.edit, renderer, vertices, low, high)) {
+        return;
+    }
     // A floor on the radius, or one vertex would put the camera inside it.
     const f32 radius = std::max(length(high - low) * 0.5f, 0.1f);
     const f32 halfFov = radians(renderer.camera().fovYDegrees) * 0.5f;
-    session.orbitTarget = (low + high) * 0.5f;
-    session.orbitDistance = radius / std::sin(halfFov) * margin;
+    state.orbit.target = (low + high) * 0.5f;
+    state.orbit.distance = radius / std::sin(halfFov) * margin;
+    placeOrbitCamera(state.orbit, renderer.camera());
+}
+
+/// Hides the rest of the scene, or brings it back.
+void setIsolated(EditorState& state, Renderer& renderer, bool isolated) {
+    EditSession& session = *state.edit;
+    if (session.isolated == isolated) {
+        return;
+    }
+    session.isolated = isolated;
+    if (isolated) {
+        session.sceneCamera = renderer.camera();
+        session.sceneOrbit = state.orbit;
+        // Framed, looking the way the camera already looked. Room to spare
+        // round it: the shape is about to grow.
+        frameVertices(state, renderer, {}, 1.8f);
+        renderer.setIsolated(session.node);
+        renderer.setGridVisible(true);
+    } else {
+        renderer.camera() = session.sceneCamera;
+        state.orbit = session.sceneOrbit;
+        renderer.setIsolated(kInvalidNode);
+        renderer.setGridVisible(false);
+    }
 }
 
 /// Puts a panel into the same dock node as another one, the first time it is
@@ -749,33 +797,28 @@ bool enterEditSession(EditorState& state, Renderer& renderer) {
         return false;
     }
 
-    // One step of scene history for the whole session: undoing it after the
-    // session ends puts the node's old mesh back, which is still registered.
-    state.history.record(scene, state.selected);
-
+    // No copy and no history yet: see EditSession. The mesh is only read.
     EditSession session;
     session.node = state.selected;
     session.originalMesh = node.mesh;
+    session.mesh = node.mesh;
     session.geometry = renderer.resources().mesh(node.mesh).toEditable();
-    session.mesh = renderer.createMesh(session.geometry, editedMesh(node.name));
-    node.mesh = session.mesh;
-    session.levelCamera = renderer.camera();
-    session.levelGizmoMode = state.gizmoMode;
-    state.gizmoMode = GizmoMode::Select;
 
-    // Frame the object, looking at it the way the camera already looked. Room
-    // to spare round it: the shape is about to grow.
-    frameVertices(session, renderer, {}, 1.8f);
-    placeOrbitCamera(session, renderer.camera());
+    // The camera stays where it is - the object was clicked where it stands,
+    // and the view jumping away from it would lose the place. Only the pivot
+    // moves, to the object's depth, so turning the view turns round it.
+    state.edit = std::move(session);
+    Vec3 low;
+    Vec3 high;
+    if (worldBounds(*state.edit, renderer, {}, low, high)) {
+        pivotAtDepth(state.orbit, renderer.camera(), (low + high) * 0.5f);
+    }
 
-    renderer.setIsolated(state.selected);
-    renderer.setGridVisible(true);
     renderer.setSelected(kInvalidNode);
     renderer.setHighlighted(kInvalidNode);
 
-    FUMAR_INFO("modelling '{}': {} vertices, {} faces", node.name, session.geometry.vertexCount(),
-               session.geometry.faceCount());
-    state.edit = std::move(session);
+    FUMAR_INFO("modelling '{}': {} vertices, {} faces", node.name, state.edit->geometry.vertexCount(),
+               state.edit->geometry.faceCount());
     return true;
 }
 
@@ -784,14 +827,12 @@ void exitEditSession(EditorState& state, Renderer& renderer) {
         return;
     }
     flushEditSession(state, renderer);
+    setIsolated(state, renderer, false);
 
-    renderer.camera() = state.edit->levelCamera;
-    state.gizmoMode = state.edit->levelGizmoMode;
-    renderer.setIsolated(kInvalidNode);
-    renderer.setGridVisible(false);
-
-    FUMAR_INFO("finished modelling: {} vertices, {} faces", state.edit->geometry.vertexCount(),
-               state.edit->geometry.faceCount());
+    if (state.edit->ownsMesh) {
+        FUMAR_INFO("finished modelling: {} vertices, {} faces", state.edit->geometry.vertexCount(),
+                   state.edit->geometry.faceCount());
+    }
     state.edit.reset();
 }
 
@@ -799,8 +840,66 @@ void flushEditSession(EditorState& state, Renderer& renderer) {
     if (!state.edit.has_value() || !state.edit->dirty) {
         return;
     }
-    renderer.updateMesh(state.edit->mesh, state.edit->geometry);
-    state.edit->dirty = false;
+    EditSession& session = *state.edit;
+    session.dirty = false;
+    if (session.ownsMesh) {
+        renderer.updateMesh(session.mesh, session.geometry);
+        return;
+    }
+
+    // The first change: the node gets its own copy, and the scene one step of
+    // history to undo the whole session with. Only if the node still draws
+    // the mesh this was opened on - one picked under Mesh in the details, or
+    // undone away, is not this session's to replace.
+    Scene& scene = renderer.scene();
+    if (!scene.isAlive(session.node) || scene.node(session.node).mesh != session.mesh) {
+        return;
+    }
+    state.history.record(scene, session.node);
+    Node& node = scene.node(session.node);
+    session.mesh = renderer.createMesh(session.geometry, editedMesh(node.name));
+    session.ownsMesh = true;
+    node.mesh = session.mesh;
+}
+
+void syncEditSession(EditorState& state, Renderer& renderer) {
+    Scene& scene = renderer.scene();
+    const bool modeler = state.workspace == Workspace::Modeler;
+
+    if (modeler && !state.modelerActive) {
+        state.modelerActive = true;
+        state.levelGizmoMode = state.gizmoMode;
+        state.gizmoMode = GizmoMode::Select;
+        // The pivot straight ahead, until an object is opened and moves it to
+        // its own depth.
+        state.orbit.distance = 5.0f;
+        state.orbit.target = renderer.camera().position + renderer.camera().forward() * state.orbit.distance;
+    }
+
+    if (state.edit.has_value()) {
+        const EditSession& session = *state.edit;
+        const bool stale = !modeler || state.selected != session.node || !scene.isAlive(session.node) ||
+                           scene.node(session.node).mesh != session.mesh;
+        if (stale) {
+            exitEditSession(state, renderer);
+        }
+    }
+
+    if (!modeler && state.modelerActive) {
+        state.modelerActive = false;
+        state.gizmoMode = state.levelGizmoMode;
+    }
+
+    if (modeler && !state.edit.has_value() && state.selected != kInvalidNode && scene.isAlive(state.selected) &&
+        renderer.resources().has(scene.node(state.selected).mesh)) {
+        enterEditSession(state, renderer);
+    }
+}
+
+void toggleIsolation(EditorState& state, Renderer& renderer) {
+    if (state.edit.has_value()) {
+        setIsolated(state, renderer, !state.edit->isolated);
+    }
 }
 
 void undoEdit(EditorState& state) {
@@ -840,9 +939,9 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
 
     if (!navigating && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
         if (state.edit.has_value()) {
-            exitEditSession(state, renderer);
-        } else if (!enterEditSession(state, renderer) && state.selected != kInvalidNode) {
-            FUMAR_INFO("nothing to model: the selected node has no mesh");
+            toggleIsolation(state, renderer);
+        } else {
+            FUMAR_INFO("nothing to isolate: select an object with a mesh first");
         }
         return true;
     }
@@ -868,11 +967,13 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
         setMode(session, geo::SelectMode::Face);
     }
 
+    // Raised rather than done here: the mesh's own undo comes first, and once
+    // it runs out the scene's takes over - see applyEditActions.
     if (io.KeyCtrl && pressed(ImGuiKey_Z)) {
-        io.KeyShift ? redoEdit(state) : undoEdit(state);
+        (io.KeyShift ? state.redoRequested : state.undoRequested) = true;
     }
     if (io.KeyCtrl && pressed(ImGuiKey_Y)) {
-        redoEdit(state);
+        state.redoRequested = true;
     }
     if (io.KeyCtrl && pressed(ImGuiKey_R)) {
         perform(state, Operation::LoopCut);
@@ -902,15 +1003,20 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
         if (pressed(ImGuiKey_X) || pressed(ImGuiKey_Delete)) {
             perform(state, Operation::Delete);
         }
+        // Escape lets go of the selected elements, and pressed again of the
+        // object itself.
         if (pressed(ImGuiKey_Escape)) {
-            session.selection.clear();
+            if (session.selection.empty()) {
+                state.selected = kInvalidNode;
+            } else {
+                session.selection.clear();
+            }
         }
         // F frames what is selected, or the whole mesh when nothing is - the
         // way out after orbiting somewhere the object can no longer be found.
         if (pressed(ImGuiKey_F)) {
-            frameVertices(session, renderer, geo::coveredVertices(session.geometry, session.selection, session.mode),
+            frameVertices(state, renderer, geo::coveredVertices(session.geometry, session.selection, session.mode),
                           session.selection.empty() ? 1.8f : 2.5f);
-            placeOrbitCamera(session, renderer.camera());
         }
     }
 
@@ -918,20 +1024,16 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
 }
 
 void orbitEditCamera(EditorState& state, Renderer& renderer, Vec2 mouseDelta, bool pan) {
-    if (!state.edit.has_value()) {
-        return;
-    }
-    EditSession& session = *state.edit;
+    OrbitView& orbit = state.orbit;
     Camera& camera = renderer.camera();
 
     if (pan) {
         // Scaled so a point at the target's depth stays under the cursor: the
         // view is 2 d tan(fov/2) tall there, spread over the viewport's height.
         const f32 viewHeight = static_cast<f32>(std::max(state.viewportSize.height, 1u));
-        const f32 metresPerPixel =
-            2.0f * session.orbitDistance * std::tan(radians(camera.fovYDegrees) * 0.5f) / viewHeight;
-        session.orbitTarget -= camera.right() * (mouseDelta.x * metresPerPixel);
-        session.orbitTarget += camera.up() * (mouseDelta.y * metresPerPixel);
+        const f32 metresPerPixel = 2.0f * orbit.distance * std::tan(radians(camera.fovYDegrees) * 0.5f) / viewHeight;
+        orbit.target -= camera.right() * (mouseDelta.x * metresPerPixel);
+        orbit.target += camera.up() * (mouseDelta.y * metresPerPixel);
     } else {
         // The fly camera's own look, then the camera put back on the sphere
         // round the target: turning to the right carries it off to the left,
@@ -939,19 +1041,18 @@ void orbitEditCamera(EditorState& state, Renderer& renderer, Vec2 mouseDelta, bo
         camera.yaw += mouseDelta.x * camera.lookSensitivity * 2.0f;
         camera.pitch = clamp(camera.pitch - mouseDelta.y * camera.lookSensitivity * 2.0f, -89.0f, 89.0f);
     }
-    placeOrbitCamera(session, camera);
+    placeOrbitCamera(orbit, camera);
 }
 
 void zoomEditCamera(EditorState& state, Renderer& renderer, f32 wheel) {
-    if (!state.edit.has_value() || wheel == 0.0f) {
+    if (wheel == 0.0f) {
         return;
     }
-    EditSession& session = *state.edit;
     // Stops short of the target, which would leave nothing to look along, and
     // of the far plane, beyond which the object would vanish.
-    session.orbitDistance =
-        clamp(session.orbitDistance * std::pow(0.85f, wheel), 0.05f, renderer.camera().farPlane * 0.5f);
-    placeOrbitCamera(session, renderer.camera());
+    state.orbit.distance =
+        clamp(state.orbit.distance * std::pow(0.85f, wheel), 0.05f, renderer.camera().farPlane * 0.5f);
+    placeOrbitCamera(state.orbit, renderer.camera());
 }
 
 bool drawEditViewport(EditorState& state, Renderer& renderer, Vec2 origin, Vec2 size, bool imageHovered) {
@@ -967,8 +1068,20 @@ bool drawEditViewport(EditorState& state, Renderer& renderer, Vec2 origin, Vec2 
     const Vec2 mouse{mouseIm.x, mouseIm.y};
 
     const bool gizmoHot = manipulateSelection(state, renderer, projector);
-    updateHover(session, renderer, projector, mouse, imageHovered && !gizmoHot && !session.boxSelecting);
+    const bool pointing = imageHovered && !gizmoHot && !session.boxSelecting;
+    updateHover(session, renderer, projector, mouse, pointing);
     drawOverlay(session, projector);
+
+    // Another object under the cursor where none of this one's elements is:
+    // lit up, and a click moves the modelling over to it. Not while isolated,
+    // with nothing else there to point at.
+    NodeId other = kInvalidNode;
+    if (pointing && !session.dragging && !session.hover.valid && !session.isolated) {
+        if (const NodeId hit = renderer.pickNode(cursorRay(renderer, projector, mouse)); hit != session.node) {
+            other = hit;
+        }
+    }
+    renderer.setHighlighted(other);
 
     // --- clicking and box selection ------------------------------------------
     // A press that turns into a drag of more than a few pixels is a box; one
@@ -990,6 +1103,10 @@ bool drawEditViewport(EditorState& state, Renderer& renderer, Vec2 origin, Vec2 
         const bool additive = ImGui::GetIO().KeyShift;
         if (session.boxSelecting) {
             boxSelect(session, projector, session.boxStart, mouse, additive);
+        } else if (other != kInvalidNode && !additive) {
+            // Picked up by syncEditSession next frame, which closes this mesh
+            // and opens that one.
+            state.selected = other;
         } else {
             clickSelect(session, additive);
         }
@@ -1017,21 +1134,9 @@ void drawModelingToolsPanel(EditorState& state, Renderer& renderer) {
 
     if (!state.edit.has_value()) {
         ImGui::SeparatorText("Modeler");
-        ImGui::TextWrapped("Select an object, then press Tab to model it. The scene steps aside and "
-                           "the object is left on its own; Tab again brings everything back.");
-        ImGui::Spacing();
-
-        const Scene& scene = renderer.scene();
-        const bool canModel = state.selected != kInvalidNode && scene.isAlive(state.selected) &&
-                              renderer.resources().has(scene.node(state.selected).mesh);
-        ImGui::BeginDisabled(!canModel);
-        const std::string label = canModel ? "Model '" + scene.node(state.selected).name + "'  (Tab)"
-                                           : std::string("Model  (Tab)");
-        if (ImGui::Button(label.c_str(), ImVec2(width, 0.0f))) {
-            enterEditSession(state, renderer);
-        }
-        ImGui::EndDisabled();
-
+        ImGui::TextWrapped("Click an object to model it, right where it stands. When the rest of the "
+                           "scene gets in the way, Tab shows the object on its own; Tab again brings "
+                           "everything back.");
         ImGui::Spacing();
         ImGui::TextDisabled("Only that object changes: it gets a copy");
         ImGui::TextDisabled("of its mesh. To use the new shape on");
@@ -1046,10 +1151,10 @@ void drawModelingToolsPanel(EditorState& state, Renderer& renderer) {
 
     ImGui::SeparatorText("Editing");
     ImGui::Text("%s", renderer.scene().isAlive(session.node) ? renderer.scene().node(session.node).name.c_str() : "?");
-    if (ImGui::Button("Done  (Tab)", ImVec2(width, 0.0f))) {
-        exitEditSession(state, renderer);
-        ImGui::End();
-        return;
+    if (modeButton(session.isolated ? "Show the scene  (Tab)" : "Isolate  (Tab)", session.isolated,
+                   session.isolated ? "Bring the rest of the scene back." : "Hide everything else, to model this on its own.",
+                   width)) {
+        toggleIsolation(state, renderer);
     }
 
     ImGui::SeparatorText("Select");
@@ -1227,22 +1332,39 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
                    state.edit->geometry.faceCount(), problems.empty() ? "sound" : problems.front());
     };
 
-    switch (frame) {
-    case 20: {
-        state.workspace = Workspace::Modeler;
-        NodeId block = kInvalidNode;
+    // How deep the scene's history was before the Modeler was touched, to
+    // count the steps it adds. Static: one smoke run per process.
+    static usize smokeHistoryDepth = 0;
+
+    const auto findNode = [&](const char* name) {
+        NodeId found = kInvalidNode;
         scene.traverse([&](NodeId id, u32) {
-            if (scene.node(id).name == "Block A") {
-                block = id;
+            if (scene.node(id).name == name) {
+                found = id;
             }
         });
-        state.selected = block;
-        FUMAR_INFO("modeler smoke: Modeler workspace, Block A selected ({})", block != kInvalidNode ? "found" : "MISSING");
+        return found;
+    };
+
+    switch (frame) {
+    case 20:
+        state.workspace = Workspace::Modeler;
+        state.selected = findNode("Block A");
+        smokeHistoryDepth = state.history.depth();
+        FUMAR_INFO("modeler smoke: Modeler workspace, Block A selected ({})",
+                   state.selected != kInvalidNode ? "found" : "MISSING");
+        break;
+    case 30: {
+        // Opened by syncEditSession on its own, in the scene, without a copy
+        // of the mesh or a step of history - nothing has changed yet.
+        const bool open = state.edit.has_value() && state.edit->node == state.selected;
+        FUMAR_INFO("modeler smoke: opened on selection: {}, isolated: {}, own mesh: {}, history steps: {}",
+                   open ? "yes" : "NO", renderer.isolated() != kInvalidNode ? "YES" : "no",
+                   open && state.edit->ownsMesh ? "YES" : "no", state.history.depth() - smokeHistoryDepth);
+        toggleIsolation(state, renderer);
+        FUMAR_INFO("modeler smoke: Tab -> isolated: {}", open && renderer.isolated() == state.edit->node ? "yes" : "NO");
         break;
     }
-    case 30:
-        FUMAR_INFO("modeler smoke: entering: {}", enterEditSession(state, renderer) ? "ok" : "FAILED");
-        break;
     case 40: {
         if (!state.edit.has_value()) {
             break;
@@ -1259,6 +1381,19 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         }
         perform(state, Operation::Extrude);
         report("extrude top");
+        break;
+    }
+    case 45: {
+        if (!state.edit.has_value()) {
+            break;
+        }
+        // The extrude was uploaded at the end of frame 40. The first change:
+        // the block should have a mesh of its own now, and the others not.
+        const NodeId other = findNode("Block B");
+        const bool shared = scene.isAlive(other) && scene.node(other).mesh == state.edit->mesh;
+        FUMAR_INFO("modeler smoke: after the first change -> own mesh: {}, history steps: {}, Block B {}",
+                   state.edit->ownsMesh ? "yes" : "NO", state.history.depth() - smokeHistoryDepth,
+                   shared ? "CHANGED TOO" : "untouched");
         break;
     }
     case 50: {
@@ -1309,26 +1444,26 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         // What dragging with the middle button, then with Shift, then a few
         // wheel notches would do. Whatever the moves, the camera has to stay
         // on its sphere and keep looking straight at the target.
-        const EditSession& session = *state.edit;
+        const OrbitView& orbit = state.orbit;
         const auto check = [&](const char* step) {
             const Camera& camera = renderer.camera();
-            const Vec3 toTarget = session.orbitTarget - camera.position;
+            const Vec3 toTarget = orbit.target - camera.position;
             FUMAR_INFO("modeler smoke: {} -> yaw {:.1f}, pitch {:.1f}, distance {:.3f} (orbit {:.3f}), aim {:.5f}", step,
-                       camera.yaw, camera.pitch, length(toTarget), session.orbitDistance,
+                       camera.yaw, camera.pitch, length(toTarget), orbit.distance,
                        dot(normalize(toTarget), camera.forward()));
         };
         check("framed");
         FUMAR_INFO("modeler smoke: camera at ({:.2f}, {:.2f}, {:.2f}), target ({:.2f}, {:.2f}, {:.2f})",
                    renderer.camera().position.x, renderer.camera().position.y, renderer.camera().position.z,
-                   session.orbitTarget.x, session.orbitTarget.y, session.orbitTarget.z);
+                   orbit.target.x, orbit.target.y, orbit.target.z);
         if (variant != "orbit") {
             break;
         }
         orbitEditCamera(state, renderer, Vec2{250.0f, -120.0f}, false);
         check("orbited");
-        const Vec3 before = session.orbitTarget;
+        const Vec3 before = orbit.target;
         orbitEditCamera(state, renderer, Vec2{-80.0f, 40.0f}, true);
-        FUMAR_INFO("modeler smoke: panned the target by {:.3f} m", length(session.orbitTarget - before));
+        FUMAR_INFO("modeler smoke: panned the target by {:.3f} m", length(orbit.target - before));
         check("panned");
         zoomEditCamera(state, renderer, 3.0f);
         check("zoomed in");
@@ -1338,7 +1473,8 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         if (variant != "save") {
             break;
         }
-        exitEditSession(state, renderer);
+        // Saved with the mesh still open, the way Ctrl+S is pressed in the
+        // middle of modelling.
         state.smokeScene = (executableDirectory() / "scenes" / "modeler_smoke.fumar").string();
         FUMAR_INFO("modeler smoke: saved: {}", saveScene(renderer, state.smokeScene) ? "ok" : "FAILED");
         break;
@@ -1346,23 +1482,26 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         if (variant != "save") {
             break;
         }
+        exitEditSession(state, renderer);
         state.selected = kInvalidNode;
         state.history.clear();
         FUMAR_INFO("modeler smoke: reloaded: {}", loadScene(renderer, state.smokeScene) ? "ok" : "FAILED");
+        break;
+    case 86:
+        if (variant == "save") {
+            state.selected = findNode("Block A");
+        }
         break;
     case 88:
         if (variant != "save") {
             break;
         }
-        scene.traverse([&](NodeId id, u32) {
-            if (scene.node(id).name == "Block A") {
-                state.selected = id;
-            }
-        });
-        state.workspace = Workspace::Modeler;
-        enterEditSession(state, renderer);
-        if (state.edit.has_value()) {
-            report("after save and reload");
+        if (!state.edit.has_value()) {
+            FUMAR_ERROR("modeler smoke: after save and reload - no session open");
+            return false;
+        }
+        report("after save and reload");
+        {
             // Read from the file's extras, not reconstructed: planar quads
             // would come back as quads either way, so the face count alone
             // would not show whether the polygons were actually saved.
@@ -1371,12 +1510,25 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
                        state.edit->geometry.faceCount());
         }
         return false;
-    case 90:
+    case 90: {
         if (!finish) {
             return false;
         }
-        exitEditSession(state, renderer);
-        FUMAR_INFO("modeler smoke: closed, isolation {}", renderer.isolated() == kInvalidNode ? "off" : "STILL ON");
+        if (!state.edit.has_value()) {
+            FUMAR_ERROR("modeler smoke: no session to finish");
+            return false;
+        }
+        // Tab back to the scene: the camera it had before isolating returns.
+        const Vec3 expected = state.edit->sceneCamera.position;
+        toggleIsolation(state, renderer);
+        FUMAR_INFO("modeler smoke: Tab -> isolated: {}, camera {}", renderer.isolated() == kInvalidNode ? "no" : "STILL",
+                   length(renderer.camera().position - expected) < 1e-4f ? "back where it was" : "NOT RESTORED");
+        state.workspace = Workspace::Level;
+        break;
+    }
+    case 92:
+        FUMAR_INFO("modeler smoke: back in Level -> session {}, tool {}", state.edit.has_value() ? "STILL OPEN" : "closed",
+                   state.gizmoMode == state.levelGizmoMode ? "restored" : "NOT RESTORED");
         break;
     case 110: {
         NodeId restored = kInvalidNode;

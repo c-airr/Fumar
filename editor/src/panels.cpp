@@ -504,7 +504,7 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
             state.workspace = Workspace::Level;
         }
         if (toolButton("Modeler", state.workspace == Workspace::Modeler,
-                       "Shape meshes. Select an object and press Tab to model it.")) {
+                       "Shape meshes. Click an object to model it; Tab shows it on its own.")) {
             state.workspace = Workspace::Modeler;
         }
 
@@ -524,10 +524,13 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
 
         const char* hint =
             state.edit.has_value()
-                ? "middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
-                  "Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  Tab: done"
+                ? (state.edit->isolated
+                       ? "middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
+                         "Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  Tab: back to the scene"
+                       : "middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
+                         "Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  Tab: isolate")
             : state.workspace == Workspace::Modeler
-                ? "select an object, then Tab to model it  |  right mouse: look  |  WASD: move"
+                ? "click an object to model it  |  middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom"
                 : "right mouse: look  |  WASD: move  |  Q W E R: tools  |  Ctrl+D: duplicate  |  F5: compile";
         const f32 hintWidth = ImGui::CalcTextSize(hint).x;
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() - hintWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
@@ -585,8 +588,9 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
     // Placing things belongs where you are looking, not in a panel on the far
     // side of the window. A menu rather than a row of buttons: the list of what
     // can be placed only grows, and a toolbar that grows with it stops being a
-    // toolbar. Not while a mesh is open: there is no scene to place things in.
-    if (!state.edit.has_value()) {
+    // toolbar. Not while a mesh is isolated: there is no scene to place things
+    // in. What is placed in the Modeler is selected, and so opened at once.
+    if (!state.edit.has_value() || !state.edit->isolated) {
         if (toolButton("Place", ImGui::IsPopupOpen("##place_menu"), "Add an object to the scene")) {
             ImGui::OpenPopup("##place_menu");
         }
@@ -595,7 +599,7 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
             ImGui::EndPopup();
         }
     } else {
-        ImGui::TextColored(kAccentBright, "modelling");
+        ImGui::TextColored(kAccentBright, "isolated");
     }
 
     if (state.gizmoMode == GizmoMode::Scale) {
@@ -878,9 +882,9 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
                 }
             });
 
-            // The mesh being modelled stays where it is until the session ends.
-            const bool modellingThis = state.edit.has_value() && state.edit->node == state.selected;
-            ImGui::BeginDisabled(modellingThis);
+            // Fine while the object is open in the Modeler: syncEditSession
+            // sees the mesh change under the session and reopens it on the
+            // new one.
             if (ImGui::BeginCombo("Mesh", meshLabel(node.mesh).c_str())) {
                 if (ImGui::Selectable("(none)", !node.mesh.valid())) {
                     state.history.record(scene, state.selected);
@@ -900,11 +904,9 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
                 }
                 ImGui::EndCombo();
             }
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("%s", modellingThis ? "Being modelled - press Tab to finish first."
-                                                : "The shape this object draws. Pick a modelled mesh to give\n"
-                                                  "this object the shape made on another one.");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("The shape this object draws. Pick a modelled mesh to give\n"
+                                  "this object the shape made on another one.");
             }
 
             if (resources.has(node.mesh)) {
