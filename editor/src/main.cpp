@@ -588,6 +588,11 @@ int main() {
         // --- interface ------------------------------------------------------
         ui.beginFrame();
         ImGuizmo::BeginFrame();
+        // By default each handle flips to whichever side of the pivot faces
+        // the camera. Meant to keep them visible, it makes them jump to the
+        // other side of the object as the view turns round it; fixed along
+        // +X, +Y and +Z they stay where the hand expects them.
+        ImGuizmo::AllowAxisFlip(false);
 
         drawDockspace(state, sceneDirectory);
         drawViewportPanel(state, renderer, scripts, native);
