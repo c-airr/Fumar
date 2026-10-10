@@ -22,14 +22,6 @@ class NativeEngine;
 class ScriptEngine;
 class Window;
 
-/// What the gizmo in the viewport does when dragged.
-enum class GizmoMode : u8 {
-    Select,   ///< no handles; clicking picks objects
-    Translate,
-    Rotate,
-    Scale,
-};
-
 /// Editor state that outlives a single frame.
 ///
 /// Immediate mode means the interface itself keeps nothing: every panel is

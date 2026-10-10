@@ -26,6 +26,14 @@ enum class Workspace : u8 {
     Modeler,
 };
 
+/// What the gizmo in the viewport does when dragged.
+enum class GizmoMode : u8 {
+    Select,   ///< no handles; clicking picks objects
+    Translate,
+    Rotate,
+    Scale,
+};
+
 /// The geometry as it was before an edit, for undo inside a session.
 struct EditSnapshot {
     geometry::EditableMesh mesh;
@@ -66,6 +74,11 @@ struct EditSession {
     /// The level's camera, put back when the session ends. The Modeler frames
     /// the object on the way in, and leaving should not strand the view there.
     Camera levelCamera;
+
+    /// The level's tool, also put back at the end. A mesh opens with Select,
+    /// as in Blender: no gizmo stuck on the selection until W, E or R asks
+    /// for one.
+    GizmoMode levelGizmoMode = GizmoMode::Select;
 
     /// The Modeler's camera orbits instead of flying: it always looks at
     /// `orbitTarget` from `orbitDistance` away, and dragging turns it round

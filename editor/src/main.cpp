@@ -253,7 +253,6 @@ std::filesystem::path luaScriptDirectory() {
 }
 
 /// Keyboard shortcuts that apply when no text field has focus.
-/// Keyboard shortcuts that apply when no text field has focus.
 ///
 /// `navigating` is true while the camera is being flown. The tool shortcuts are
 /// the letters WASD sit on top of, so without that check, holding right mouse

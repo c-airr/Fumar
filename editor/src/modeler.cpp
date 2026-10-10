@@ -760,6 +760,8 @@ bool enterEditSession(EditorState& state, Renderer& renderer) {
     session.mesh = renderer.createMesh(session.geometry, editedMesh(node.name));
     node.mesh = session.mesh;
     session.levelCamera = renderer.camera();
+    session.levelGizmoMode = state.gizmoMode;
+    state.gizmoMode = GizmoMode::Select;
 
     // Frame the object, looking at it the way the camera already looked. Room
     // to spare round it: the shape is about to grow.
@@ -784,6 +786,7 @@ void exitEditSession(EditorState& state, Renderer& renderer) {
     flushEditSession(state, renderer);
 
     renderer.camera() = state.edit->levelCamera;
+    state.gizmoMode = state.edit->levelGizmoMode;
     renderer.setIsolated(kInvalidNode);
     renderer.setGridVisible(false);
 
