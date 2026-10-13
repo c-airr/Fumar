@@ -65,6 +65,19 @@ FetchContent_Declare(stb
     GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20
     SOURCE_SUBDIR  no-cmake-here)
 
+# MikkTSpace - the tangent frame Blender, Substance and most bakers use.
+#
+# A normal map is a set of directions written relative to a tangent frame, and
+# only reads back correctly against the frame it was baked with. Imported
+# meshes without tangents of their own get them from the same algorithm the
+# baker used, so a map made in Blender lands on the surface as it was made.
+# One C file, no build system; zlib licence.
+FetchContent_Declare(mikktspace
+    GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git
+    # No tags, so a commit is the only reproducible pin.
+    GIT_TAG        3e895b49d05ea07e4c2133156cfa94369e19e409
+    SOURCE_SUBDIR  no-cmake-here)
+
 # ---------------------------------------------------------------------------
 # Dear ImGui - the editor's user interface, on the docking branch.
 #
@@ -107,7 +120,7 @@ FetchContent_Declare(nlohmann_json
     SYSTEM
     EXCLUDE_FROM_ALL)
 
-FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb imgui imguizmo nlohmann_json)
+FetchContent_MakeAvailable(SDL3 VulkanMemoryAllocator cgltf stb mikktspace imgui imguizmo nlohmann_json)
 
 # Header-only dependencies get a hand-written INTERFACE target. SYSTEM keeps
 # their warnings out of our build log.
@@ -116,6 +129,14 @@ target_include_directories(fumar_cgltf SYSTEM INTERFACE "${cgltf_SOURCE_DIR}")
 
 add_library(fumar_stb INTERFACE)
 target_include_directories(fumar_stb SYSTEM INTERFACE "${stb_SOURCE_DIR}")
+
+add_library(fumar_mikktspace STATIC "${mikktspace_SOURCE_DIR}/mikktspace.c")
+target_include_directories(fumar_mikktspace SYSTEM PUBLIC "${mikktspace_SOURCE_DIR}")
+if(MSVC OR CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    target_compile_options(fumar_mikktspace PRIVATE /w)
+else()
+    target_compile_options(fumar_mikktspace PRIVATE -w)
+endif()
 
 # ---------------------------------------------------------------------------
 # Target names differ between library versions, so we resolve them once here

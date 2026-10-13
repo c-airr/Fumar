@@ -13,7 +13,7 @@
 #  CI included:
 #     build/<preset>/bin/geometry_tests
 #
-#  Exit code is the number of failed checks.
+#  Exits 0 when every check passes and 1 otherwise.
 # ---------------------------------------------------------------------------
 
 add_executable(geometry_tests src/main.cpp)

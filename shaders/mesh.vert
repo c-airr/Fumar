@@ -9,10 +9,16 @@
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
+layout(location = 3) in vec4 inTangent;
 
 layout(location = 0) out vec3 vNormal;
 layout(location = 1) out vec2 vUV;
 layout(location = 2) out vec3 vWorldPosition;
+
+/// World-space tangent, w carried through as the handedness. A tangent lies IN
+/// the surface, so it turns with the plain model matrix - unlike the normal,
+/// which needs the inverse transpose.
+layout(location = 3) out vec4 vTangent;
 
 void main() {
     vec4 worldPosition = object.model * vec4(inPosition, 1.0);
@@ -29,4 +35,5 @@ void main() {
 
     vUV = inUV;
     vWorldPosition = worldPosition.xyz;
+    vTangent = vec4(mat3(object.model) * inTangent.xyz, inTangent.w);
 }

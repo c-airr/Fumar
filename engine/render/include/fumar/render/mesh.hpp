@@ -8,6 +8,7 @@
 #include "fumar/rhi/vk_common.hpp"
 
 #include <array>
+#include <cstddef>
 #include <span>
 #include <vector>
 
@@ -30,13 +31,26 @@ struct Vertex {
     Vec3 normal;
     Vec2 uv;
 
+    /// The direction U runs across the surface, at right angles to the normal,
+    /// with w the handedness: cross(normal, tangent) * w is the direction V
+    /// runs. What a normal map's texels are directions relative to.
+    Vec4 tangent;
+
     /// Describes the buffer itself: how many bytes one vertex occupies, and
     /// whether the index advances per vertex or per instance.
     static vk::VertexInputBindingDescription binding();
 
     /// Describes the fields inside that stride.
-    static std::array<vk::VertexInputAttributeDescription, 3> attributes();
+    static std::array<vk::VertexInputAttributeDescription, 4> attributes();
 };
+
+// The ray tracing shaders read vertex buffers through a struct of their own
+// (RayVertex in shaders/raytrace.glsl), and nothing compares the two. These are
+// the numbers that struct is written against.
+static_assert(sizeof(Vertex) == 48, "shaders/raytrace.glsl reads vertices with a 48-byte stride");
+static_assert(offsetof(Vertex, normal) == 12);
+static_assert(offsetof(Vertex, uv) == 24);
+static_assert(offsetof(Vertex, tangent) == 32);
 
 /// An axis-aligned bounding box in the mesh own local space.
 ///

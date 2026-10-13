@@ -19,7 +19,7 @@ vk::VertexInputBindingDescription Vertex::binding() {
     };
 }
 
-std::array<vk::VertexInputAttributeDescription, 3> Vertex::attributes() {
+std::array<vk::VertexInputAttributeDescription, 4> Vertex::attributes() {
     return {
         vk::VertexInputAttributeDescription{
             .location = 0,
@@ -40,6 +40,12 @@ std::array<vk::VertexInputAttributeDescription, 3> Vertex::attributes() {
             .binding = 0,
             .format = vk::Format::eR32G32Sfloat,
             .offset = offsetof(Vertex, uv),
+        },
+        vk::VertexInputAttributeDescription{
+            .location = 3,
+            .binding = 0,
+            .format = vk::Format::eR32G32B32A32Sfloat,
+            .offset = offsetof(Vertex, tangent),
         },
     };
 }
@@ -128,7 +134,7 @@ Mesh makeMesh(rhi::Device& device, rhi::UploadContext& upload, const geometry::E
     // cares how a GPU wants them; this is the one place that does.
     std::vector<Vertex> vertices(triangles.positions.size());
     for (usize i = 0; i < vertices.size(); ++i) {
-        vertices[i] = Vertex{triangles.positions[i], triangles.normals[i], triangles.uvs[i]};
+        vertices[i] = Vertex{triangles.positions[i], triangles.normals[i], triangles.uvs[i], triangles.tangents[i]};
     }
 
     return Mesh(device, upload, vertices, triangles.indices, triangles.polygonSizes);

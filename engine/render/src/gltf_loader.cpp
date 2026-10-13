@@ -2,6 +2,7 @@
 
 #include "fumar/core/assert.hpp"
 #include "fumar/core/log.hpp"
+#include "fumar/render/tangents.hpp"
 #include "fumar/render/texture.hpp"
 #include "fumar/rhi/descriptor.hpp"
 #include "fumar/rhi/device.hpp"
@@ -171,6 +172,7 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
     std::vector<std::array<f32, 3>> positions;
     std::vector<std::array<f32, 3>> normals;
     std::vector<std::array<f32, 2>> uvs;
+    std::vector<std::array<f32, 4>> tangents;
 
     for (usize i = 0; i < primitive.attributes_count; ++i) {
         const cgltf_attribute& attribute = primitive.attributes[i];
@@ -180,6 +182,9 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
             break;
         case cgltf_attribute_type_normal:
             readAttribute<3>(attribute.data, normals);
+            break;
+        case cgltf_attribute_type_tangent:
+            readAttribute<4>(attribute.data, tangents);
             break;
         case cgltf_attribute_type_texcoord:
             // Only the first UV set; glTF allows several, for lightmaps.
@@ -204,6 +209,12 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
         }
         if (v < uvs.size()) {
             vertices[v].uv = Vec2{uvs[v][0], uvs[v][1]};
+        }
+        if (v < tangents.size()) {
+            // glTF says w is exactly +1 or -1; a file that wrote anything else
+            // still means one of the two.
+            vertices[v].tangent =
+                Vec4{tangents[v][0], tangents[v][1], tangents[v][2], tangents[v][3] < 0.0f ? -1.0f : 1.0f};
         }
     }
 
@@ -236,6 +247,14 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
     if (normals.empty()) {
         FUMAR_DEBUG("primitive has no normals, generating them");
         generateNormals(vertices, indices);
+    }
+
+    // The file's own tangents when it has them - the frame its normal map was
+    // baked against. Otherwise MikkTSpace's, which is what the baker would
+    // have used. A count that does not match the positions is a broken file,
+    // and the computed frame is the safer guess.
+    if (tangents.size() != positions.size()) {
+        computeTangents(vertices, indices);
     }
 
     return Mesh(device, upload, vertices, indices, polygonSizes);

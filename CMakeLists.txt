@@ -117,6 +117,7 @@ add_subdirectory(scripts)
 # Development tools. Built, never installed.
 add_subdirectory(tools/native_smoke)
 add_subdirectory(tools/geometry_tests)
+add_subdirectory(tools/material_tests)
 
 # --- distribution -----------------------------------------------------------
 # `cmake --install build/<preset> --prefix dist` produces a folder that can be

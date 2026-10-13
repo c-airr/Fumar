@@ -75,6 +75,14 @@ bool writeGlb(const std::filesystem::path& path, const Mesh& mesh, const std::st
         append(binary, &vertex.uv, sizeof(Vec2));
     }
 
+    // Written so a reader - Blender, or fumar itself - does not recompute a
+    // frame of its own, which for an edited mesh is not the one it was shaded
+    // with here.
+    const usize tangentOffset = binary.size();
+    for (const Vertex& vertex : vertices) {
+        append(binary, &vertex.tangent, sizeof(Vec4));
+    }
+
     const usize indexOffset = binary.size();
     append(binary, indices.data(), indices.size_bytes());
 
@@ -84,7 +92,7 @@ bool writeGlb(const std::filesystem::path& path, const Mesh& mesh, const std::st
     };
 
     Json primitive{
-        {"attributes", Json{{"POSITION", 0}, {"NORMAL", 1}, {"TEXCOORD_0", 2}}},
+        {"attributes", Json{{"POSITION", 0}, {"NORMAL", 1}, {"TEXCOORD_0", 2}, {"TANGENT", 4}}},
         {"indices", 3},
         {"mode", kModeTriangles},
     };
@@ -114,6 +122,7 @@ bool writeGlb(const std::filesystem::path& path, const Mesh& mesh, const std::st
                             bufferView(normalOffset, count * sizeof(Vec3), kTargetArrayBuffer),
                             bufferView(uvOffset, count * sizeof(Vec2), kTargetArrayBuffer),
                             bufferView(indexOffset, indices.size_bytes(), kTargetElementArrayBuffer),
+                            bufferView(tangentOffset, count * sizeof(Vec4), kTargetArrayBuffer),
                         })},
         {"accessors", Json::array({
                           // POSITION is the one attribute whose bounds are
@@ -130,6 +139,7 @@ bool writeGlb(const std::filesystem::path& path, const Mesh& mesh, const std::st
                                {"componentType", kComponentUnsignedInt},
                                {"count", indices.size()},
                                {"type", "SCALAR"}},
+                          Json{{"bufferView", 4}, {"componentType", kComponentFloat}, {"count", count}, {"type", "VEC4"}},
                       })},
     };
 

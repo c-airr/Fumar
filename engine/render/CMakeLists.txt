@@ -15,6 +15,7 @@ add_library(fumar_render STATIC
     src/renderer.cpp
     src/resources.cpp
     src/scene_io.cpp
+    src/tangents.cpp
     src/texture.cpp
     src/third_party_impl.cpp)
 
@@ -38,6 +39,7 @@ target_link_libraries(fumar_render
     PRIVATE
         fumar_cgltf
         fumar_stb
+        fumar_mikktspace
         nlohmann_json::nlohmann_json)
 
 fumar_configure_target(fumar_render)

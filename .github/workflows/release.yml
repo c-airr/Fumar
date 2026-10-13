@@ -72,6 +72,9 @@ jobs:
       - name: Test geometry
         run: build/windows-release/bin/geometry_tests.exe
 
+      - name: Test materials
+        run: build/windows-release/bin/material_tests.exe
+
       - name: Package
         shell: pwsh
         run: |
@@ -184,6 +187,9 @@ jobs:
 
       - name: Test geometry
         run: build/linux-release/bin/geometry_tests
+
+      - name: Test materials
+        run: build/linux-release/bin/material_tests
 
       - name: Package
         run: |

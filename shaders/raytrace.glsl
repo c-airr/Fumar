@@ -17,11 +17,15 @@
 layout(set = 0, binding = 1) uniform accelerationStructureEXT sceneStructure;
 
 /// A vertex, laid out exactly as fumar::Vertex in engine/render/include/
-/// fumar/render/mesh.hpp. Nothing checks that they agree.
+/// fumar/render/mesh.hpp: 48 bytes, with the offsets static_assert'ed there.
+/// Nothing on this side checks them - a stride that disagrees reads every
+/// vertex after the first from the wrong place, which shows up as scrambled
+/// textures in reflections and nowhere else.
 struct RayVertex {
-    vec3 position;
-    vec3 normal;
-    vec2 uv;
+    vec3 position; // offset 0
+    vec3 normal;   // 12
+    vec2 uv;       // 24
+    vec4 tangent;  // 32
 };
 
 // Two pointers, in the C sense. Given an address, these say how to read what is
