@@ -34,10 +34,11 @@ enum class GizmoMode : u8 {
     Scale,
 };
 
-/// The Modeler's camera, which orbits instead of flying: it always looks at
-/// `target` from `distance` away, and dragging turns it round that point.
-/// Walking about is how a level is explored; one object is looked at from
-/// every side, and an orbit cannot lose sight of it.
+/// The point the Modeler's camera turns round: dragging with the middle button
+/// keeps it looking at `target` from `distance` away. Walking about is how a
+/// level is explored; one object is looked at from every side, and an orbit
+/// cannot lose sight of it. The right button still flies, and the target then
+/// travels along, the same distance ahead.
 struct OrbitView {
     Vec3 target{0.0f, 0.0f, 0.0f};
     f32 distance = 5.0f;

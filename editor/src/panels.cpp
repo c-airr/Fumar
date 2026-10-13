@@ -525,12 +525,12 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
         const char* hint =
             state.edit.has_value()
                 ? (state.edit->isolated
-                       ? "middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
+                       ? "right mouse + WASD: fly  |  middle drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
                          "Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  Tab: back to the scene"
-                       : "middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
+                       : "right mouse + WASD: fly  |  middle drag: orbit  |  +Shift: pan  |  wheel: zoom  |  F: frame  |  1 2 3: vertex/edge/face  |  "
                          "Alt+E extrude  |  Alt+I inset  |  Ctrl+R loop cut  |  Tab: isolate")
             : state.workspace == Workspace::Modeler
-                ? "click an object to model it  |  middle/right drag: orbit  |  +Shift: pan  |  wheel: zoom"
+                ? "click an object to model it  |  right mouse + WASD: fly  |  middle drag: orbit  |  +Shift: pan  |  wheel: zoom"
                 : "right mouse: look  |  WASD: move  |  Q W E R: tools  |  Ctrl+D: duplicate  |  F5: compile";
         const f32 hintWidth = ImGui::CalcTextSize(hint).x;
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() - hintWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);

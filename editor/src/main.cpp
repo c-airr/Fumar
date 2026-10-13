@@ -603,65 +603,12 @@ int main() {
         // +X, +Y and +Z they stay where the hand expects them.
         ImGuizmo::AllowAxisFlip(false);
 
-        // Before any panel looks at it: whatever last frame selected, switched
-        // to or undid, the open mesh follows here, so the whole frame sees one
-        // consistent session.
-        syncEditSession(state, renderer);
-
-        drawDockspace(state, sceneDirectory);
-        drawViewportPanel(state, renderer, scripts, native);
-        drawOutlinerPanel(state, renderer);
-        drawDetailsPanel(state, renderer.scene(), renderer, scripts, native);
-        // The order here becomes the order of the tabs along the bottom.
-        if (state.workspace == Workspace::Level) {
-            drawContentPanel(state, renderer);
-            drawScriptsPanel(state, scripts, native);
-            drawStatsPanel(state, renderer.scene(), renderer);
-        } else {
-            // Where the content browser and the statistics were, the
-            // materials; where the scripts were, the modelling tools.
-            drawMaterialsPanel(state, renderer);
-            drawModelingToolsPanel(state, renderer);
-        }
-
-        // Which of them is in FRONT is a separate question, decided by whichever
-        // was focused last - so on a fresh layout it would be Statistics purely
-        // because it is drawn last. Asked for explicitly instead, and only for
-        // the first few frames after the layout is built, so it never fights
-        // the user clicking a different tab afterwards.
-        if (state.focusContentFrames > 0) {
-            --state.focusContentFrames;
-            ImGui::SetWindowFocus("Content");
-        }
-
-        if (state.showImGuiDemo) {
-            // Reachable from the Window menu: the fastest reference for what a
-            // widget looks like and how it is called.
-            ImGui::ShowDemoWindow(&state.showImGuiDemo);
-        }
-
-        // Held right mouse means the camera is being flown, which is what
-        // stops WASD from doubling as the tool shortcuts.
-        const bool navigating = window.hasFocus() && (cameraButton || window.relativeMouse());
-        handleShortcuts(state, navigating);
-        if (window.hasFocus()) {
-            handleModelerShortcuts(state, renderer, navigating);
-        }
-
-        // F5 recompiles, the way every editor with a build step does it.
-        if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
-            scripts.compileAll();
-            native.rebuild(renderer.scene());
-        }
-
-        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
-            !ImGui::GetIO().WantTextInput) {
-            state.saveRequested = true;
-        }
-
-        if (state.saveFlashSeconds > 0.0f) {
-            state.saveFlashSeconds -= deltaSeconds;
-        }
+        // The scripts and the camera move BEFORE any panel is described. The
+        // gizmo and the Modeler's overlay are drawn by the panels from the
+        // camera as it stands at that moment, and the scene image is rendered
+        // from it at the end of the frame - moved in between, the handles were
+        // a frame behind the picture, and trailed the object whenever the view
+        // was moving.
 
         // Scripts run only while playing, so an object being positioned by hand
         // does not fight a script moving it.
@@ -723,9 +670,17 @@ int main() {
             (window.relativeMouse() || (state.viewportHovered && cameraButton));
 
         if (state.workspace == Workspace::Modeler) {
-            // Modelling: no flying, only turning round the object. Shift turns
-            // the drag into a pan, as in Blender; the wheel zooms.
-            if (cameraActive && window.relativeMouse()) {
+            // Modelling: the right button flies, exactly as in the Level, and
+            // the middle one turns round the object as in Blender - Shift
+            // turning that drag into a pan. The wheel zooms towards the pivot.
+            if (cameraActive && window.mouseButtonDown(MouseButton::Right)) {
+                renderer.camera().update(window, deltaSeconds);
+                // The pivot travels with the camera, the same distance ahead,
+                // so the middle button afterwards turns round what is in front
+                // rather than round wherever the view was before the flight.
+                state.orbit.target =
+                    renderer.camera().position + renderer.camera().forward() * state.orbit.distance;
+            } else if (cameraActive && window.relativeMouse()) {
                 orbitEditCamera(state, renderer, window.mouseDelta(), window.keyDown(Key::LeftShift));
             }
             if (window.hasFocus() && state.viewportHovered && !window.relativeMouse()) {
@@ -733,6 +688,66 @@ int main() {
             }
         } else if (cameraActive) {
             renderer.camera().update(window, deltaSeconds);
+        }
+
+        // Before any panel looks at it: whatever last frame selected, switched
+        // to or undid, the open mesh follows here, so the whole frame sees one
+        // consistent session.
+        syncEditSession(state, renderer);
+
+        drawDockspace(state, sceneDirectory);
+        drawViewportPanel(state, renderer, scripts, native);
+        drawOutlinerPanel(state, renderer);
+        drawDetailsPanel(state, renderer.scene(), renderer, scripts, native);
+        // The order here becomes the order of the tabs along the bottom.
+        if (state.workspace == Workspace::Level) {
+            drawContentPanel(state, renderer);
+            drawScriptsPanel(state, scripts, native);
+            drawStatsPanel(state, renderer.scene(), renderer);
+        } else {
+            // Where the content browser and the statistics were, the
+            // materials; where the scripts were, the modelling tools.
+            drawMaterialsPanel(state, renderer);
+            drawModelingToolsPanel(state, renderer);
+        }
+
+        // Which of them is in FRONT is a separate question, decided by whichever
+        // was focused last - so on a fresh layout it would be Statistics purely
+        // because it is drawn last. Asked for explicitly instead, and only for
+        // the first few frames after the layout is built, so it never fights
+        // the user clicking a different tab afterwards.
+        if (state.focusContentFrames > 0) {
+            --state.focusContentFrames;
+            ImGui::SetWindowFocus("Content");
+        }
+
+        if (state.showImGuiDemo) {
+            // Reachable from the Window menu: the fastest reference for what a
+            // widget looks like and how it is called.
+            ImGui::ShowDemoWindow(&state.showImGuiDemo);
+        }
+
+        // Held right mouse means the camera is being flown, which is what
+        // stops WASD from doubling as the tool shortcuts.
+        const bool navigating = window.hasFocus() && (cameraButton || window.relativeMouse());
+        handleShortcuts(state, navigating);
+        if (window.hasFocus()) {
+            handleModelerShortcuts(state, renderer, navigating);
+        }
+
+        // F5 recompiles, the way every editor with a build step does it.
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !ImGui::GetIO().WantTextInput) {
+            scripts.compileAll();
+            native.rebuild(renderer.scene());
+        }
+
+        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
+            !ImGui::GetIO().WantTextInput) {
+            state.saveRequested = true;
+        }
+
+        if (state.saveFlashSeconds > 0.0f) {
+            state.saveFlashSeconds -= deltaSeconds;
         }
 
         updatePicking(state, renderer, cameraActive);
