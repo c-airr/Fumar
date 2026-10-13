@@ -1356,6 +1356,20 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
                        state.edit->geometry.vertexCount(), state.edit->geometry.faceCount(),
                        geo::validate(state.edit->geometry).empty() ? "sound" : "NOT sound", buildMs,
                        state.edit->geometry.vertexCount(), traceMs, hidden);
+            return true;
+        }
+        if (frame == 22 && state.edit.has_value()) {
+            // What every frame of a gizmo drag costs: the mesh re-uploaded and
+            // its acceleration structure rebuilt. Into a mesh of the smoke's
+            // own, so the helmet in the scene is left as it was.
+            const MeshHandle scratch = renderer.createMesh(state.edit->geometry, editedMesh("smoke upload"));
+            constexpr int kRuns = 10;
+            const auto start = Clock::now();
+            for (int run = 0; run < kRuns; ++run) {
+                renderer.updateMesh(scratch, state.edit->geometry);
+            }
+            const f64 ms = std::chrono::duration<f64, std::milli>(Clock::now() - start).count() / kRuns;
+            FUMAR_INFO("modeler smoke: helmet re-uploaded in {:.2f} ms per frame of a drag", ms);
             return false;
         }
         return true;

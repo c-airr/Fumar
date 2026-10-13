@@ -31,16 +31,70 @@ UploadContext::UploadContext(Device& device) : m_device(device) {
     m_fence = handle.createFenceUnique(vk::FenceCreateInfo{});
 }
 
-void UploadContext::immediateSubmit(const std::function<void(vk::CommandBuffer)>& record) {
-    const vk::Device handle = m_device.handle();
-
-    handle.resetFences(*m_fence);
+void UploadContext::begin() {
+    m_device.handle().resetFences(*m_fence);
     m_commandBuffer.reset();
     m_commandBuffer.begin(vk::CommandBufferBeginInfo{
         .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
     });
+}
 
+void UploadContext::immediateSubmit(const std::function<void(vk::CommandBuffer)>& record) {
+    if (m_batchDepth == 0) {
+        begin();
+        record(m_commandBuffer);
+        submitAndWait();
+        return;
+    }
+
+    if (!m_batchRecorded) {
+        begin();
+        m_batchRecorded = true;
+    } else {
+        // Everything before against everything after. Coarser than any one
+        // pair needs, and it does not matter: these are a handful of commands
+        // in a command buffer of their own, and the alternative - every
+        // caller describing exactly what it wrote and what it will read -
+        // is how a missing barrier slips through.
+        const vk::MemoryBarrier2 barrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+        };
+        m_commandBuffer.pipelineBarrier2(vk::DependencyInfo{
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &barrier,
+        });
+    }
     record(m_commandBuffer);
+}
+
+void UploadContext::retain(Buffer buffer) {
+    if (m_batchDepth > 0) {
+        m_retained.push_back(std::move(buffer));
+    }
+    // Otherwise released here: whatever read it has already finished.
+}
+
+void UploadContext::beginBatch() {
+    ++m_batchDepth;
+}
+
+void UploadContext::endBatch() {
+    FUMAR_ASSERT_MSG(m_batchDepth > 0, "endBatch without beginBatch");
+    if (--m_batchDepth > 0) {
+        return;
+    }
+    if (m_batchRecorded) {
+        m_batchRecorded = false;
+        submitAndWait();
+    }
+    m_retained.clear();
+}
+
+void UploadContext::submitAndWait() {
+    const vk::Device handle = m_device.handle();
 
     m_commandBuffer.end();
 
@@ -78,8 +132,9 @@ Buffer UploadContext::createDeviceBuffer(const void* data, usize bytes, vk::Buff
         cmd.copyBuffer(staging.handle(), result.handle(), vk::BufferCopy{.size = bytes});
     });
 
-    // staging is destroyed on the way out, which is safe because
-    // immediateSubmit already waited for the copy to finish.
+    // Outside a batch the copy has finished and this releases staging at
+    // once; inside one it is kept until the batch's wait.
+    retain(std::move(staging));
     return result;
 }
 
@@ -174,6 +229,8 @@ void UploadContext::uploadImage(Image& image, const void* pixels, usize bytes) {
             .pImageMemoryBarriers = &toShaderRead,
         });
     });
+
+    retain(std::move(staging));
 }
 
 void UploadContext::generateMipmaps(vk::CommandBuffer cmd, Image& image) {

@@ -5,6 +5,7 @@
 #include "fumar/rhi/vk_common.hpp"
 
 #include <functional>
+#include <vector>
 
 namespace fumar::rhi {
 
@@ -29,7 +30,25 @@ public:
     UploadContext& operator=(const UploadContext&) = delete;
 
     /// Records, submits, and waits for completion.
+    ///
+    /// Inside a batch (see UploadBatch) it only records: the submit and the
+    /// wait happen once, when the batch ends. Each recording is fenced off
+    /// from the one before by a full barrier, so the order still holds - a
+    /// copy finishes before the structure built from what it copied.
     void immediateSubmit(const std::function<void(vk::CommandBuffer)>& record);
+
+    /// Keeps a buffer alive until the work recorded so far has finished.
+    ///
+    /// Outside a batch that work is already done when immediateSubmit returns,
+    /// and the buffer is simply released. Inside one, a staging or scratch
+    /// buffer the recorded commands still read has to outlive the function
+    /// that made it - until the batch's single wait.
+    void retain(Buffer buffer);
+
+    /// Starts and ends a batch. Prefer UploadBatch, which cannot forget the
+    /// end. Batches nest; only the outermost one submits.
+    void beginBatch();
+    void endBatch();
 
     /// Creates a device-local buffer holding a copy of `data`.
     ///
@@ -58,10 +77,36 @@ private:
     /// eTransferDstOptimal; leaves every level in eShaderReadOnlyOptimal.
     void generateMipmaps(vk::CommandBuffer cmd, Image& image);
 
+    void begin();
+    void submitAndWait();
+
     Device& m_device;
     vk::UniqueCommandPool m_pool;
     vk::CommandBuffer m_commandBuffer;
     vk::UniqueFence m_fence;
+
+    u32 m_batchDepth = 0;
+    bool m_batchRecorded = false;
+    std::vector<Buffer> m_retained;
+};
+
+/// Everything uploaded while one of these is alive goes to the GPU in one
+/// submit, with one wait at the end.
+///
+/// A mesh is three uploads - vertices, indices, and the acceleration structure
+/// built from them - and each on its own is a submit and a full stop until the
+/// GPU has caught up. In the Modeler a mesh is rebuilt every frame of a drag,
+/// so the three stops were paid every frame.
+class UploadBatch {
+public:
+    explicit UploadBatch(UploadContext& upload) : m_upload(upload) { m_upload.beginBatch(); }
+    ~UploadBatch() { m_upload.endBatch(); }
+
+    UploadBatch(const UploadBatch&) = delete;
+    UploadBatch& operator=(const UploadBatch&) = delete;
+
+private:
+    UploadContext& m_upload;
 };
 
 } // namespace fumar::rhi

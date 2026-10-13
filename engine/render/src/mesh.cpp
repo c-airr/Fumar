@@ -65,6 +65,10 @@ Mesh::Mesh(rhi::Device& device, rhi::UploadContext& upload, std::span<const Vert
     // feature is on, which Device only enables when it also enabled ray
     // tracing. Asking for them unconditionally would be a validation error on
     // every GPU that cannot trace.
+    // One submit and one wait for the lot, rather than one each for the
+    // vertices, the indices and the structure built from them.
+    const rhi::UploadBatch batch(upload);
+
     vk::BufferUsageFlags extra;
     if (device.rayTracingSupported()) {
         extra = vk::BufferUsageFlagBits::eShaderDeviceAddress |

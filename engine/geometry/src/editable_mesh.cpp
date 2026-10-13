@@ -75,16 +75,46 @@ TriangleMesh EditableMesh::triangulate() const {
         }
     }
 
-    // Which faces touch each vertex, so a corner can look at its neighbours.
-    std::vector<std::vector<u32>> facesAt(positions.size());
-    if (smoothAngleDegrees > 0.0f) {
+    // Which faces touch each vertex, so a corner can look at its neighbours:
+    // vertex v's faces are facesAt[firstFace[v] .. firstFace[v + 1]). One flat
+    // array rather than a vector per vertex - this runs on every frame of a
+    // drag, and a vector per vertex is an allocation per vertex per frame.
+    const bool smooth = smoothAngleDegrees > 0.0f;
+    std::vector<u32> firstFace;
+    std::vector<u32> facesAt;
+    if (smooth) {
+        firstFace.assign(positions.size() + 1, 0);
+        for (const Face& face : faces) {
+            for (const u32 v : face.verts) {
+                ++firstFace[v + 1];
+            }
+        }
+        for (usize v = 0; v < positions.size(); ++v) {
+            firstFace[v + 1] += firstFace[v];
+        }
+        facesAt.resize(firstFace.back());
+        std::vector<u32> cursor(firstFace.begin(), firstFace.end() - 1);
         for (u32 f = 0; f < faces.size(); ++f) {
             for (const u32 v : faces[f].verts) {
-                facesAt[v].push_back(f);
+                facesAt[cursor[v]++] = f;
             }
         }
     }
     const f32 smoothCos = std::cos(radians(smoothAngleDegrees));
+
+    usize corners = 0;
+    usize triangles = 0;
+    for (const Face& face : faces) {
+        if (face.size() >= 3) {
+            corners += face.size();
+            triangles += face.size() - 2;
+        }
+    }
+    out.positions.reserve(corners);
+    out.normals.reserve(corners);
+    out.uvs.reserve(corners);
+    out.indices.reserve(triangles * 3);
+    out.polygonSizes.reserve(faces.size());
 
     for (usize f = 0; f < faces.size(); ++f) {
         const Face& face = faces[f];
@@ -99,9 +129,11 @@ TriangleMesh EditableMesh::triangulate() const {
         const u32 base = static_cast<u32>(out.positions.size());
         for (usize i = 0; i < face.size(); ++i) {
             Vec3 normal = normals[f];
-            if (smoothAngleDegrees > 0.0f) {
+            if (smooth) {
                 Vec3 sum{0.0f, 0.0f, 0.0f};
-                for (const u32 neighbour : facesAt[face.verts[i]]) {
+                const u32 v = face.verts[i];
+                for (u32 k = firstFace[v]; k < firstFace[v + 1]; ++k) {
+                    const u32 neighbour = facesAt[k];
                     if (dot(normals[neighbour], normals[f]) >= smoothCos) {
                         sum += normals[neighbour];
                     }

@@ -116,9 +116,10 @@ BottomLevelStructure::BottomLevelStructure(Device& device, UploadContext& upload
             .type = vk::AccelerationStructureTypeKHR::eBottomLevel,
         });
 
-    // Scratch is needed only while the build runs, so it is a local that dies
-    // at the end of this function - after immediateSubmit has waited for it.
-    const Buffer scratch(device, BufferDesc{
+    // Scratch is needed only while the build runs. Handed to the upload
+    // context afterwards, which drops it at once - or, inside a batch, once
+    // the batch has waited for the build.
+    Buffer scratch(device, BufferDesc{
                                      .size = sizes.buildScratchSize + scratchAlignment(device),
                                      .usage = kScratchUsage,
                                  });
@@ -135,6 +136,7 @@ BottomLevelStructure::BottomLevelStructure(Device& device, UploadContext& upload
         const vk::AccelerationStructureBuildRangeInfoKHR* rangePtr = &range;
         cmd.buildAccelerationStructuresKHR(1, &buildInfo, &rangePtr);
     });
+    upload.retain(std::move(scratch));
 
     m_address = device.handle().getAccelerationStructureAddressKHR(
         vk::AccelerationStructureDeviceAddressInfoKHR{.accelerationStructure = m_structure});
