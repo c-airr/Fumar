@@ -102,6 +102,41 @@ TriangleMesh EditableMesh::triangulate() const {
     }
     const f32 smoothCos = std::cos(radians(smoothAngleDegrees));
 
+    // Which way U runs across each face, from the first triangle of its fan,
+    // and which way round V runs from there (the handedness). Averaged per
+    // corner below the same way the normals are, so a smooth surface gets a
+    // smooth tangent too. Not MikkTSpace: this runs on every frame of a drag,
+    // and the meshes made here are textured with tiling maps, not with maps
+    // baked against one exact tangent frame.
+    //
+    // xyz is the direction, w the handedness: +1 or -1, or 0 for a face whose
+    // UVs give no direction at all. Packed into one Vec4 so the walk over a
+    // corner's neighbours below reads sixteen bytes a face, not twenty.
+    std::vector<Vec4> faceTangents(faces.size(), Vec4{0.0f, 0.0f, 0.0f, 0.0f});
+    for (usize f = 0; f < faces.size(); ++f) {
+        const Face& face = faces[f];
+        if (face.size() < 3 || face.uvs.size() < 3) {
+            continue;
+        }
+        const Vec3 e1 = positions[face.verts[1]] - positions[face.verts[0]];
+        const Vec3 e2 = positions[face.verts[2]] - positions[face.verts[0]];
+        const Vec2 d1 = face.uvs[1] - face.uvs[0];
+        const Vec2 d2 = face.uvs[2] - face.uvs[0];
+        const f32 det = d1.x * d2.y - d2.x * d1.y;
+        if (std::abs(det) < 1e-12f) {
+            // No UV area: nothing says which way U runs.
+            continue;
+        }
+        const Vec3 tangent = (e1 * d2.y - e2 * d1.y) / det;
+        const Vec3 bitangent = (e2 * d1.x - e1 * d2.x) / det;
+        if (lengthSquared(tangent) < 1e-24f) {
+            continue;
+        }
+        const Vec3 direction = normalize(tangent);
+        faceTangents[f] = Vec4{direction.x, direction.y, direction.z,
+                               dot(cross(normals[f], tangent), bitangent) < 0.0f ? -1.0f : 1.0f};
+    }
+
     usize corners = 0;
     usize triangles = 0;
     for (const Face& face : faces) {
@@ -113,6 +148,7 @@ TriangleMesh EditableMesh::triangulate() const {
     out.positions.reserve(corners);
     out.normals.reserve(corners);
     out.uvs.reserve(corners);
+    out.tangents.reserve(corners);
     out.indices.reserve(triangles * 3);
     out.polygonSizes.reserve(faces.size());
 
@@ -128,23 +164,56 @@ TriangleMesh EditableMesh::triangulate() const {
         // position and round over every corner the modeller made crisp.
         const u32 base = static_cast<u32>(out.positions.size());
         for (usize i = 0; i < face.size(); ++i) {
+            // One walk over the faces round this corner gathers both the normal
+            // and the tangent. The tangent takes the same neighbours as the
+            // normal, but only those whose UVs run the same way round: across a
+            // mirrored seam the two sides' tangents point apart, and their sum
+            // is nothing useful.
+            const Vec4 own = faceTangents[f];
             Vec3 normal = normals[f];
+            Vec3 tangent{own.x, own.y, own.z};
             if (smooth) {
-                Vec3 sum{0.0f, 0.0f, 0.0f};
+                Vec3 normalSum{0.0f, 0.0f, 0.0f};
+                Vec3 tangentSum{0.0f, 0.0f, 0.0f};
                 const u32 v = face.verts[i];
                 for (u32 k = firstFace[v]; k < firstFace[v + 1]; ++k) {
                     const u32 neighbour = facesAt[k];
-                    if (dot(normals[neighbour], normals[f]) >= smoothCos) {
-                        sum += normals[neighbour];
+                    if (dot(normals[neighbour], normals[f]) < smoothCos) {
+                        continue;
+                    }
+                    normalSum += normals[neighbour];
+                    const Vec4 other = faceTangents[neighbour];
+                    // Equal handedness, and so also both usable: an unusable
+                    // face's w is 0, and this corner's is checked below.
+                    if (other.w == own.w) {
+                        tangentSum += Vec3{other.x, other.y, other.z};
                     }
                 }
-                if (lengthSquared(sum) > 1e-12f) {
-                    normal = normalize(sum);
+                if (lengthSquared(normalSum) > 1e-12f) {
+                    normal = normalize(normalSum);
                 }
+                if (own.w != 0.0f) {
+                    tangent = tangentSum;
+                }
+            }
+
+            // Square to the corner's own normal (Gram-Schmidt): a tangent that
+            // leans out of the surface tilts every normal-map texel with it.
+            tangent -= normal * dot(normal, tangent);
+            Vec4 corner{0.0f, 0.0f, 0.0f, own.w};
+            if (own.w != 0.0f && lengthSquared(tangent) > 1e-12f) {
+                const Vec3 t = normalize(tangent);
+                corner = Vec4{t.x, t.y, t.z, own.w};
+            } else {
+                // Any direction in the surface beats a NaN in the lighting.
+                const Vec3 t = normalize(
+                    cross(normal, std::abs(normal.y) < 0.99f ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f}));
+                corner = Vec4{t.x, t.y, t.z, 1.0f};
             }
 
             out.positions.push_back(positions[face.verts[i]]);
             out.normals.push_back(normal);
+            out.tangents.push_back(corner);
             out.uvs.push_back(i < face.uvs.size() ? face.uvs[i] : Vec2{0.0f, 0.0f});
         }
 

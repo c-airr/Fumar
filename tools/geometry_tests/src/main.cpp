@@ -170,6 +170,53 @@ void hostileInput() {
     check(wrapped.faceCount() == 0, "a polygon size that wraps 32 bits is not trusted");
 }
 
+/// Every tangent triangulate() emits is usable by a normal map: unit length,
+/// at right angles to the normal it sits beside, and with a handedness of
+/// exactly plus or minus one.
+bool tangentsSound(const TriangleMesh& triangles) {
+    if (triangles.tangents.size() != triangles.positions.size()) {
+        return false;
+    }
+    for (usize i = 0; i < triangles.tangents.size(); ++i) {
+        const Vec4 t = triangles.tangents[i];
+        const Vec3 xyz{t.x, t.y, t.z};
+        if (!std::isfinite(t.x) || !std::isfinite(t.y) || !std::isfinite(t.z) ||
+            std::abs(length(xyz) - 1.0f) > 1e-3f || std::abs(dot(xyz, triangles.normals[i])) > 1e-3f ||
+            (t.w != 1.0f && t.w != -1.0f)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void tangents() {
+    section("tangents");
+
+    check(tangentsSound(makeCube().triangulate()), "cube tangents are unit, orthogonal, signed");
+    check(tangentsSound(makePlane(1.0f).triangulate()), "plane tangents are unit, orthogonal, signed");
+    check(tangentsSound(makeUvSphere(1.0f).triangulate()), "sphere tangents are unit, orthogonal, signed");
+
+    // The plane's U runs along +X and its V along +Z (see makePlane), facing
+    // +Y: the tangent follows U, and cross(n, t) * w has to follow V.
+    const TriangleMesh plane = makePlane(1.0f).triangulate();
+    bool alongUv = !plane.tangents.empty();
+    for (usize i = 0; i < plane.tangents.size(); ++i) {
+        const Vec4 t = plane.tangents[i];
+        const Vec3 tangent{t.x, t.y, t.z};
+        const Vec3 bitangent = cross(plane.normals[i], tangent) * t.w;
+        alongUv = alongUv && dot(tangent, Vec3{1.0f, 0.0f, 0.0f}) > 0.99f &&
+                  dot(bitangent, Vec3{0.0f, 0.0f, 1.0f}) > 0.99f;
+    }
+    check(alongUv, "plane tangent follows +U, bitangent follows +V");
+
+    // No UV area at all: nothing to take a direction from, and still no NaN.
+    EditableMesh flat = makePlane(1.0f);
+    for (Vec2& uv : flat.faces[0].uvs) {
+        uv = Vec2{0.0f, 0.0f};
+    }
+    check(tangentsSound(flat.triangulate()), "degenerate UVs still give sound tangents");
+}
+
 void roundTrip() {
     section("triangulate and back");
 
@@ -534,6 +581,7 @@ int main() {
     primitives();
     roundTrip();
     hostileInput();
+    tangents();
     extrudeFaces();
     extrudeEdgesAndVertices();
     insetFaces();

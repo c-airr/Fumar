@@ -90,6 +90,12 @@ struct TriangleMesh {
     std::vector<Vec3> positions;
     std::vector<Vec3> normals;
     std::vector<Vec2> uvs;
+
+    /// One per corner: the direction U increases along the surface, at right
+    /// angles to the normal, with w the sign that turns cross(normal, tangent)
+    /// into the direction V increases - what a normal map is written against.
+    std::vector<Vec4> tangents;
+
     std::vector<u32> indices;
 
     /// How many corners each source face had, in order. A face of n corners
