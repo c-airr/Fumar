@@ -85,6 +85,12 @@ public:
 
     usize depth() const { return m_undo.size(); }
 
+    /// How many steps have ever been recorded. Unlike depth() it only grows -
+    /// undo does not take it back down, and the oldest step falling off the
+    /// bottom does not either - so comparing two readings says whether
+    /// anything was recorded in between.
+    u64 recordCount() const { return m_records; }
+
 private:
     /// Old steps fall off the bottom. Deep enough that nobody reaches it in
     /// practice, shallow enough that a long session does not grow without
@@ -93,6 +99,7 @@ private:
 
     std::vector<SceneSnapshot> m_undo;
     std::vector<SceneSnapshot> m_redo;
+    u64 m_records = 0;
 };
 
 } // namespace fumar

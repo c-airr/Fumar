@@ -628,8 +628,11 @@ void drawViewportPanel(EditorState& state, Renderer& renderer, ScriptEngine& scr
                        "Run the scripts attached to nodes")) {
             state.scriptsRunning = !state.scriptsRunning;
             if (state.scriptsRunning) {
-                // Fresh run: on_start fires again for everything.
+                // Fresh run: on_start fires again for everything - the C++
+                // components included, which otherwise kept running on the
+                // state their first Play left them in.
                 scripts.restart();
+                native.restart();
             }
         }
 

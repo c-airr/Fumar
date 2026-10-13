@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace fumar;
 using namespace fumar::geometry;
@@ -140,6 +141,33 @@ void primitives() {
     check(sound(sphere), "sphere is sound");
     check(closedEuler(sphere), "sphere satisfies V - E + F = 2");
     check(facesPointOutward(sphere), "sphere faces point outward");
+}
+
+/// What a broken or hostile file can hand fromTriangles. Neither case may read
+/// outside the buffers it was given - which under a debug CRT is an assertion
+/// and in a release build is whatever happens to be next in memory.
+void hostileInput() {
+    std::printf("\nhostile input\n");
+
+    const std::vector<Vec3> positions{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+
+    // An index past the last vertex, in a file that says nothing about its
+    // polygons: the broken triangle goes, the good one stays.
+    const std::vector<u32> outOfRange{0, 1, 2, 0, 1, 7};
+    const EditableMesh kept = fromTriangles(positions, {}, outOfRange, {});
+    check(kept.faceCount() == 1, "a triangle with an out-of-range index is dropped");
+
+    // The same, with polygon sizes that would otherwise send the exact path
+    // through the bad index.
+    const std::vector<u32> sizes{3, 3};
+    const EditableMesh guarded = fromTriangles(positions, {}, outOfRange, sizes);
+    check(guarded.faceCount() == 1, "polygon sizes do not bypass the index check");
+
+    // A size whose 32-bit (size - 2) * 3 wraps round to the index count.
+    const std::vector<u32> twoIndices{0, 1};
+    const std::vector<u32> wrapping{1431655768u};
+    const EditableMesh wrapped = fromTriangles(positions, {}, twoIndices, wrapping);
+    check(wrapped.faceCount() == 0, "a polygon size that wraps 32 bits is not trusted");
 }
 
 void roundTrip() {
@@ -505,6 +533,7 @@ int main() {
     validationCatchesDamage();
     primitives();
     roundTrip();
+    hostileInput();
     extrudeFaces();
     extrudeEdgesAndVertices();
     insetFaces();
@@ -518,5 +547,8 @@ int main() {
     chains();
 
     std::printf(failures == 0 ? "\nall good\n" : "\n%d check(s) failed\n", failures);
-    return failures;
+
+    // Not the count itself: POSIX keeps only the low 8 bits of an exit status,
+    // and 256 failures would read as success.
+    return failures == 0 ? 0 : 1;
 }

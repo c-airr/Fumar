@@ -23,7 +23,15 @@ local pitch = 0.0
 -- accelerates, walking does not.
 local fall_speed = 0.0
 
+-- How far the node's origin sits above its feet. The player made by Add is a
+-- unit cube centred on its origin, so that is half its height; everything
+-- below works in feet and converts at the node.
+local origin_height = 0.0
+
 function on_start(node)
+    local _, height, _ = node:scale()
+    origin_height = height * 0.5
+
     local _, _, _, camera_yaw, camera_pitch = fumar.camera()
     yaw = camera_yaw
     pitch = camera_pitch
@@ -67,6 +75,7 @@ function on_update(node, dt)
     local x, y, z = node:position()
     x = x + move_x
     z = z + move_z
+    y = y - origin_height
 
     -- --- the floor ----------------------------------------------------------
     -- No physics engine here. A ray straight down finds whatever geometry is
@@ -92,7 +101,7 @@ function on_update(node, dt)
         end
     end
 
-    node:set_position(x, y, z)
+    node:set_position(x, y + origin_height, z)
 
     -- --- the view -----------------------------------------------------------
     -- Writing to the camera is what claims it: the editor hands control over

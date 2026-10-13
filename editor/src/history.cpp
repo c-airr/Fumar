@@ -121,6 +121,7 @@ NodeId pasteInto(Scene& scene, const SceneSnapshot& snapshot, NodeId parent) {
 
 void History::record(const Scene& scene, NodeId selected) {
     m_undo.push_back(captureScene(scene, selected));
+    ++m_records;
 
     // Anything that was undone is no longer reachable once a new change is
     // made: the timeline branched, and the branch not taken is dropped. Every

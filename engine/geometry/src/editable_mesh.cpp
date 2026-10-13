@@ -224,13 +224,21 @@ EditableMesh fromTriangles(std::span<const Vec3> positions, std::span<const Vec2
 
     const auto uvOf = [&uvs](u32 index) { return index < uvs.size() ? uvs[index] : Vec2{0.0f, 0.0f}; };
 
+    // Indices come from files, and a file can say anything. One past the end
+    // of the positions would read outside remap below.
+    const auto inRange = [&positions](u32 index) { return index < positions.size(); };
+    const bool indicesInRange = std::all_of(indices.begin(), indices.end(), inRange);
+
     // --- the exact way back -------------------------------------------------
+    // Summed in 64 bits: a corrupt size near 2^32 would wrap a 32-bit product
+    // round to a small number that happens to match the index count, and the
+    // loop below would then walk far past the end of the indices.
     usize expectedIndices = 0;
     for (const u32 size : polygonSizes) {
-        expectedIndices += size >= 3 ? (size - 2) * 3 : 0;
+        expectedIndices += size >= 3 ? (static_cast<usize>(size) - 2) * 3 : 0;
     }
 
-    if (!polygonSizes.empty() && expectedIndices == indices.size()) {
+    if (!polygonSizes.empty() && indicesInRange && expectedIndices == indices.size()) {
         usize cursor = 0;
         for (const u32 size : polygonSizes) {
             if (size < 3) {
@@ -242,12 +250,12 @@ EditableMesh fromTriangles(std::span<const Vec3> positions, std::span<const Vec2
             const u32 first = indices[cursor];
             face.verts = {remap[first], remap[indices[cursor + 1]], remap[indices[cursor + 2]]};
             face.uvs = {uvOf(first), uvOf(indices[cursor + 1]), uvOf(indices[cursor + 2])};
-            for (u32 t = 1; t < size - 2; ++t) {
+            for (usize t = 1; t < size - 2; ++t) {
                 const u32 corner = indices[cursor + t * 3 + 2];
                 face.verts.push_back(remap[corner]);
                 face.uvs.push_back(uvOf(corner));
             }
-            cursor += (size - 2) * 3;
+            cursor += (static_cast<usize>(size) - 2) * 3;
             mesh.faces.push_back(std::move(face));
         }
         return mesh;
@@ -264,6 +272,9 @@ EditableMesh fromTriangles(std::span<const Vec3> positions, std::span<const Vec2
     std::vector<Triangle> triangles;
     for (usize i = 0; i + 2 < indices.size(); i += 3) {
         const std::array<u32, 3> source{indices[i], indices[i + 1], indices[i + 2]};
+        if (!indicesInRange && !(inRange(source[0]) && inRange(source[1]) && inRange(source[2]))) {
+            continue;
+        }
         const std::array<u32, 3> verts{remap[source[0]], remap[source[1]], remap[source[2]]};
 
         // Two corners welded together: the triangle has no area and would only

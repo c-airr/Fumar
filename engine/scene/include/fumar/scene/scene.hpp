@@ -97,6 +97,14 @@ public:
 
     bool isAlive(NodeId id) const;
 
+    /// How many times this slot has been given to a node.
+    ///
+    /// Ids are recycled - a destroyed node's slot goes to the next node made -
+    /// so an id alone cannot tell "the node I meant" from "whatever lives there
+    /// now". Anything that keeps an id across frames (a script handle, a
+    /// started set) keeps the generation beside it and compares the two.
+    u32 generation(NodeId id) const;
+
     /// Access to a node's data.
     ///
     /// The reference is invalidated by createNode(), which may reallocate the
@@ -150,6 +158,7 @@ private:
     std::vector<Node> m_nodes;
     std::vector<Mat4> m_worldTransforms;
     std::vector<bool> m_alive;
+    std::vector<u32> m_generations;
     std::vector<NodeId> m_freeSlots;
 };
 

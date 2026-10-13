@@ -10,6 +10,7 @@
 #include <cgltf.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -220,6 +221,16 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
         for (u32 k = 0; k < static_cast<u32>(indices.size()); ++k) {
             indices[k] = k;
         }
+    }
+
+    // An index past the last vertex is a broken file, and nothing after this
+    // point would survive it: generating normals writes through the index, the
+    // Modeler welds through it, and the GPU reads through it. Refused whole,
+    // because which triangles the file meant is anybody's guess.
+    const usize vertexCount = vertices.size();
+    if (std::any_of(indices.begin(), indices.end(), [vertexCount](u32 index) { return index >= vertexCount; })) {
+        FUMAR_WARN("primitive skipped: an index points past its {} vertices", vertexCount);
+        return {};
     }
 
     if (normals.empty()) {

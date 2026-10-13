@@ -128,6 +128,14 @@ if ($Command -and $Command.Count -gt 0) {
     # there - so the real success signal is the exit code, not stderr.
     $ErrorActionPreference = 'Continue'
 
+    # Checked first: a command that does not exist is a non-terminating error
+    # under 'Continue', and $LASTEXITCODE would still hold whatever the last
+    # native program before it returned - the vcvars run, which succeeded.
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
+        Write-Error "dev.ps1: '$exe' is not a command"
+        exit 127
+    }
+
     & $exe @rest
     exit $LASTEXITCODE
 }

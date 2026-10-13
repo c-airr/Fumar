@@ -62,12 +62,16 @@ void markChanged(EditSession& session) {
     ++session.version;
 }
 
-void pushUndo(EditSession& session) {
-    session.undo.push_back(EditSnapshot{session.geometry, session.selection, session.mode});
+void pushUndo(EditSession& session, EditSnapshot snapshot) {
+    session.undo.push_back(std::move(snapshot));
     if (session.undo.size() > kMaxUndo) {
         session.undo.erase(session.undo.begin());
     }
     session.redo.clear();
+}
+
+void pushUndo(EditSession& session) {
+    pushUndo(session, EditSnapshot{session.geometry, session.selection, session.mode});
 }
 
 /// Everything needed to turn a point of the mesh into a pixel and a pixel into
@@ -227,7 +231,11 @@ void perform(EditorState& state, Operation operation) {
         return;
     }
 
-    pushUndo(session);
+    // Taken now and pushed only once the operation turns out to have done
+    // something. Pushing first and popping on failure looks the same, but the
+    // push clears the redo stack - and an operation that did not apply must
+    // not throw away what Ctrl+Z had just stepped back over.
+    EditSnapshot before{session.geometry, session.selection, session.mode};
     geo::Selection result;
     bool changed = true;
 
@@ -280,6 +288,11 @@ void perform(EditorState& state, Operation operation) {
         break;
 
     case Operation::Merge:
+        if (geo::coveredVertices(session.geometry, session.selection, session.mode).size() < 2) {
+            setStatus(session, "Merge needs two vertices or more.");
+            changed = false;
+            break;
+        }
         result = geo::mergeAtCentre(session.geometry, session.selection, session.mode);
         session.mode = geo::SelectMode::Vertex;
         break;
@@ -315,10 +328,10 @@ void perform(EditorState& state, Operation operation) {
     }
 
     if (!changed) {
-        session.undo.pop_back();
         return;
     }
 
+    pushUndo(session, std::move(before));
     session.selection = std::move(result);
     markChanged(session);
 
@@ -800,6 +813,8 @@ bool enterEditSession(EditorState& state, Renderer& renderer) {
     // No copy and no history yet: see EditSession. The mesh is only read.
     EditSession session;
     session.node = state.selected;
+    session.nodeGeneration = scene.generation(state.selected);
+    session.historySeen = state.history.recordCount();
     session.originalMesh = node.mesh;
     session.mesh = node.mesh;
     session.geometry = renderer.resources().mesh(node.mesh).toEditable();
@@ -808,6 +823,11 @@ bool enterEditSession(EditorState& state, Renderer& renderer) {
     // and the view jumping away from it would lose the place. Only the pivot
     // moves, to the object's depth, so turning the view turns round it.
     state.edit = std::move(session);
+
+    // World transforms are otherwise brought up to date only when a frame is
+    // drawn, and a node made since - by undo, paste or duplicate - would still
+    // be at the origin as far as the bounds below are concerned.
+    scene.updateWorldTransforms();
     Vec3 low;
     Vec3 high;
     if (worldBounds(*state.edit, renderer, {}, low, high)) {
@@ -856,6 +876,7 @@ void flushEditSession(EditorState& state, Renderer& renderer) {
         return;
     }
     state.history.record(scene, session.node);
+    session.historySeen = state.history.recordCount();
     Node& node = scene.node(session.node);
     session.mesh = renderer.createMesh(session.geometry, editedMesh(node.name));
     session.ownsMesh = true;
@@ -879,10 +900,22 @@ void syncEditSession(EditorState& state, Renderer& renderer) {
     if (state.edit.has_value()) {
         const EditSession& session = *state.edit;
         const bool stale = !modeler || state.selected != session.node || !scene.isAlive(session.node) ||
+                           scene.generation(session.node) != session.nodeGeneration ||
                            scene.node(session.node).mesh != session.mesh;
         if (stale) {
             exitEditSession(state, renderer);
         }
+    }
+
+    // A scene-level step was recorded while the mesh stayed open. Ctrl+Z must
+    // reach it before anything modelled earlier, and the session's own undo
+    // runs first - so the steps from before it go. Nothing is lost with them
+    // that could still be reached in order: undoing the scene step rebuilds
+    // the nodes and closes this session regardless.
+    if (state.edit.has_value() && state.edit->historySeen != state.history.recordCount()) {
+        state.edit->historySeen = state.history.recordCount();
+        state.edit->undo.clear();
+        state.edit->redo.clear();
     }
 
     if (!modeler && state.modelerActive) {
@@ -932,9 +965,9 @@ void redoEdit(EditorState& state) {
 
 // --- input -------------------------------------------------------------------
 
-bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigating) {
+void handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigating) {
     if (state.workspace != Workspace::Modeler || ImGui::GetIO().WantTextInput) {
-        return state.edit.has_value();
+        return;
     }
 
     if (!navigating && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
@@ -943,14 +976,14 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
         } else {
             FUMAR_INFO("nothing to isolate: select an object with a mesh first");
         }
-        return true;
+        return;
     }
 
     if (!state.edit.has_value()) {
-        return false;
+        return;
     }
     if (navigating) {
-        return true;
+        return;
     }
 
     EditSession& session = *state.edit;
@@ -1019,8 +1052,6 @@ bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigat
                           session.selection.empty() ? 1.8f : 2.5f);
         }
     }
-
-    return true;
 }
 
 void orbitEditCamera(EditorState& state, Renderer& renderer, Vec2 mouseDelta, bool pan) {
@@ -1211,12 +1242,20 @@ void drawModelingToolsPanel(EditorState& state, Renderer& renderer) {
         ImGui::SetTooltip("Show and select what is on the far side of the mesh too.");
     }
 
+    // The undo step is the mesh as it was BEFORE the slider: ImGui writes the
+    // clicked value on the very frame the slider becomes active, so a snapshot
+    // taken on activation would already hold the new angle.
+    const f32 angleBefore = session.geometry.smoothAngleDegrees;
     ImGui::SetNextItemWidth(width * 0.5f);
-    if (ImGui::SliderFloat("smooth angle", &session.geometry.smoothAngleDegrees, 0.0f, 90.0f, "%.0f deg")) {
-        markChanged(session);
-    }
+    const bool angleChanged =
+        ImGui::SliderFloat("smooth angle", &session.geometry.smoothAngleDegrees, 0.0f, 90.0f, "%.0f deg");
     if (ImGui::IsItemActivated()) {
-        pushUndo(session);
+        EditSnapshot snapshot{session.geometry, session.selection, session.mode};
+        snapshot.mesh.smoothAngleDegrees = angleBefore;
+        pushUndo(session, std::move(snapshot));
+    }
+    if (angleChanged) {
+        markChanged(session);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Faces meeting at less than this angle are shaded as one\n"

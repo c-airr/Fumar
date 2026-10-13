@@ -12,7 +12,7 @@ extern "C" {
 }
 
 #include <algorithm>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace fumar {
 namespace {
@@ -36,8 +36,10 @@ struct ScriptEngine::State {
     std::vector<std::string> names;
     std::vector<ScriptError> errors;
 
-    /// Nodes that have already had on_start called. Cleared by restart().
-    std::unordered_set<NodeId> started;
+    /// Nodes that have already had on_start called, with the generation of
+    /// the slot at the time. Ids are recycled, so a new node in a dead one's
+    /// slot must not inherit its "already started". Cleared by restart().
+    std::unordered_map<NodeId, u32> started;
 
     /// Pushes the environment table of a named script, or nothing if it is not
     /// loaded. Returns whether it pushed.
@@ -57,8 +59,10 @@ struct ScriptEngine::State {
     /// Calls a function from a script environment with (node, extra...).
     ///
     /// Errors are logged once and the script is left in place: a script that
-    /// throws every frame would otherwise flood the log, and one that throws
-    /// once is usually recoverable.
+    /// throws every frame would otherwise flood the log - and grow the error
+    /// list the editor draws by one entry a frame - and one that throws once is
+    /// usually recoverable. "Once" per distinct message: the same line failing
+    /// again is not news, a different one is.
     void callHandler(const std::string& script, const char* function, NodeId node, f32 deltaSeconds,
                      bool passDelta) {
         if (!pushScriptEnvironment(script)) {
@@ -81,8 +85,13 @@ struct ScriptEngine::State {
 
         if (lua_pcall(lua, argumentCount, 0, 0) != 0) {
             const std::string message = takeError(lua);
-            FUMAR_ERROR("script '{}' failed in {}: {}", script, function, message);
-            errors.push_back(ScriptError{script, message});
+            const bool known = std::any_of(errors.begin(), errors.end(), [&](const ScriptError& e) {
+                return e.script == script && e.message == message;
+            });
+            if (!known) {
+                FUMAR_ERROR("script '{}' failed in {}: {}", script, function, message);
+                errors.push_back(ScriptError{script, message});
+            }
         }
 
         lua_pop(lua, 1); // environment
@@ -224,7 +233,10 @@ void ScriptEngine::update(Scene& scene, ScriptContext& context, f32 deltaSeconds
             continue;
         }
 
-        if (m_state->started.insert(id).second) {
+        const u32 generation = scene.generation(id);
+        const auto [entry, inserted] = m_state->started.try_emplace(id, generation);
+        if (inserted || entry->second != generation) {
+            entry->second = generation;
             m_state->callHandler(script, "on_start", id, 0.0f, false);
         }
         if (scene.isAlive(id)) {

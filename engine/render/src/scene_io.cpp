@@ -200,12 +200,17 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
             }
             claimed.insert(file);
 
-            if (writeGlb(file, resources.mesh(MeshHandle{i}), source.name)) {
-                entry["file"] = toPortablePath(file.string());
-                entry["primitive"] = 0;
-            } else {
-                entry["orphan"] = true;
+            // A shape that could not be written stops the whole save. Writing
+            // the scene anyway would point its nodes at nothing, and the next
+            // load would quietly drop what was modelled - while the scene file
+            // already on disk still has it.
+            if (!writeGlb(file, resources.mesh(MeshHandle{i}), source.name)) {
+                FUMAR_ERROR("scene not saved: could not write the mesh '{}' to '{}'", source.name,
+                            file.string());
+                return false;
             }
+            entry["file"] = toPortablePath(file.string());
+            entry["primitive"] = 0;
             meshes.push_back(std::move(entry));
             continue;
         }
@@ -306,14 +311,34 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
 
-    std::ofstream file(path);
-    if (!file) {
-        FUMAR_ERROR("cannot write scene '{}'", path.string());
-        return false;
+    // Written beside the real file and moved over it once complete, so a full
+    // disk or a crash halfway through leaves the previous save intact rather
+    // than half a JSON document.
+    std::filesystem::path partial = path;
+    partial += ".partial";
+    {
+        std::ofstream file(partial);
+        if (!file) {
+            FUMAR_ERROR("cannot write scene '{}'", path.string());
+            return false;
+        }
+
+        // Indented: the point of JSON here is that a person can read it.
+        file << root.dump(2) << '\n';
+        file.close();
+        if (!file) {
+            FUMAR_ERROR("cannot write scene '{}': the write did not complete", path.string());
+            std::filesystem::remove(partial, ec);
+            return false;
+        }
     }
 
-    // Indented: the point of JSON here is that a person can read it.
-    file << root.dump(2) << '\n';
+    std::filesystem::rename(partial, path, ec);
+    if (ec) {
+        FUMAR_ERROR("cannot replace scene '{}': {}", path.string(), ec.message());
+        std::filesystem::remove(partial, ec);
+        return false;
+    }
 
     FUMAR_INFO("saved '{}': {} nodes, {} meshes, {} materials", path.filename().string(),
                root["nodes"].size(), root["meshes"].size(), root["materials"].size());

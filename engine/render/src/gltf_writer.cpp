@@ -152,6 +152,9 @@ bool writeGlb(const std::filesystem::path& path, const Mesh& mesh, const std::st
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));
+    // Closed before the check: a write that fails only when the buffer is
+    // flushed - a full disk - shows up here and nowhere earlier.
+    out.close();
     if (!out) {
         FUMAR_ERROR("could not write '{}'", path.string());
         return false;

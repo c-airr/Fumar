@@ -113,7 +113,7 @@ Wspólną zmienną dla wielu skryptów trzeba jawnie zapisać w `_G` (`_G.score 
 
 **Play, wczytanie sceny i New Scene** tylko sprawiają, że `on_start` odpali się ponownie. Środowiska Lua i wszystko, co w nich zapisano, zostają.
 
-Komponenty C++ różnią się w jednym miejscu: Play ich nie restartuje. Ich `onStart` odpala się ponownie dopiero po Compile, wczytaniu sceny albo New Scene. Instancja komponentu razem z polami przeżywa Stop i Play.
+Z komponentami C++ jest tak samo: Play, wczytanie sceny i New Scene ponownie wywołują `onStart` na tej samej instancji, więc pola zachowują wartości, jeśli `onStart` ich nie ustawi. Compile niszczy instancje.
 
 ### Biblioteka standardowa
 
@@ -136,7 +136,7 @@ Metody wywołuje się przez `:`.
 
 | Metoda | Zwraca | Uwagi |
 |---|---|---|
-| `node:id()` | liczba całkowita | Stała, dopóki węzeł istnieje. Używaj jej jako klucza tabeli ze stanem węzła. |
+| `node:id()` | liczba całkowita | Stała, dopóki węzeł istnieje. Używaj jej jako klucza tabeli ze stanem węzła. O ponownym użyciu: [§5](#5-błędy-i-pułapki). |
 | `node:name()` | string | |
 | `node:set_name(s)` | | |
 | `node:position()` | `x, y, z` | Lokalna, względem rodzica. Metry. |
@@ -220,7 +220,7 @@ Kod na górnym poziomie pliku też wykonuje się przy kompilacji. Błąd w nim l
 
 ### Błędy w trakcie działania
 
-Błąd w `on_start` albo `on_update` jest łapany (`lua_pcall`), logowany z nazwą skryptu, funkcji i numerem linii, i dopisywany do listy błędów. **Skrypt zostaje podpięty i jest wywoływany w następnej klatce**, więc błąd powtarzający się co klatkę loguje się co klatkę. Popraw go i naciśnij Compile.
+Błąd w `on_start` albo `on_update` jest łapany (`lua_pcall`), logowany z nazwą skryptu, funkcji i numerem linii, i dopisywany do listy błędów. **Skrypt zostaje podpięty i jest wywoływany w następnej klatce.** Ten sam powtarzający się błąd jest logowany raz, a inny zostanie zalogowany ponownie. Popraw go i naciśnij Compile, co też czyści listę.
 
 ### Martwe węzły
 
@@ -228,9 +228,11 @@ Wywołanie metody na usuniętym węźle zgłasza `node N no longer exists`. To c
 
 ### Identyfikatory węzłów są używane ponownie
 
-Scena to slot map. Identyfikator usuniętego węzła dostaje następny utworzony węzeł. Tabela z kluczami `node:id()` może więc po usunięciach opisywać inny węzeł. Undo/redo na poziomie sceny też odbudowuje węzły z nowymi identyfikatorami.
+Scena to slot map. Identyfikator usuniętego węzła dostaje następny utworzony węzeł. **Uchwyt** jest przed tym bezpieczny: pamięta generację slotu, więc uchwyt do usuniętego węzła zgłosi błąd opisany wyżej, zamiast sięgnąć do nowego węzła. Nowy węzeł w zwolnionym slocie dostaje też własne `on_start`.
 
-W praktyce: buduj stan węzła w `on_start`, a w `on_update` sprawdzaj `nil`, tak jak robi `bob.lua`.
+**Liczba** z `node:id()` nie ma takiej ochrony. Tabela z takimi kluczami może po usunięciach opisywać inny węzeł. Undo/redo na poziomie sceny też odbudowuje węzły z nowymi identyfikatorami.
+
+W praktyce: buduj stan węzła w `on_start` (odpala się dla każdego nowego węzła), a w `on_update` sprawdzaj `nil`, tak jak robi `bob.lua`.
 
 ### Wywołania poza aktualizacją
 
@@ -249,7 +251,7 @@ Taką pracę rób w `on_start`.
 `fumar.raycast` sprawdza każdy **widoczny węzeł z siatką**:
 
 - Sprawdzany jest **prostopadłościan otaczający** węzła, a nie jego trójkąty. Promień może trafić w pusty róg pudełka wokół kuli.
-- **Pudełko węzła, który woła raycast, też się liczy.** Promień, który **zaczyna się w środku** pudełka, trafia je w odległości `0`. Zacznij promień poza pudełkiem własnego węzła albo nie dawaj skryptowanemu węzłowi siatki.
+- **Pudełko, w którego środku promień się zaczyna, nie jest trafiane.** Dzięki temu węzeł nie znajduje własnego pudełka, gdy rzuca promień ze swojego środka. Oznacza to też, że promień wystartowany wewnątrz ściany przechodzi przez tę ścianę.
 - Ukryte węzły i wszystko pod nimi są pomijane.
 
 ### Kto ma kamerę
@@ -320,7 +322,7 @@ Wskaźniki są w rejestrze, a nie w upvalue, bo bindingi są instalowane raz, a 
 
 ### Uchwyty węzłów
 
-`pushNode` tworzy pełne userdata z `NodeHandle { NodeId id; }` i nadaje mu metatabelę `"fumar.Node"`.
+`pushNode` tworzy pełne userdata z `NodeHandle { NodeId id; u32 generation; }` i nadaje mu metatabelę `"fumar.Node"`.
 
 Uchwyt trzyma identyfikator, a nie `Node*`, bo scena realokuje pamięć przy dodawaniu węzłów. Wskaźnik trzymany przez taką realokację czytałby zwolnioną pamięć.
 
@@ -328,7 +330,7 @@ Uchwyt trzyma identyfikator, a nie `Node*`, bo scena realokuje pamięć przy dod
 
 1. sprawdza typ userdata (`luaL_checkudata`),
 2. pobiera aktywną scenę,
-3. zgłasza błąd Lua, jeśli identyfikator jest martwy.
+3. zgłasza błąd Lua, jeśli identyfikator jest martwy albo jego slot należy już do nowszego węzła (uchwyt pamięta generację slotu, `Scene::generation`).
 
 Od niej zaczyna się każda metoda.
 
@@ -491,7 +493,7 @@ Przebudowa działa tylko w drzewie deweloperskim. Wydany build nie ma kompilator
 - **Pola komponentu nie przeżywają przeładowania.** Obiekty są niszczone, zanim zostanie wyładowany kod, który je niszczy. Wszystko, co ma przetrwać, trzymaj w scenie: transformację, nazwę, dzieci. Dlatego `Hover` w `onStart` czyta wysokość bazową z węzła.
 - **Nie przekazuj kontenerów silnika przez granicę biblioteki.** fumar linkuje CRT statycznie, więc plik wykonywalny i biblioteka mają **osobne sterty**. Nazwy przechodzą jako `const char*`, fabryki to zwykłe wskaźniki na funkcje, a jedyny obiekt, który przechodzi, to `Component`, którego wirtualny destruktor zwalnia go w bibliotece, która go zaalokowała.
 - **`fumarRegisterComponents` musi być `extern "C"`**, bo jest wyszukiwana po niezmanglowanej nazwie.
-- **Jedna instancja na węzeł.** Zmiana nazwy komponentu w Details tworzy nową instancję. Instancje usuniętych węzłów są sprzątane na końcu każdej aktualizacji.
+- **Jedna instancja na węzeł.** Zmiana nazwy komponentu w Details tworzy nową instancję, podobnie jak nowy węzeł w zwolnionym slocie (instancja pamięta generację slotu). Instancje usuniętych węzłów są sprzątane na końcu każdej aktualizacji.
 - **Uważaj na martwe węzły.** `onStart` i `onUpdate` dostają bezpośrednio `Node&`. Jeśli usuwasz węzły albo trzymasz `NodeId`, sprawdzaj `context.scene.isAlive(id)`; silnik robi to między `onStart` a `onUpdate`.
 
 ---

@@ -10,7 +10,6 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 namespace fumar {
@@ -74,19 +73,26 @@ struct NativeEngine::State {
     std::vector<std::string> names;
     std::vector<std::string> errors;
 
-    /// One instance per node that has a component, owned here.
-    ///
+    /// One component on one node, owned here.
+    struct Instance {
+        std::unique_ptr<Component> component;
+
+        /// The name it was built from, so a node whose component is changed
+        /// in the editor gets a new instance rather than keeping the old.
+        std::string name;
+
+        /// The generation of the node's slot when it was built. Ids are
+        /// recycled, and a node made in a destroyed one's slot must get an
+        /// instance of its own - not the old one, member state and all.
+        u32 generation = 0;
+
+        bool started = false;
+    };
+
     /// Keyed by NodeId, so a node being destroyed leaves an orphan that the
     /// next update sweeps - cheaper than the scene having to tell this module
     /// about every deletion, and this module is not the scene's business.
-    std::unordered_map<NodeId, std::unique_ptr<Component>> instances;
-
-    /// Which of them have had onStart called.
-    std::unordered_set<NodeId> started;
-
-    /// The name each instance was built from, so a node whose component is
-    /// changed in the editor gets a new instance rather than keeping the old.
-    std::unordered_map<NodeId, std::string> instanceNames;
+    std::unordered_map<NodeId, Instance> instances;
 
     void clearInstances() {
         // Destroyed before the library is unloaded, and that order is not
@@ -94,8 +100,6 @@ struct NativeEngine::State {
         // the library, so unloading first would leave a vtable pointing at
         // memory the operating system has taken back.
         instances.clear();
-        instanceNames.clear();
-        started.clear();
     }
 };
 
@@ -252,14 +256,15 @@ void NativeEngine::update(Scene& scene, ScriptContext& context, f32 deltaSeconds
 
         Node& node = scene.node(id);
         const std::string& name = node.component;
+        const u32 generation = scene.generation(id);
 
         // Rebuilt when the name changed, which is what makes picking a
-        // different component in the details panel take effect immediately.
-        const auto existingName = m_state->instanceNames.find(id);
-        if (existingName != m_state->instanceNames.end() && existingName->second != name) {
-            m_state->instances.erase(id);
-            m_state->instanceNames.erase(id);
-            m_state->started.erase(id);
+        // different component in the details panel take effect immediately -
+        // and when the slot changed hands, which is a different node.
+        const auto existing = m_state->instances.find(id);
+        if (existing != m_state->instances.end() &&
+            (existing->second.name != name || existing->second.generation != generation)) {
+            m_state->instances.erase(existing);
         }
 
         if (!m_state->instances.contains(id)) {
@@ -272,13 +277,18 @@ void NativeEngine::update(Scene& scene, ScriptContext& context, f32 deltaSeconds
             if (created == nullptr) {
                 continue;
             }
-            m_state->instances.emplace(id, std::unique_ptr<Component>(created));
-            m_state->instanceNames.emplace(id, name);
+            m_state->instances.emplace(id, State::Instance{
+                                               .component = std::unique_ptr<Component>(created),
+                                               .name = name,
+                                               .generation = generation,
+                                           });
         }
 
-        Component& component = *m_state->instances.at(id);
+        State::Instance& instance = m_state->instances.at(id);
+        Component& component = *instance.component;
 
-        if (m_state->started.insert(id).second) {
+        if (!instance.started) {
+            instance.started = true;
             component.onStart(node, componentContext);
         }
 
@@ -291,12 +301,14 @@ void NativeEngine::update(Scene& scene, ScriptContext& context, f32 deltaSeconds
     // Sweep instances whose node is gone. Cheaper than the scene reporting
     // every deletion, and it keeps this module out of the scene's business.
     std::erase_if(m_state->instances, [&scene](const auto& entry) {
-        return !scene.isAlive(entry.first);
+        return !scene.isAlive(entry.first) || scene.generation(entry.first) != entry.second.generation;
     });
 }
 
 void NativeEngine::restart() {
-    m_state->started.clear();
+    for (auto& [id, instance] : m_state->instances) {
+        instance.started = false;
+    }
 }
 
 const std::vector<std::string>& NativeEngine::componentNames() const {

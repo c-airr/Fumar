@@ -113,7 +113,7 @@ A truly shared global between scripts has to go through `_G` explicitly (`_G.sco
 
 **Play, loading a scene, and New Scene** only make `on_start` run again. The Lua environments, and anything stored in them, survive.
 
-C++ components differ in one place: Play does not restart them. Their `onStart` runs again only after Compile, loading a scene, or New Scene. A component instance, and its members, lives on across Stop and Play.
+The same holds for C++ components: Play, loading a scene and New Scene run `onStart` again on the same instance, so members keep their values unless `onStart` sets them. Compile destroys the instances.
 
 ### Standard library
 
@@ -136,7 +136,7 @@ Methods use `:` syntax.
 
 | Method | Returns | Notes |
 |---|---|---|
-| `node:id()` | integer | Stable while the node lives. Use it as a table key for per-node state. |
+| `node:id()` | integer | Stable while the node lives. Use it as a table key for per-node state. See [§5](#5-errors-and-pitfalls) on reuse. |
 | `node:name()` | string | |
 | `node:set_name(s)` | | |
 | `node:position()` | `x, y, z` | Local, relative to the parent. Metres. |
@@ -220,7 +220,7 @@ Code at the top level of a file also runs at compile time. An error there counts
 
 ### Runtime errors
 
-An error inside `on_start` or `on_update` is caught (`lua_pcall`), logged with the script, the handler and the line, and added to the error list. **The script stays attached and is called again next frame**, so an error that repeats every frame logs every frame. Fix it and press Compile.
+An error inside `on_start` or `on_update` is caught (`lua_pcall`), logged with the script, the handler and the line, and added to the error list. **The script stays attached and is called again next frame.** The same error repeating is logged once; a different one is logged again. Fix it and press Compile, which also clears the list.
 
 ### Dead nodes
 
@@ -228,9 +228,11 @@ Calling a method on a node that has been deleted raises `node N no longer exists
 
 ### Node ids are reused
 
-The scene is a slot map. A deleted node's id is given to the next node created. A table keyed by `node:id()` can therefore end up describing a different node after deletions. Undo/redo at the scene level rebuilds nodes with new ids, too.
+The scene is a slot map. A deleted node's id is given to the next node created. A **handle** is safe across that: it remembers the slot's generation, so a handle to the deleted node raises the error above instead of reaching the new node. A new node in a reused slot also gets its own `on_start`.
 
-In practice: build per-node state in `on_start`, and check for `nil` in `on_update`, as `bob.lua` does.
+A **number** from `node:id()` is not protected that way. A table keyed by it can end up describing a different node after deletions. Undo/redo at the scene level rebuilds nodes with new ids, too.
+
+In practice: build per-node state in `on_start` (it runs for every new node), and check for `nil` in `on_update`, as `bob.lua` does.
 
 ### Calls outside an update
 
@@ -249,7 +251,7 @@ Do that work in `on_start` instead.
 `fumar.raycast` tests every **visible node that has a mesh**:
 
 - It tests the node's **bounding box**, not its triangles. A ray can hit the empty corner of a box around a sphere.
-- **The calling node's own box counts too.** A ray that **starts inside** a box hits it at distance `0`. Start the ray outside the node's own box, or give the scripted node no mesh.
+- **A box the ray starts inside is not hit.** That keeps a node from finding its own box when it casts from its middle. It also means a ray started inside a wall passes through that wall.
 - Hidden nodes, and everything under them, are ignored.
 
 ### Camera ownership
@@ -320,7 +322,7 @@ The pointers live in the registry rather than as upvalues because the bindings a
 
 ### Node handles
 
-`pushNode` creates full userdata holding a `NodeHandle { NodeId id; }` and gives it the `"fumar.Node"` metatable.
+`pushNode` creates full userdata holding a `NodeHandle { NodeId id; u32 generation; }` and gives it the `"fumar.Node"` metatable.
 
 It holds an id, not `Node*`, because the scene reallocates its storage when nodes are added. A pointer kept across that would read freed memory.
 
@@ -328,7 +330,7 @@ It holds an id, not `Node*`, because the scene reallocates its storage when node
 
 1. validates the userdata type (`luaL_checkudata`),
 2. fetches the active scene,
-3. raises a Lua error if the id is dead.
+3. raises a Lua error if the id is dead, or if its slot now holds a newer node (the handle stores the slot's generation, `Scene::generation`).
 
 Every method starts with it.
 
@@ -491,7 +493,7 @@ The editor can only rebuild in a development tree. A distributed build has no co
 - **Member state does not survive a reload.** The objects are destroyed before the code that destroys them is unloaded. Anything that must persist goes into the scene: transform, name, children. `Hover` re-reads its base height from the node in `onStart` for this reason.
 - **Do not pass engine containers across the boundary.** fumar links the CRT statically, so the executable and the library have **separate heaps**. Names cross as `const char*`, factories are plain function pointers, and the only object that crosses is a `Component`, whose virtual destructor frees it in the library that allocated it.
 - **`fumarRegisterComponents` must be `extern "C"`**, because it is looked up by its unmangled name.
-- **One instance per node.** Changing the component name in Details builds a new instance. Instances of deleted nodes are swept at the end of each update.
+- **One instance per node.** Changing the component name in Details builds a new instance, and so does a new node in a reused slot (the instance remembers the slot's generation). Instances of deleted nodes are swept at the end of each update.
 - **Mind dead nodes.** `onStart` and `onUpdate` receive `Node&` directly. If you destroy nodes or keep `NodeId`s, check `context.scene.isAlive(id)`; the engine does this between `onStart` and `onUpdate`.
 
 ---

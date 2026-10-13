@@ -1260,9 +1260,21 @@ f32 Renderer::raycast(const Ray& ray, f32 maxDistance) const {
         const Vec3 localOrigin = xyz(toLocal * point(ray.origin));
         const Vec3 localDirection = xyz(toLocal * direction(ray.direction));
 
+        // A ray that starts inside a box does not hit that box. The box it
+        // starts in is nearly always the caller's own - a character probing
+        // for the floor from its middle - and counting it would answer
+        // "distance 0" to every such question. Physics engines draw the line
+        // in the same place.
+        const Bounds& bounds = m_resources.mesh(node.mesh).bounds();
+        const bool inside = localOrigin.x >= bounds.min.x && localOrigin.x <= bounds.max.x &&
+                            localOrigin.y >= bounds.min.y && localOrigin.y <= bounds.max.y &&
+                            localOrigin.z >= bounds.min.z && localOrigin.z <= bounds.max.z;
+        if (inside) {
+            return;
+        }
+
         f32 distance = 0.0f;
-        if (!intersectRayBounds(localOrigin, localDirection, m_resources.mesh(node.mesh).bounds(),
-                                distance)) {
+        if (!intersectRayBounds(localOrigin, localDirection, bounds, distance)) {
             return;
         }
 

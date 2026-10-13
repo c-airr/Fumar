@@ -85,6 +85,7 @@ Scene::Scene() {
     m_nodes.push_back(std::move(root));
     m_worldTransforms.push_back(identity());
     m_alive.push_back(true);
+    m_generations.push_back(0);
 }
 
 NodeId Scene::createNode(std::string name, NodeId parent) {
@@ -96,6 +97,7 @@ NodeId Scene::createNode(std::string name, NodeId parent) {
         m_nodes.emplace_back();
         m_worldTransforms.push_back(identity());
         m_alive.push_back(true);
+        m_generations.push_back(0);
     } else {
         // Reusing a slot keeps ids dense, which keeps the parallel arrays
         // compact and the world-transform pass cache-friendly.
@@ -104,6 +106,7 @@ NodeId Scene::createNode(std::string name, NodeId parent) {
         m_nodes[id] = Node{};
         m_worldTransforms[id] = identity();
         m_alive[id] = true;
+        ++m_generations[id];
     }
 
     m_nodes[id].name = std::move(name);
@@ -228,6 +231,10 @@ void Scene::detachFromParent(NodeId id) {
 
 bool Scene::isAlive(NodeId id) const {
     return id < m_alive.size() && m_alive[id];
+}
+
+u32 Scene::generation(NodeId id) const {
+    return id < m_generations.size() ? m_generations[id] : 0;
 }
 
 Node& Scene::node(NodeId id) {

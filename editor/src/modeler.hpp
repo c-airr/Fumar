@@ -74,6 +74,17 @@ struct EditHover {
 struct EditSession {
     NodeId node = kInvalidNode;
 
+    /// The generation of the node's slot when it was opened. The id alone
+    /// would carry on matching a different node made in the same slot.
+    u32 nodeGeneration = 0;
+
+    /// History::recordCount() as of the session's last look. A step recorded
+    /// at the scene level while the mesh is open (a material clicked, a
+    /// transform typed in) has to be undone before anything modelled before
+    /// it, and undoing it closes the session anyway - so the session's own
+    /// steps from before it are dropped when one appears. See syncEditSession.
+    u64 historySeen = 0;
+
     /// What the node draws: the mesh it came with until the first change,
     /// its own copy after.
     MeshHandle mesh;
@@ -184,9 +195,11 @@ void redoEdit(EditorState& state);
 void flushEditSession(EditorState& state, Renderer& renderer);
 
 /// Tab, the selection modes and the operations, while in the Modeler.
-/// Returns true when it consumed the scene-level shortcuts too (undo, delete),
-/// which then must not also act on the scene.
-bool handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigating);
+///
+/// Undo and the scene-level shortcuts are not decided here: they arrive as
+/// requests on the state, and applyEditActions sends them to the open mesh or
+/// to the scene.
+void handleModelerShortcuts(EditorState& state, Renderer& renderer, bool navigating);
 
 /// One frame of dragging the Modeler's camera, by `mouseDelta` pixels: turns
 /// it round the target, or with `pan` slides the target across the view so

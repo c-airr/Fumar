@@ -25,9 +25,18 @@ constexpr const char* kContextRegistryKey = "fumar.activeContext";
 /// nodes are added, and a script holding a pointer across that would be reading
 /// freed memory. An id stays valid, and turns back into a node through a check
 /// that also catches deletion.
+///
+/// The generation is what makes that check hold: ids are recycled, and without
+/// it a handle to a deleted node would quietly start moving whichever node was
+/// made in its slot next.
 struct NodeHandle {
     NodeId id;
+    u32 generation;
 };
+
+bool handleAlive(const Scene& scene, const NodeHandle& handle) {
+    return scene.isAlive(handle.id) && scene.generation(handle.id) == handle.generation;
+}
 
 ScriptContext* contextOrNull(lua_State* lua) {
     lua_getfield(lua, LUA_REGISTRYINDEX, kContextRegistryKey);
@@ -55,7 +64,7 @@ Node& checkNode(lua_State* lua, int index) {
     if (scene == nullptr) {
         luaL_error(lua, "no scene is active");
     }
-    if (!scene->isAlive(handle->id)) {
+    if (!handleAlive(*scene, *handle)) {
         luaL_error(lua, "node %d no longer exists", static_cast<int>(handle->id));
     }
     return scene->node(handle->id);
@@ -194,7 +203,7 @@ int nodeToString(lua_State* lua) {
     auto* handle = static_cast<NodeHandle*>(luaL_checkudata(lua, 1, kNodeMetatable));
     Scene* scene = sceneOrNull(lua);
 
-    if (scene != nullptr && scene->isAlive(handle->id)) {
+    if (scene != nullptr && handleAlive(*scene, *handle)) {
         lua_pushfstring(lua, "node<%s #%d>", scene->node(handle->id).name.c_str(),
                         static_cast<int>(handle->id));
     } else {
@@ -397,8 +406,13 @@ Scene* activeScene(lua_State* lua) {
 }
 
 void pushNode(lua_State* lua, NodeId id) {
+    // Pushed only while a scene is active - from an update, or from a binding
+    // that is running inside one - so the generation read here is current.
+    const Scene* scene = sceneOrNull(lua);
+
     auto* handle = static_cast<NodeHandle*>(lua_newuserdata(lua, sizeof(NodeHandle)));
     handle->id = id;
+    handle->generation = scene != nullptr ? scene->generation(id) : 0;
 
     luaL_getmetatable(lua, kNodeMetatable);
     lua_setmetatable(lua, -2);
