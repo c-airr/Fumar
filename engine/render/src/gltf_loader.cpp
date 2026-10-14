@@ -4,7 +4,6 @@
 #include "fumar/core/log.hpp"
 #include "fumar/render/tangents.hpp"
 #include "fumar/render/texture.hpp"
-#include "fumar/rhi/descriptor.hpp"
 #include "fumar/rhi/device.hpp"
 #include "fumar/rhi/upload_context.hpp"
 
@@ -297,9 +296,6 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
     }
 
     // --- materials ----------------------------------------------------------
-    // One descriptor set per material, written once here. Per-frame rebinding
-    // is cheap; rebuilding the set would not be.
-    rhi::DescriptorWriter writer;
     std::vector<MaterialHandle> materialHandles(data->materials_count);
 
     for (usize i = 0; i < data->materials_count; ++i) {
@@ -308,7 +304,6 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
         Material material;
         material.name = source.name != nullptr ? source.name : "material";
 
-        vk::ImageView view = context.fallbackTexture;
         if (source.has_pbr_metallic_roughness) {
             const auto& pbr = source.pbr_metallic_roughness;
             material.baseColorFactor = Vec4{pbr.base_color_factor[0], pbr.base_color_factor[1],
@@ -323,22 +318,20 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
                 const usize imageIndex = static_cast<usize>(texture->image - data->images);
                 if (imageIndex < textureHandles.size() && textureHandles[imageIndex].valid()) {
                     material.baseColor = textureHandles[imageIndex];
-                    view = resources.texture(material.baseColor).view();
                 }
             }
         }
 
         // Recorded so a saved scene can find this material again by reloading
         // the file, rather than trying to store an embedded texture itself.
-        material.sourceFile = pathString;
-        material.sourceIndex = static_cast<u32>(i);
+        material.origin = MaterialOrigin{
+            .kind = MaterialOrigin::Kind::Gltf,
+            .file = pathString,
+            .index = static_cast<u32>(i),
+        };
 
-        material.descriptorSet = context.descriptorPool.allocate(context.materialSetLayout);
-        writer.image(material.descriptorSet, 0, view, context.sampler);
         materialHandles[i] = resources.addMaterial(std::move(material));
     }
-
-    writer.submit(context.device.handle());
 
     // --- nodes --------------------------------------------------------------
     // glTF node indices map one-to-one onto scene nodes, so the parent links

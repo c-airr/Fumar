@@ -11,8 +11,6 @@ layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) in vec3 vWorldPosition;
 
-layout(set = 1, binding = 0) uniform sampler2D baseColorTexture;
-
 layout(location = 0) out vec4 outColor;
 
 // Values above 1, because this is written into the HDR target and the tone
@@ -28,7 +26,7 @@ void main() {
     // light. Those bring their own colour, so the renderer can tint a lamp with
     // the colour it actually emits.
     if (object.highlight < 0.0) {
-        outColor = vec4(object.baseColor.rgb, 1.0);
+        outColor = vec4(object.overlayColor.rgb, 1.0);
         return;
     }
 

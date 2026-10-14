@@ -238,9 +238,9 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         entry["roughness"] = material.roughness;
         entry["uv_scale"] = Json::array({material.uvScale.x, material.uvScale.y});
 
-        if (!material.sourceFile.empty()) {
-            entry["file"] = toPortablePath(material.sourceFile);
-            entry["index"] = material.sourceIndex;
+        if (material.origin.kind == MaterialOrigin::Kind::Gltf) {
+            entry["file"] = toPortablePath(material.origin.file);
+            entry["index"] = material.origin.index;
         } else if (!material.baseColorPath.empty()) {
             entry["texture"] = toPortablePath(material.baseColorPath);
         }
@@ -475,7 +475,8 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
             MaterialHandle found;
             for (u32 i = 0; i < static_cast<u32>(registry.materialCount()); ++i) {
                 const Material& material = registry.material(MaterialHandle{i});
-                if (material.sourceFile == wantedFile && material.sourceIndex == wantedIndex) {
+                if (material.origin.kind == MaterialOrigin::Kind::Gltf && material.origin.file == wantedFile &&
+                    material.origin.index == wantedIndex) {
                     found = MaterialHandle{i};
                     break;
                 }

@@ -4,6 +4,7 @@
 // expected, and the exit code says whether any failed.
 
 #include "fumar/geometry/primitives.hpp"
+#include "fumar/render/material_gpu.hpp"
 #include "fumar/render/mesh.hpp"
 #include "fumar/render/tangents.hpp"
 
@@ -77,12 +78,51 @@ void mikkTangentsOrthonormal() {
     check(sound, "sphere tangents are unit, orthogonal to the normal, and signed");
 }
 
+// --- GPU records -----------------------------------------------------------------
+
+/// Which slot of the texture array a material's map is read from. Anything
+/// that cannot be reached - no texture, a handle past the scene's textures, a
+/// texture past the end of the array - reads the neutral one instead of a slot
+/// nobody wrote.
+void textureSlots() {
+    check(textureSlot(TextureHandle{5}, 10, 0) == 5, "a texture in range keeps its slot");
+    check(textureSlot(TextureHandle{}, 10, 7) == 7, "no texture reads the neutral slot");
+    check(textureSlot(TextureHandle{12}, 10, 7) == 7, "a handle past the scene's textures reads the neutral slot");
+    check(textureSlot(TextureHandle{1500}, 2000, 7) == 7, "a texture past the array's 1024 slots reads the neutral slot");
+}
+
+void recordFromMaterial() {
+    const NeutralTextures neutral{.white = 0, .flatNormal = 1, .black = 2};
+
+    Material material;
+    material.emissiveColor = Vec3{1.0f, 0.5f, 0.0f};
+    material.emissiveIntensity = 4.0f;
+    const MaterialRecord glowing = toRecord(material, neutral, 10);
+    check(glowing.emissive.x == 4.0f && glowing.emissive.y == 2.0f && glowing.emissive.z == 0.0f,
+          "emissive is colour times intensity");
+    check(glowing.normalTexture == neutral.flatNormal, "no normal map reads the flat normal");
+    check(glowing.emissiveTexture == neutral.black, "no emissive map reads black");
+    check(glowing.baseColorTexture == neutral.white, "no colour map reads white");
+    check(glowing.alphaCutoff < 0.0f, "an opaque material has no cutoff");
+
+    material.alphaMode = AlphaMode::Mask;
+    material.alphaCutoff = 0.3f;
+    check(toRecord(material, neutral, 10).alphaCutoff == 0.3f, "a masked material carries its cutoff");
+
+    material.baseColor = TextureHandle{4};
+    check(toRecord(material, neutral, 10).baseColorTexture == 4, "a colour map reads its own slot");
+}
+
 } // namespace
 
 int main() {
     section("tangents");
     mikkTangentsOnQuad();
     mikkTangentsOrthonormal();
+
+    section("gpu records");
+    textureSlots();
+    recordFromMaterial();
 
     std::printf(failures == 0 ? "\nall good\n" : "\n%d check(s) failed\n", failures);
     return failures == 0 ? 0 : 1;

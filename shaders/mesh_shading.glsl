@@ -17,15 +17,12 @@
 
 #include "sky.glsl"
 #include "object.glsl"
+#include "material.glsl"
 #include "raytrace.glsl"
 
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) in vec3 vWorldPosition;
-
-// Set 1 is per-material. Splitting it from set 0 means switching material does
-// not disturb the frame binding.
-layout(set = 1, binding = 0) uniform sampler2D baseColorTexture;
 
 layout(location = 0) out vec4 outColor;
 
@@ -131,14 +128,17 @@ void main() {
 
     // The texture is multiplied by the material colour, so an untextured
     // material uses a 1x1 white texture and shows its colour unchanged.
-    const vec3 albedo = texture(baseColorTexture, vUV * object.uvScale).rgb *
-                        object.baseColor.rgb;
+    // This draw's material, picked by index. The index is the same for every
+    // fragment of the draw, so no nonuniformEXT: the hardware may read it once.
+    const MaterialRecord material = materials[object.materialIndex];
+    const vec3 albedo = texture(sceneTextures[material.baseColorTexture], vUV * material.uvScale).rgb *
+                        material.baseColorFactor.rgb;
 
-    const float metallic = clamp(object.metallic, 0.0, 1.0);
+    const float metallic = clamp(material.metallic, 0.0, 1.0);
 
     // Never exactly zero: a perfectly smooth surface makes the GGX lobe a
     // spike narrower than a pixel, which turns into flickering white dots.
-    const float roughness = clamp(object.roughness, 0.045, 1.0);
+    const float roughness = clamp(material.roughness, 0.045, 1.0);
 
     // What the surface reflects head-on. Dielectrics reflect about 4% of the
     // light and let the rest through to be coloured by the material underneath;

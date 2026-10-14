@@ -10,25 +10,18 @@
 namespace fumar {
 
 namespace rhi {
-class DescriptorPool;
 class Device;
 class UploadContext;
 } // namespace rhi
 
 /// Everything the loader needs to turn a file into GPU resources.
 ///
-/// Passed in rather than owned, because textures, descriptor sets and buffers
-/// all come from pools the renderer manages.
+/// Passed in rather than owned, because the device and the upload queue are
+/// the renderer's. Nothing descriptor-related: materials are records the
+/// renderer uploads itself, and textures reach the shaders through its array.
 struct GltfLoadContext {
     rhi::Device& device;
     rhi::UploadContext& upload;
-    rhi::DescriptorPool& descriptorPool;
-    vk::DescriptorSetLayout materialSetLayout;
-    vk::Sampler sampler;
-
-    /// Stands in for materials with no base colour texture, which glTF allows.
-    /// A null image view is not a legal descriptor.
-    vk::ImageView fallbackTexture;
 };
 
 /// Loads a .gltf or .glb file into a scene, preserving its node hierarchy.

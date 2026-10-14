@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -58,15 +59,6 @@ constexpr u32 kMaxLights = 16;
 /// reflections.
 constexpr u32 kMaxInstances = 1024;
 
-/// How many textures a ray can reach. Must match kMaxSceneTextures in
-/// shaders/raytrace.glsl.
-///
-/// A fixed array rather than one sized at runtime: a variable-count descriptor
-/// binding is another feature to require and another way for an older driver to
-/// say no, and every unused slot here costs one descriptor. Slots past the end
-/// of the scene hold the default texture, so a stale index samples white rather
-/// than reading a descriptor nobody wrote.
-constexpr u32 kMaxSceneTextures = 128;
 
 /// How many times the bloom chain halves the image.
 ///
@@ -131,28 +123,28 @@ constexpr u32 kSamplePatternPeriod = 64;
 
 /// Push constants, matching the block in shaders/object.glsl.
 ///
-/// 100 bytes used of the 128 every implementation guarantees. Worth watching:
-/// push constants are the fastest way to get per-draw data to a shader
-/// precisely because the block is tiny and lives in the command buffer, so
-/// anything that grows past the limit belongs in a uniform buffer instead.
+/// 88 bytes of the 128 every implementation guarantees. What a surface looks
+/// like is no longer here: it is a record in the material buffer, and a draw
+/// names it by index - which is what lets a ray, which has no push constants,
+/// see the same material the camera does.
 struct ObjectPushConstants {
-    Mat4 model;      // 64 bytes, offset 0
-    Vec4 baseColor;  // 16,       offset 64
+    Mat4 model;         // 64 bytes, offset 0
 
-    /// Before the scalars, not after them, and the order is load-bearing.
-    ///
-    /// Push constants follow std430, where a vec2 is aligned to EIGHT bytes.
-    /// Placed after three floats it would start at offset 92, which is not a
-    /// multiple of 8, so the shader compiler inserts four bytes of padding and
-    /// reads it from 96 - while C++, which aligns a pair of floats to four,
-    /// writes it at 92. Nothing warns: the object simply gets somebody else's
-    /// tiling. Here it lands at 80, which both agree on.
-    Vec2 uvScale;    // 8,        offset 80
+    /// The flat colour the outline pass draws light markers with. The mesh
+    /// pipeline ignores it.
+    Vec4 overlayColor;  // 16,       offset 64
 
-    f32 metallic;    // 4,        offset 88
-    f32 roughness;   // 4,        offset 92
-    f32 highlight;   // 4,        offset 96: 0 = normal, 0.5 = hovered, 1 = selected
+    u32 materialIndex;  // 4,        offset 80
+    f32 highlight;      // 4,        offset 84: 0 = normal, 0.5 = hovered, 1 = selected, < 0 = overlay colour
 };
+
+static_assert(sizeof(ObjectPushConstants) == 88);
+static_assert(offsetof(ObjectPushConstants, overlayColor) == 64);
+static_assert(offsetof(ObjectPushConstants, materialIndex) == 80);
+static_assert(offsetof(ObjectPushConstants, highlight) == 84);
+
+/// How many material records each frame's buffer holds before it grows.
+constexpr u32 kInitialMaterialCapacity = 256;
 
 constexpr bool kValidationByDefault =
 #if defined(NDEBUG)
@@ -201,7 +193,9 @@ Renderer::Renderer(Window& window) : m_window(window) {
 
     const std::array<vk::VertexInputBindingDescription, 1> vertexBindings{Vertex::binding()};
     const auto vertexAttributes = Vertex::attributes();
-    const std::array<vk::DescriptorSetLayout, 2> setLayouts{*m_cameraSetLayout, *m_materialSetLayout};
+    // One set: the frame's, which now carries the materials and every texture
+    // too. A draw picks its material by index rather than by binding a set.
+    const std::array<vk::DescriptorSetLayout, 1> setLayouts{*m_cameraSetLayout};
 
     const std::filesystem::path shaderDir = executableDirectory() / "shaders";
 
@@ -296,7 +290,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
                    });
 
     // The tone mapper reads two images, so it gets its own set layout rather
-    // than the material one every other fullscreen pass borrows.
+    // than the one-image layout the bloom passes use.
     const std::array<vk::DescriptorSetLayout, 2> postSetLayouts{*m_cameraSetLayout,
                                                                 *m_postSetLayout};
 
@@ -367,7 +361,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
     // One source image, one target, no frame data: everything these two need
     // arrives in push constants, so they take a single set layout - the
     // material one, which is exactly "one texture" - and it lands as set 0.
-    const std::array<vk::DescriptorSetLayout, 1> bloomSetLayouts{*m_materialSetLayout};
+    const std::array<vk::DescriptorSetLayout, 1> bloomSetLayouts{*m_imageSetLayout};
 
     m_bloomDownPipeline = std::make_unique<rhi::GraphicsPipeline>(
         *m_device, rhi::GraphicsPipelineDesc{
@@ -451,7 +445,7 @@ Renderer::~Renderer() {
     m_sampler.reset();
     m_temporalSetLayout.reset();
     m_postSetLayout.reset();
-    m_materialSetLayout.reset();
+    m_imageSetLayout.reset();
     m_cameraSetLayout.reset();
     m_descriptorPool.reset();
     m_frames.reset();
@@ -808,12 +802,20 @@ void Renderer::createDescriptors() {
                             vk::ShaderStageFlagBits::eFragment);
         frameLayout.binding(2, vk::DescriptorType::eStorageBuffer,
                             vk::ShaderStageFlagBits::eFragment);
-        frameLayout.binding(3, vk::DescriptorType::eCombinedImageSampler,
-                            vk::ShaderStageFlagBits::eFragment, kMaxSceneTextures);
     }
+
+    // Every texture in the scene and every material, on every GPU: the
+    // rasteriser picks its material by index the same way a ray does. A fixed
+    // array rather than one sized at runtime - a variable-count binding is
+    // another feature to require - with the slots past the scene holding the
+    // white neutral texture, so nothing ever reads a descriptor nobody wrote.
+    frameLayout.binding(3, vk::DescriptorType::eCombinedImageSampler, vk::ShaderStageFlagBits::eFragment,
+                        kMaxSceneTextures);
+    frameLayout.binding(4, vk::DescriptorType::eStorageBuffer,
+                        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment);
     m_cameraSetLayout = frameLayout.build(handle);
 
-    m_materialSetLayout = rhi::DescriptorSetLayoutBuilder()
+    m_imageSetLayout = rhi::DescriptorSetLayoutBuilder()
                               .binding(0, vk::DescriptorType::eCombinedImageSampler,
                                        vk::ShaderStageFlagBits::eFragment)
                               .build(handle);
@@ -839,17 +841,12 @@ void Renderer::createDescriptors() {
                                        vk::ShaderStageFlagBits::eFragment)
                               .build(handle);
 
-    // One camera set per frame in flight, plus one material set per loaded
-    // material. Pools do not grow, so the material budget is fixed up front -
-    // a real asset system would allocate a pool per scene instead of guessing.
-    constexpr u32 kMaterialBudget = 64;
-
-    // Plus the image sets the renderer keeps for itself, none of which belong
-    // to a material: one per level of the bloom chain, so a pass can bind the
-    // level below it as its source without rewriting a descriptor mid-frame,
-    // and then two each for the tone mapper, the bloom chain's first source and
-    // the temporal pass - two because the accumulated image alternates between
-    // a pair, and a descriptor cannot be rewritten mid-flight.
+    // The image sets the renderer keeps for itself: one per level of the bloom
+    // chain, so a pass can bind the level below it as its source without
+    // rewriting a descriptor mid-frame, and then two each for the tone mapper,
+    // the bloom chain's first source and the temporal pass - two because the
+    // accumulated image alternates between a pair, and a descriptor cannot be
+    // rewritten mid-flight.
     constexpr u32 kInternalImageSets = 6 + kBloomMips;
 
     // More descriptors than sets, because three of those sets hold more than
@@ -857,24 +854,22 @@ void Renderer::createDescriptors() {
     // temporal pass reads the scene, the history and the depth.
     constexpr u32 kInternalImageDescriptors = 2 * (2 + 1 + 3) + kBloomMips;
 
+    // Every frame's set holds the whole texture array and the material buffer.
     std::vector<vk::DescriptorPoolSize> poolSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaterialBudget + kInternalImageDescriptors},
+                               kInternalImageDescriptors + kMaxSceneTextures * rhi::kFramesInFlight},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight},
     };
     if (m_device->rayTracingSupported()) {
         poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eAccelerationStructureKHR,
                                                    rhi::kFramesInFlight});
+        // The instance records.
         poolSizes.push_back(
             vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight});
-
-        // Every slot of the array, for every frame in flight. This is the one
-        // place the descriptor budget stops being trivial.
-        poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                                                   kMaxSceneTextures * rhi::kFramesInFlight});
     }
-    m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
-        *m_device, rhi::kFramesInFlight + kMaterialBudget + kInternalImageSets, poolSizes);
+    m_descriptorPool =
+        std::make_unique<rhi::DescriptorPool>(*m_device, rhi::kFramesInFlight + kInternalImageSets, poolSizes);
 
     // The uniform buffers themselves outlive any number of scene loads; only
     // the descriptor sets pointing at them are reallocated.
@@ -889,6 +884,17 @@ void Renderer::createDescriptors() {
                                                  .hostVisible = true,
                                              });
         }
+    }
+
+    for (PerFrame& frame : m_perFrame) {
+        // Host visible: records are rewritten in place when a material
+        // changes, a few at a time, by the CPU.
+        frame.materialCapacity = kInitialMaterialCapacity;
+        frame.materialData = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                        .size = sizeof(MaterialRecord) * frame.materialCapacity,
+                                                        .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                        .hostVisible = true,
+                                                    });
     }
 
     for (PerFrame& frame : m_perFrame) {
@@ -916,6 +922,18 @@ void Renderer::allocateDescriptorSets() {
             writer.buffer(frame.cameraSet, 2, frame.instanceData.handle(),
                           frame.instanceData.size(), vk::DescriptorType::eStorageBuffer);
         }
+        writer.buffer(frame.cameraSet, 4, frame.materialData.handle(), frame.materialData.size(),
+                      vk::DescriptorType::eStorageBuffer);
+
+        // Every slot, once: the binding is read as a whole, and a slot nobody
+        // wrote is undefined behaviour rather than a visible mistake. The
+        // scene's own textures replace these as they arrive.
+        for (u32 slot = 0; slot < kMaxSceneTextures; ++slot) {
+            writer.image(frame.cameraSet, 3, m_defaultTexture.view(), *m_sampler,
+                         vk::ImageLayout::eShaderReadOnlyOptimal, slot);
+        }
+        frame.texturesWritten = 0;
+        frame.materialDirty.clear();
     }
 
     // In pairs, because the image these name is one of the two the temporal
@@ -924,7 +942,7 @@ void Renderer::allocateDescriptorSets() {
     // so both exist and the recording picks one.
     for (u32 slot = 0; slot < 2; ++slot) {
         m_tonemapSets[slot] = m_descriptorPool->allocate(*m_postSetLayout);
-        m_bloomSourceSets[slot] = m_descriptorPool->allocate(*m_materialSetLayout);
+        m_bloomSourceSets[slot] = m_descriptorPool->allocate(*m_imageSetLayout);
         m_temporalSets[slot] = m_descriptorPool->allocate(*m_temporalSetLayout);
     }
 
@@ -934,27 +952,16 @@ void Renderer::allocateDescriptorSets() {
     // edge.
     m_bloomMipSets.resize(kBloomMips);
     for (vk::DescriptorSet& set : m_bloomMipSets) {
-        set = m_descriptorPool->allocate(*m_materialSetLayout);
+        set = m_descriptorPool->allocate(*m_imageSetLayout);
     }
 
     // Fills in all of the above. Everything they point at was created by
     // createViewportTarget, which runs before this.
     updatePostDescriptors();
 
-    // The camera sets were just reallocated, so whatever was written into their
-    // texture array went with them.
-    m_textureArrayDirty = true;
-
-    // The fallback material: used by anything with no material of its own, so
-    // an untextured or broken asset still binds something valid.
-    Material fallback;
-    fallback.name = "default";
-    fallback.baseColorFactor = Vec4{0.30f, 0.31f, 0.33f, 1.0f};
-    fallback.descriptorSet = m_descriptorPool->allocate(*m_materialSetLayout);
-    writer.image(fallback.descriptorSet, 0, m_defaultTexture.view(), *m_sampler);
-    m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
-
     writer.submit(m_device->handle());
+
+    registerBuiltins();
 }
 
 namespace {
@@ -969,39 +976,104 @@ std::string lowerExtension(const std::filesystem::path& path) {
 
 } // namespace
 
-void Renderer::refreshTextureArray() {
-    if (!m_device->rayTracingSupported()) {
+void Renderer::registerBuiltins() {
+    // Into an empty registry, so they take the first three slots every time.
+    // A slot with no map of its own reads one of these: white multiplies
+    // nothing away, (0.5, 0.5, 1) is a normal map that tilts nothing, black
+    // gives off no light.
+    const auto solid = [this](const char* name, std::array<u8, 4> rgba, bool srgb) {
+        rhi::Image image(*m_device, rhi::ImageDesc{
+                                        .extent = vk::Extent2D{1, 1},
+                                        .format = srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm,
+                                        .usage = vk::ImageUsageFlagBits::eSampled |
+                                                 vk::ImageUsageFlagBits::eTransferDst,
+                                        .aspect = vk::ImageAspectFlagBits::eColor,
+                                    });
+        m_upload->uploadImage(image, rgba.data(), rgba.size());
+        const TextureHandle handle = m_resources.addTexture(std::move(image));
+        FUMAR_DEBUG("neutral texture '{}' in slot {}", name, handle.index);
+        return handle.index;
+    };
+
+    {
+        const rhi::UploadBatch batch(*m_upload);
+        m_neutral.white = solid("white", {255, 255, 255, 255}, true);
+        m_neutral.flatNormal = solid("flat normal", {128, 128, 255, 255}, false);
+        m_neutral.black = solid("black", {0, 0, 0, 255}, true);
+    }
+    m_warnedTextureOverflow = false;
+
+    // The fallback material: used by anything with no material of its own, so
+    // an untextured or broken asset still draws as something.
+    Material fallback;
+    fallback.name = "default";
+    fallback.baseColorFactor = Vec4{0.30f, 0.31f, 0.33f, 1.0f};
+    m_resources.setFallbackMaterial(m_resources.addMaterial(std::move(fallback)));
+}
+
+void Renderer::markMaterialDirty(MaterialHandle handle) {
+    if (!m_resources.has(handle)) {
         return;
     }
-
-    // The array lives in the per-frame set, and the other frame may still be
-    // reading it. This only runs after something added a texture - loading a
-    // model, creating a material - so the stall lands where the loading already
-    // was, not in the middle of a frame.
-    m_device->waitIdle();
-
-    rhi::DescriptorWriter writer;
-    const u32 count = static_cast<u32>(m_resources.textureCount());
-
     for (PerFrame& frame : m_perFrame) {
-        for (u32 slot = 0; slot < kMaxSceneTextures; ++slot) {
-            // Past the end of the scene, the default texture. Every slot is
-            // written, so an index that is somehow stale samples white instead
-            // of reading a descriptor that was never filled in - which is
-            // undefined behaviour rather than a visible mistake.
-            const vk::ImageView view = slot < count
-                                           ? m_resources.texture(TextureHandle{slot}).view()
-                                           : m_defaultTexture.view();
-
-            writer.image(frame.cameraSet, 3, view, *m_sampler,
-                         vk::ImageLayout::eShaderReadOnlyOptimal, slot);
+        // Past the end of the list means new, and new is dirty already.
+        if (handle.index < frame.materialDirty.size()) {
+            frame.materialDirty[handle.index] = true;
         }
+    }
+}
+
+void Renderer::updateMaterialData(u32 frameIndex) {
+    PerFrame& frame = m_perFrame[frameIndex];
+    rhi::DescriptorWriter writer;
+
+    // --- textures added since this frame's array was last written ------------
+    const usize textureCount = m_resources.textureCount();
+    if (textureCount > kMaxSceneTextures && !m_warnedTextureOverflow) {
+        FUMAR_WARN("{} textures in the scene; the shaders reach {} - the rest read white", textureCount,
+                   kMaxSceneTextures);
+        m_warnedTextureOverflow = true;
+    }
+    const u32 reachable = static_cast<u32>(std::min<usize>(textureCount, kMaxSceneTextures));
+    for (u32 slot = frame.texturesWritten; slot < reachable; ++slot) {
+        writer.image(frame.cameraSet, 3, m_resources.texture(TextureHandle{slot}).view(), *m_sampler,
+                     vk::ImageLayout::eShaderReadOnlyOptimal, slot);
+    }
+    frame.texturesWritten = std::max(frame.texturesWritten, reachable);
+
+    // --- the record buffer, grown if the materials outgrew it ------------------
+    // This frame's buffer, after this frame's fence: nothing is reading it. The
+    // other frame keeps its own until its turn comes round.
+    const usize materialCount = m_resources.materialCount();
+    if (materialCount > frame.materialCapacity) {
+        u32 capacity = frame.materialCapacity;
+        while (capacity < materialCount) {
+            capacity *= 2;
+        }
+        frame.materialCapacity = capacity;
+        frame.materialData = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                        .size = sizeof(MaterialRecord) * capacity,
+                                                        .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                        .hostVisible = true,
+                                                    });
+        writer.buffer(frame.cameraSet, 4, frame.materialData.handle(), frame.materialData.size(),
+                      vk::DescriptorType::eStorageBuffer);
+        // A new buffer holds nothing yet.
+        frame.materialDirty.assign(materialCount, true);
+    }
+
+    // --- dirty and new records -------------------------------------------------------
+    frame.materialDirty.resize(materialCount, true);
+    for (u32 i = 0; i < materialCount; ++i) {
+        if (!frame.materialDirty[i]) {
+            continue;
+        }
+        const MaterialRecord record = toRecord(m_resources.material(MaterialHandle{i}), m_neutral, textureCount);
+        frame.materialData.write(&record, sizeof(record), sizeof(MaterialRecord) * i);
+        frame.materialDirty[i] = false;
     }
 
     writer.submit(m_device->handle());
-    m_textureArrayDirty = false;
-
-    FUMAR_DEBUG("texture array refreshed, {} texture(s) in the scene", count);
 }
 
 void Renderer::updatePostDescriptors() {
@@ -1159,24 +1231,17 @@ MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
     material.name = std::move(name);
     material.baseColorFactor = baseColor;
 
-    vk::ImageView view = m_defaultTexture.view();
+    material.origin = MaterialOrigin{.kind = MaterialOrigin::Kind::Builtin, .file = baseColorTexture.string(), .index = 0};
+
     if (!baseColorTexture.empty()) {
         rhi::Image texture = loadTextureFromFile(*m_device, *m_upload, baseColorTexture);
         if (texture.valid()) {
             material.baseColor = m_resources.addTexture(std::move(texture));
-            m_textureArrayDirty = true;
             material.baseColorPath = baseColorTexture.string();
-            view = m_resources.texture(material.baseColor).view();
         } else {
             FUMAR_WARN("material '{}' falls back to a flat colour", material.name);
         }
     }
-
-    material.descriptorSet = m_descriptorPool->allocate(*m_materialSetLayout);
-
-    rhi::DescriptorWriter writer;
-    writer.image(material.descriptorSet, 0, view, *m_sampler);
-    writer.submit(m_device->handle());
 
     return m_resources.addMaterial(std::move(material));
 }
@@ -1185,15 +1250,7 @@ NodeId Renderer::loadModel(const std::filesystem::path& path, NodeId parent) {
     const GltfLoadContext context{
         .device = *m_device,
         .upload = *m_upload,
-        .descriptorPool = *m_descriptorPool,
-        .materialSetLayout = *m_materialSetLayout,
-        .sampler = *m_sampler,
-        .fallbackTexture = m_defaultTexture.view(),
     };
-
-    // A glTF brings its own textures, however many; the array has to be
-    // rewritten before a ray can reach any of them.
-    m_textureArrayDirty = true;
 
     return loadGltfIntoScene(path, context, m_scene, m_resources, parent);
 }
@@ -1562,21 +1619,12 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
 
         const MaterialHandle handle =
             m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
-        const Material& material = m_resources.has(handle) ? m_resources.material(handle)
-                                                           : Material{};
 
         m_instanceRecords.push_back(InstanceRecord{
             .vertices = mesh.vertexBuffer().deviceAddress(),
             .indices = mesh.indexBuffer().deviceAddress(),
-            .baseColor = material.baseColorFactor,
-            .metallic = material.metallic,
-            .roughness = material.roughness,
-            .texture = m_resources.has(material.baseColor) &&
-                               material.baseColor.index < kMaxSceneTextures
-                           ? material.baseColor.index
-                           : kNoTexture,
-            .uvScale = material.uvScale,
-            .padding = 0.0f,
+            .materialIndex = handle.valid() ? handle.index : 0,
+            .padding = 0,
         });
 
         m_instances.push_back(instance);
@@ -1770,12 +1818,6 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     cmd.setViewport(0, viewport);
     cmd.setScissor(0, scissor);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_skyPipeline->layout(), 0, frameSet, {});
-    if (m_resources.has(m_resources.fallbackMaterial())) {
-        // Set 1 is unused by the sky shader, but the layout declares it, so
-        // something compatible has to be bound before the draw is legal.
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_skyPipeline->layout(), 1,
-                               m_resources.material(m_resources.fallbackMaterial()).descriptorSet, {});
-    }
 
     // Three vertices, no buffer: fullscreen.vert builds them from gl_VertexIndex.
     cmd.draw(3, 1, 0, 0);
@@ -1788,12 +1830,6 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
 
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 0, frameSet, {});
 
-    // Materials are bound per drawable rather than once, because different
-    // nodes use different ones. Consecutive nodes usually share a material
-    // though, so the last one bound is remembered and the rebind skipped -
-    // sorting the scene by material would take this further.
-    vk::DescriptorSet boundMaterial;
-
     forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
         if (!m_resources.has(node.mesh)) {
             return;
@@ -1805,12 +1841,6 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
             return;
         }
 
-        const Material& material = m_resources.material(handle);
-        if (material.descriptorSet != boundMaterial) {
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 1,
-                                   material.descriptorSet, {});
-            boundMaterial = material.descriptorSet;
-        }
 
         // The world transform comes straight from the last scene update, so
         // this loop does no matrix work of its own.
@@ -1819,10 +1849,8 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         // crowded scene does not make objects flash.
         const ObjectPushConstants push{
             .model = worldTransform,
-            .baseColor = material.baseColorFactor,
-            .uvScale = material.uvScale,
-            .metallic = material.metallic,
-            .roughness = material.roughness,
+            .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
+            .materialIndex = handle.index,
             .highlight = id == m_selected ? 1.0f : 0.0f,
         };
         cmd.pushConstants<ObjectPushConstants>(
@@ -1847,10 +1875,8 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
 
         const ObjectPushConstants push{
             .model = m_scene.worldTransform(id),
-            .baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
-            .uvScale = Vec2{1.0f, 1.0f},
-            .metallic = 0.0f,
-            .roughness = 1.0f,
+            .overlayColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
+            .materialIndex = 0,
             .highlight = strength,
         };
         cmd.pushConstants<ObjectPushConstants>(
@@ -1866,11 +1892,6 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->handle());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 0,
                                frameSet, {});
-        if (m_resources.has(m_resources.fallbackMaterial())) {
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 1,
-                                   m_resources.material(m_resources.fallbackMaterial()).descriptorSet,
-                                   {});
-        }
 
         m_scene.traverse([&](NodeId id, u32) {
             const Node& node = m_scene.node(id);
@@ -1907,10 +1928,8 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
             const f32 boost = id == m_selected ? 4.0f : 2.2f;
             const ObjectPushConstants push{
                 .model = markerTransform,
-                .baseColor = Vec4{tint.x * boost, tint.y * boost, tint.z * boost, 1.0f},
-                .uvScale = Vec2{1.0f, 1.0f},
-                .metallic = 0.0f,
-                .roughness = 1.0f,
+                .overlayColor = Vec4{tint.x * boost, tint.y * boost, tint.z * boost, 1.0f},
+                .materialIndex = 0,
                 .highlight = -1.0f,
             };
             cmd.pushConstants<ObjectPushConstants>(
@@ -1924,14 +1943,10 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     if (m_highlighted != kInvalidNode || m_selected != kInvalidNode) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->handle());
 
-        // The outline shader ignores both sets, but the layout still declares
-        // them, so something compatible has to be bound or the draw is invalid.
+        // The outline shader reads nothing from the set, but the layout declares
+        // it, so something compatible has to be bound or the draw is invalid.
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 0,
                                frameSet, {});
-        if (m_resources.has(m_resources.fallbackMaterial())) {
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_outlinePipeline->layout(), 1,
-                                   m_resources.material(m_resources.fallbackMaterial()).descriptorSet, {});
-        }
 
         // Hover first, so that when the same object is both, the brighter
         // selected outline is what ends up on top.
@@ -2516,12 +2531,10 @@ void Renderer::drawFrame() {
     // exactly once even when several nodes share a parent.
     m_scene.updateWorldTransforms();
 
-    // Before anything is recorded, and only when something actually added a
-    // texture - so a load that creates twenty of them costs one refresh rather
-    // than twenty.
-    if (m_textureArrayDirty) {
-        refreshTextureArray();
-    }
+    // After this slot's fence, before anything is recorded: the frame about to
+    // be drawn sees every material edit and every texture added since its
+    // last turn, and nothing the GPU is still reading is touched.
+    updateMaterialData(m_frames->currentFrame());
 
     updateFrameUniforms(m_frames->currentFrame());
 

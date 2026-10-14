@@ -126,10 +126,13 @@ bool supportsRequiredFeatures(vk::PhysicalDevice device) {
     const auto& features10 = chain.get<vk::PhysicalDeviceFeatures2>().features;
 
     // fillModeNonSolid is what allows a pipeline to rasterise triangles as
-    // lines, which is how the editor draws wireframe outlines. It is optional
-    // in the specification but present on every desktop GPU.
+    // lines, which is how the editor draws wireframe outlines. Dynamic
+    // indexing of sampled-image arrays is what lets a draw pick its textures
+    // out of one big array by its material's index. Both are optional in the
+    // specification and present on every desktop GPU.
     return features13.dynamicRendering == VK_TRUE && features13.synchronization2 == VK_TRUE &&
-           features13.shaderDemoteToHelperInvocation == VK_TRUE && features10.fillModeNonSolid == VK_TRUE;
+           features13.shaderDemoteToHelperInvocation == VK_TRUE && features10.fillModeNonSolid == VK_TRUE &&
+           features10.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
 }
 
 /// Ranks a GPU. Higher is better; zero means unusable.
@@ -255,6 +258,7 @@ Device::Device(const Instance& instance, vk::SurfaceKHR surface) {
 
     vk::PhysicalDeviceFeatures features10{};
     features10.fillModeNonSolid = VK_TRUE;
+    features10.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
     features10.samplerAnisotropy = m_maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
     features10.wideLines = m_wideLinesSupported ? VK_TRUE : VK_FALSE;
 

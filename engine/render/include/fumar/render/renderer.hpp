@@ -3,6 +3,7 @@
 #include "fumar/core/types.hpp"
 #include "fumar/render/camera.hpp"
 #include "fumar/render/environment.hpp"
+#include "fumar/render/material_gpu.hpp"
 #include "fumar/render/mesh.hpp"
 #include "fumar/render/resources.hpp"
 #include "fumar/rhi/acceleration_structure.hpp"
@@ -113,6 +114,11 @@ public:
     /// unchanged and no branch is needed in the shader.
     MaterialHandle createMaterial(std::string name, Vec4 baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
                                   const std::filesystem::path& baseColorTexture = {});
+
+    /// Says a material was changed in place - a slider moved, a map swapped -
+    /// so its record is rewritten before the next frame that draws with it.
+    /// Materials that are new need no telling; they are noticed by count.
+    void markMaterialDirty(MaterialHandle handle);
 
     /// Loads a glTF file into the scene, keeping its node hierarchy. Returns
     /// the node it was rooted at, or kInvalidNode on failure.
@@ -267,17 +273,19 @@ private:
     /// images are rebuilt, which invalidates the descriptors written before.
     void updatePostDescriptors();
 
-    /// Rewrites the array of every texture in the scene, which is how a ray
-    /// reaches the one belonging to whatever it hit.
+    /// Brings this frame's copy of the materials and the texture array up to
+    /// date: dirty records rewritten, textures added since last time written
+    /// into their slots, the record buffer grown if the materials outgrew it.
     ///
-    /// Waits for the device first: the array lives in the per-frame set, and a
-    /// frame still in flight may be reading it. Only ever runs after something
-    /// added a texture, which is a load-time event rather than a per-frame one.
-    void refreshTextureArray();
+    /// Only ever this frame's, and only once its fence has been waited on - so
+    /// nothing the GPU is still reading is touched, and no edit or load ever
+    /// waits for the device.
+    void updateMaterialData(u32 frameIndex);
 
-    /// Set when a texture is added, so the array is rebuilt once before the
-    /// next frame rather than once per texture during a load.
-    bool m_textureArrayDirty = true;
+    /// The neutral textures and the fallback material: registered first, on
+    /// start-up and after every reset, so they hold the same slots each time.
+    void registerBuiltins();
+
     void createDefaultTexture();
     void createDescriptors();
     void allocateDescriptorSets();
@@ -361,7 +369,9 @@ private:
     std::unique_ptr<rhi::DescriptorPool> m_descriptorPool;
 
     vk::UniqueDescriptorSetLayout m_cameraSetLayout;
-    vk::UniqueDescriptorSetLayout m_materialSetLayout;
+
+    /// One sampled image: what the bloom passes read their source through.
+    vk::UniqueDescriptorSetLayout m_imageSetLayout;
 
     /// Two images rather than one: the tone mapper reads the sharp scene and
     /// the glow together, and a layout with one binding cannot say that.
@@ -546,6 +556,21 @@ private:
         /// hits instance N looks up entry N here, which is the only way it can
         /// find out what it hit.
         rhi::Buffer instanceData;
+
+        /// This frame's copy of every material, as MaterialRecords. Its own
+        /// copy, so editing a material never writes memory the other frame
+        /// in flight is reading.
+        rhi::Buffer materialData;
+        u32 materialCapacity = 0;
+
+        /// Which records of materialData no longer match their material.
+        /// Shorter than the material list means the ones past its end are
+        /// new, and so dirty too.
+        std::vector<bool> materialDirty;
+
+        /// Texture slots [0, texturesWritten) of this frame's array hold the
+        /// scene's textures; the rest still hold the white neutral one.
+        u32 texturesWritten = 0;
     };
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
 
@@ -564,22 +589,20 @@ private:
     struct InstanceRecord {
         vk::DeviceAddress vertices;
         vk::DeviceAddress indices;
-        Vec4 baseColor;
-        f32 metallic;
-        f32 roughness;
 
-        /// Slot in the texture array, or kNoTexture for a flat colour. An index
-        /// rather than a descriptor: the ray does not know what it will hit, so
-        /// nothing can be bound for it in advance.
-        u32 texture;
-
-        Vec2 uvScale;
-        f32 padding;
+        /// Index into the material records - the same list the rasteriser
+        /// reads, so a ray sees the surface the camera does.
+        u32 materialIndex;
+        u32 padding;
     };
 
-    /// What `InstanceRecord::texture` holds when a material has no texture.
-    static constexpr u32 kNoTexture = 0xFFFFFFFFu;
     std::vector<InstanceRecord> m_instanceRecords;
+
+    /// The slots of the three neutral textures, from registerBuiltins.
+    NeutralTextures m_neutral;
+
+    /// Said once per scene, not every frame.
+    bool m_warnedTextureOverflow = false;
 
     Scene m_scene;
     ResourceRegistry m_resources;

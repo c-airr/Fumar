@@ -927,25 +927,33 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
             // is not a bug to work around: a material is a shared asset, and
             // pretending otherwise would mean silently cloning it on the first
             // edit and leaving the user with two things named the same.
-            ImGui::ColorEdit3("Base colour", &material.baseColorFactor.x,
-                              ImGuiColorEditFlags_Float);
+            // The GPU holds its own copy of every material, rewritten only when
+            // told: any change here says so, or the viewport would go on
+            // showing the material as it was.
+            bool materialChanged = false;
+            materialChanged |= ImGui::ColorEdit3("Base colour", &material.baseColorFactor.x,
+                                                 ImGuiColorEditFlags_Float);
 
-            ImGui::SliderFloat("Metallic", &material.metallic, 0.0f, 1.0f);
+            materialChanged |= ImGui::SliderFloat("Metallic", &material.metallic, 0.0f, 1.0f);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("0 = plastic, stone, wood.  1 = metal.\n"
                                   "Metals have no diffuse colour: they tint what they reflect.");
             }
 
-            ImGui::DragFloat2("Tiling", &material.uvScale.x, 0.05f, 0.01f, 256.0f);
+            materialChanged |= ImGui::DragFloat2("Tiling", &material.uvScale.x, 0.05f, 0.01f, 256.0f);
             recordOnEdit();
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("How many times the texture repeats across the object.");
             }
 
-            ImGui::SliderFloat("Roughness", &material.roughness, 0.0f, 1.0f);
+            materialChanged |= ImGui::SliderFloat("Roughness", &material.roughness, 0.0f, 1.0f);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("0 = mirror, 1 = fully diffuse.\n"
                                   "Decides how wide the highlight is.");
+            }
+
+            if (materialChanged) {
+                renderer.markMaterialDirty(node.material);
             }
         } else {
             ImGui::TextDisabled("Material: default");

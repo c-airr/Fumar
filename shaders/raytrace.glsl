@@ -9,6 +9,7 @@
 #define FUMAR_RAYTRACE_GLSL
 
 #include "frame.glsl"
+#include "material.glsl"
 
 #ifdef FUMAR_RAY_QUERY
 
@@ -37,37 +38,14 @@ layout(buffer_reference, scalar) readonly buffer IndexBuffer {
     uint indices[];
 };
 
-/// What one instance in the scene is, and where its geometry lives.
+/// What one instance in the scene is: where its geometry lives, and which
+/// material record - the same one the rasteriser draws it with - it wears.
 struct InstanceRecord {
     uint64_t vertexAddress;
     uint64_t indexAddress;
-    vec4 baseColor;
-    float metallic;
-    float roughness;
-
-    /// Slot in sceneTextures, or kNoTexture for a flat colour.
-    uint textureIndex;
-
-    vec2 uvScale;
-    float padding;
+    uint materialIndex;
+    uint padding;
 };
-
-/// Matches kNoTexture in engine/render/include/fumar/render/renderer.hpp.
-const uint kNoTexture = 0xFFFFFFFFu;
-
-/// Must match kMaxSceneTextures in engine/render/src/renderer.cpp.
-const int kMaxSceneTextures = 128;
-
-/// Every texture in the scene, reachable without knowing in advance which one
-/// is wanted.
-///
-/// The rasteriser binds ONE material before each draw, because it knows what it
-/// is drawing. A ray does not: it finds out what it hit only after it has hit
-/// it, so the only way to read that surface's texture is for all of them to be
-/// reachable at once. Slots past the end of the scene hold the default texture,
-/// so a stale index samples white rather than reading a descriptor nobody
-/// wrote.
-layout(set = 0, binding = 3) uniform sampler2D sceneTextures[kMaxSceneTextures];
 
 /// Indexed by the custom index carried on each instance. This is the whole
 /// reason a hit means anything: without it a ray reports a distance and a
@@ -379,21 +357,19 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
 
     const vec3 hitPoint = origin + rayDirection * distance;
 
-    vec3 albedo = record.baseColor.rgb;
-    if (record.textureIndex != kNoTexture) {
-        // nonuniformEXT is not decoration. Neighbouring rays hit different
-        // objects, so this index varies within the wave; without it the
-        // hardware is entitled to use one lane's index for all of them, and a
-        // reflection shows the wrong object's texture in patches.
-        //
-        // textureLod with level 0 rather than texture(): there are no
-        // derivatives here to pick a mip level from, because there is no
-        // neighbouring fragment marching along the same surface. The cost is
-        // aliasing in a reflection of something far away - a ray differential
-        // is what would fix it properly.
-        albedo *= textureLod(sceneTextures[nonuniformEXT(record.textureIndex)],
-                             uv * record.uvScale, 0.0).rgb;
-    }
+    // nonuniformEXT is not decoration. Neighbouring rays hit different
+    // objects, so these indices vary within the wave; without it the hardware
+    // is entitled to use one lane's index for all of them, and a reflection
+    // shows the wrong object's texture in patches.
+    //
+    // textureLod with level 0 rather than texture(): there are no derivatives
+    // here to pick a mip level from, because there is no neighbouring fragment
+    // marching along the same surface. The cost is aliasing in a reflection of
+    // something far away - a ray differential is what would fix it properly.
+    const MaterialRecord material = materials[nonuniformEXT(record.materialIndex)];
+    const vec3 albedo = material.baseColorFactor.rgb *
+                        textureLod(sceneTextures[nonuniformEXT(material.baseColorTexture)],
+                                   uv * material.uvScale, 0.0).rgb;
 
     // Lambert rather than the full reflectance model. What is being computed is
     // a reflection of a surface, at whatever size that reflection appears on

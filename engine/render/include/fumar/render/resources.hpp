@@ -78,14 +78,48 @@ inline MeshSource importedMesh(std::string file, u32 primitive) {
     return source;
 }
 
-/// What a surface looks like.
+/// Whether a surface can have holes cut in it by its colour's alpha.
 ///
-/// Only base colour for now. A physically based material would add metallic,
-/// roughness, normal and occlusion maps, all of which slot into the same
-/// descriptor set - the structure here is already the right shape for that.
+/// No blending: real transparency needs sorting and a pass of its own, and is
+/// drawn as opaque until it has one. A cutout - leaves, a chain-link fence -
+/// is a discard in the shader and needs neither.
+enum class AlphaMode : u8 {
+    Opaque,
+    Mask,
+};
+
+/// Where a material came from, which is how a saved scene finds it again.
+struct MaterialOrigin {
+    enum class Kind : u8 {
+        /// Made in code or by importing a single image: saved as that image's
+        /// path (in `file`, possibly empty) and the colour.
+        Builtin,
+        /// Material `index` of the glTF file `file`. Its textures are usually
+        /// inside the file, so the file is what is recorded, not the images.
+        Gltf,
+        /// The .fmat file `file`.
+        Fmat,
+    };
+    Kind kind = Kind::Builtin;
+    std::string file;
+    u32 index = 0;
+};
+
+/// What a surface looks like: physically based, metallic-roughness, the model
+/// glTF uses.
+///
+/// Every map is optional. A slot with no texture reads a neutral one the
+/// renderer keeps for the purpose - white for colour, metal-rough and
+/// occlusion, a flat normal, black emission - so the shaders never branch on
+/// whether a map is there, and the factors below are what such a slot shows.
 struct Material {
     std::string name;
-    TextureHandle baseColor;
+
+    TextureHandle baseColor;          ///< sRGB
+    TextureHandle metallicRoughness;  ///< linear; G = roughness, B = metallic
+    TextureHandle normal;             ///< linear; tangent space, +Y up (OpenGL)
+    TextureHandle occlusion;          ///< linear; R
+    TextureHandle emissive;           ///< sRGB
 
     /// Multiplied with the texture. glTF uses it both for untextured materials
     /// and for tinting textured ones.
@@ -99,12 +133,28 @@ struct Material {
     /// the light regardless of its colour and lets the rest through to be
     /// coloured by what is underneath - which is why plastic has white
     /// highlights whatever colour it is. A metal reflects nearly everything and
-    /// tints it, and has no diffuse colour at all.
+    /// tints it, and has no diffuse colour at all. Multiplies the map's B.
     f32 metallic = 0.0f;
 
     /// 0 = mirror, 1 = fully diffuse. The single control that most changes how
     /// a surface reads, because it decides how wide the highlight is.
+    /// Multiplies the map's G.
     f32 roughness = 0.75f;
+
+    /// How far the normal map tilts the surface: 0 is flat, 1 as authored.
+    f32 normalScale = 1.0f;
+
+    /// How much of the occlusion map is applied: 0 none, 1 all of it.
+    f32 occlusionStrength = 1.0f;
+
+    /// Light the surface gives off, as colour and a multiplier for it - the
+    /// split KHR_materials_emissive_strength makes, so a colour can stay a
+    /// colour and the brightness go past 1.
+    Vec3 emissiveColor{0.0f, 0.0f, 0.0f};
+    f32 emissiveIntensity = 1.0f;
+
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    f32 alphaCutoff = 0.5f;
 
     /// How many times the texture repeats across the mesh's own 0..1 range.
     ///
@@ -116,21 +166,20 @@ struct Material {
     /// different answers.
     Vec2 uvScale{1.0f, 1.0f};
 
-    /// Descriptor set 1, built when the material is registered. Cached here
-    /// because building it per draw would be pure overhead - the contents never
-    /// change after load.
-    vk::DescriptorSet descriptorSet;
+    MaterialOrigin origin;
 
-    /// Texture file this material was built from, for saving. Empty for a flat
-    /// colour, and for glTF materials - those record their origin below instead,
-    /// because a glTF texture is usually embedded in the file rather than
-    /// sitting beside it as an image.
+    // --- where the maps came from, for writing the material back out --------
+    // Absolute paths, empty where there is no file: a glTF's maps are inside
+    // the glTF. Roughness and metalness may be two files, packed into one
+    // texture on load, or one file already packed.
     std::string baseColorPath;
-
-    /// The glTF file and material index this came from, for saving. Empty for
-    /// materials created in the editor.
-    std::string sourceFile;
-    u32 sourceIndex = 0;
+    std::string metallicPath;
+    std::string roughnessPath;
+    std::string packedMetallicRoughnessPath;
+    std::string normalPath;
+    bool normalIsDirectX = false;
+    std::string occlusionPath;
+    std::string emissivePath;
 };
 
 /// Owns the GPU resources that scene nodes name by handle.
