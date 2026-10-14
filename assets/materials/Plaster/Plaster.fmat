@@ -1,0 +1,46 @@
+{
+  "fumarMaterial": 1,
+  "name": "Plaster",
+  "baseColor": {
+    "texture": "PaintedPlaster017_2K-JPG_Color.jpg",
+    "factor": [
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "metallicRoughness": {
+    "packed": null,
+    "roughness": "PaintedPlaster017_2K-JPG_Roughness.jpg",
+    "metallic": null,
+    "roughnessFactor": 1.0,
+    "metallicFactor": 0.0
+  },
+  "normal": {
+    "texture": "PaintedPlaster017_2K-JPG_NormalGL.jpg",
+    "scale": 1.0,
+    "convention": "gl"
+  },
+  "occlusion": {
+    "texture": null,
+    "strength": 1.0
+  },
+  "emissive": {
+    "texture": null,
+    "color": [
+      0,
+      0,
+      0
+    ],
+    "intensity": 1.0
+  },
+  "alpha": {
+    "mode": "opaque",
+    "cutoff": 0.5
+  },
+  "uvScale": [
+    1,
+    1
+  ]
+}

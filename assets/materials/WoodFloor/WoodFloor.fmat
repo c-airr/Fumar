@@ -1,0 +1,46 @@
+{
+  "fumarMaterial": 1,
+  "name": "WoodFloor",
+  "baseColor": {
+    "texture": "WoodFloor043_2K-JPG_Color.jpg",
+    "factor": [
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "metallicRoughness": {
+    "packed": null,
+    "roughness": "WoodFloor043_2K-JPG_Roughness.jpg",
+    "metallic": "WoodFloor043_2K-JPG_Metalness.jpg",
+    "roughnessFactor": 1.0,
+    "metallicFactor": 1.0
+  },
+  "normal": {
+    "texture": "WoodFloor043_2K-JPG_NormalGL.jpg",
+    "scale": 1.0,
+    "convention": "gl"
+  },
+  "occlusion": {
+    "texture": "WoodFloor043_2K-JPG_AmbientOcclusion.jpg",
+    "strength": 1.0
+  },
+  "emissive": {
+    "texture": null,
+    "color": [
+      0,
+      0,
+      0
+    ],
+    "intensity": 1.0
+  },
+  "alpha": {
+    "mode": "opaque",
+    "cutoff": 0.5
+  },
+  "uvScale": [
+    1,
+    1
+  ]
+}
