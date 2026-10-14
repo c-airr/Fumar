@@ -35,6 +35,18 @@ std::filesystem::path stockMaterialsDirectory();
 /// about to be destroyed, and a handle would point at somebody else's material.
 void resetMaterialsPanel(EditorState& state, ImGuiLayer& ui);
 
+/// A widget changed `handle` this frame; `before` is the material as it was
+/// before the widget ran. The first change of a gesture - a drag of a slider, a
+/// visit to a colour picker - records an undo step holding `before`; the rest
+/// of the gesture records nothing, so one drag is one step. Also tells the
+/// renderer, and marks a .fmat material unsaved. Used by every panel that
+/// edits materials, so they all undo the same way.
+void materialEdited(EditorState& state, Renderer& renderer, MaterialHandle handle, const struct Material& before);
+
+/// Ends the gesture once no widget is active any more. Once a frame, after
+/// every panel has run.
+void endMaterialGestureIfIdle(EditorState& state);
+
 /// A new, empty material: `New Material.fmat` in `directory`, or `New
 /// Material 2.fmat` and so on if that is taken. Never overwrites a file.
 MaterialHandle newMaterial(Renderer& renderer, const std::filesystem::path& directory);

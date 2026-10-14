@@ -395,20 +395,7 @@ void drawEditor(EditorState& state, Renderer& renderer, ImGuiLayer& ui, FileDial
     ImGui::EndDisabled();
 
     if (changed) {
-        // One undo step per gesture - a whole drag of a slider, a whole visit to
-        // a colour picker - recorded with the value from before it began.
-        if (!state.materialGestureOpen) {
-            const Material now = material;
-            material = before;
-            state.history.record(scene, state.selected);
-            material = now;
-            state.materialGestureOpen = true;
-        }
-        renderer.markMaterialDirty(handle);
-        state.modifiedMaterials.insert(handle.index);
-    }
-    if (!ImGui::IsAnyItemActive()) {
-        state.materialGestureOpen = false;
+        materialEdited(state, renderer, handle, before);
     }
 
     if (!readOnly && state.modifiedMaterials.contains(handle.index)) {
@@ -466,6 +453,33 @@ std::filesystem::path stockMaterialsDirectory() {
     }
 #endif
     return executableDirectory() / "assets" / "materials";
+}
+
+void materialEdited(EditorState& state, Renderer& renderer, MaterialHandle handle, const Material& before) {
+    ResourceRegistry& resources = renderer.resources();
+    if (!resources.has(handle)) {
+        return;
+    }
+    Material& material = resources.material(handle);
+    if (!state.materialGestureOpen) {
+        // The history copies every material as it stands, so the one being
+        // edited is put back to how it was for the moment the step is taken.
+        const Material now = material;
+        material = before;
+        state.history.record(renderer.scene(), state.selected);
+        material = now;
+        state.materialGestureOpen = true;
+    }
+    renderer.markMaterialDirty(handle);
+    if (material.origin.kind == MaterialOrigin::Kind::Fmat) {
+        state.modifiedMaterials.insert(handle.index);
+    }
+}
+
+void endMaterialGestureIfIdle(EditorState& state) {
+    if (!ImGui::IsAnyItemActive()) {
+        state.materialGestureOpen = false;
+    }
 }
 
 void resetMaterialsPanel(EditorState& state, ImGuiLayer& ui) {

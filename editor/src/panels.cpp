@@ -1,5 +1,7 @@
 #include "panels.hpp"
 
+#include "materials_panel.hpp"
+
 #include "fumar/core/log.hpp"
 #include "fumar/core/math.hpp"
 #include "fumar/platform/ide.hpp"
@@ -927,9 +929,10 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
             // is not a bug to work around: a material is a shared asset, and
             // pretending otherwise would mean silently cloning it on the first
             // edit and leaving the user with two things named the same.
-            // The GPU holds its own copy of every material, rewritten only when
-            // told: any change here says so, or the viewport would go on
-            // showing the material as it was.
+            // Through materialEdited, as in the Materials panel: one undo step
+            // per drag, holding the value from before it, and the GPU copy -
+            // which only follows when told - brought up to date.
+            const Material before = material;
             bool materialChanged = false;
             materialChanged |= ImGui::ColorEdit3("Base colour", &material.baseColorFactor.x,
                                                  ImGuiColorEditFlags_Float);
@@ -941,7 +944,6 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
             }
 
             materialChanged |= ImGui::DragFloat2("Tiling", &material.uvScale.x, 0.05f, 0.01f, 256.0f);
-            recordOnEdit();
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("How many times the texture repeats across the object.");
             }
@@ -953,10 +955,7 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
             }
 
             if (materialChanged) {
-                renderer.markMaterialDirty(node.material);
-                if (material.origin.kind == MaterialOrigin::Kind::Fmat) {
-                    state.modifiedMaterials.insert(node.material.index);
-                }
+                materialEdited(state, renderer, node.material, before);
             }
         } else {
             ImGui::TextDisabled("Material: default");

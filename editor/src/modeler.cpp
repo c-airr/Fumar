@@ -1435,10 +1435,33 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
             report("redo puts the edit back", m != nullptr && m->roughness == 0.9f);
         }
 
+        // A drag of a material slider - in the Materials panel or in Details -
+        // is one undo step, back to the value from before the drag.
+        if (frame == 31) {
+            const NodeId blockA = nodeNamed("Block A");
+            if (Material* m = blockMaterial(); m != nullptr && blockA != kInvalidNode) {
+                const MaterialHandle handle = scene.node(blockA).material;
+                const usize depth = state.history.depth();
+                Material before = *m;
+                m->roughness = 0.5f;
+                materialEdited(state, renderer, handle, before);
+                before = *m;
+                m->roughness = 0.4f;
+                materialEdited(state, renderer, handle, before);
+                report("a two-frame drag is one undo step", state.history.depth() == depth + 1);
+                endMaterialGestureIfIdle(state);
+            }
+            state.undoRequested = true;
+        }
+        if (frame == 33) {
+            const Material* m = blockMaterial();
+            report("undoing the drag goes back to before it", m != nullptr && m->roughness == 0.9f);
+        }
+
         // The panel's two ways of making a material to edit: a copy of a
         // read-only one, and a new one. Driven through the same functions its
         // buttons call.
-        if (frame == 32) {
+        if (frame == 34) {
             const std::filesystem::path made = root / "made";
             MaterialHandle helmet;
             scene.traverse([&](NodeId id, u32) {
@@ -1734,6 +1757,24 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
             const usize sizes = renderer.resources().mesh(state.edit->originalMesh).polygonSizes().size();
             FUMAR_INFO("modeler smoke: the file carried {} polygon sizes for {} faces", sizes,
                        state.edit->geometry.faceCount());
+        }
+        {
+            // The starter scene's ground keeps its tiling, and its maps, through
+            // a save and a load - not only in the session that made it.
+            NodeId ground = kInvalidNode;
+            scene.traverse([&](NodeId id, u32) {
+                if (scene.node(id).name == "Ground") {
+                    ground = id;
+                }
+            });
+            const ResourceRegistry& resources = renderer.resources();
+            const bool tiled = ground != kInvalidNode && resources.has(scene.node(ground).material) &&
+                               resources.material(scene.node(ground).material).uvScale == Vec2{14.0f, 14.0f};
+            std::error_code ec;
+            const bool stock = std::filesystem::exists(stockMaterialsDirectory() / "Grass" / "Grass.fmat", ec);
+            const bool mapped = !stock || (tiled && resources.has(resources.material(scene.node(ground).material).normal));
+            FUMAR_INFO("modeler smoke: the ground came back tiled 14x14{}: {}", stock ? " with its normal map" : "",
+                       tiled && mapped ? "ok" : "FAILED");
         }
         return false;
     case 90: {

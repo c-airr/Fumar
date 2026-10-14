@@ -7,6 +7,7 @@
 #include "fumar/platform/file_dialog.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/platform/window.hpp"
+#include "fumar/render/material_file.hpp"
 #include "fumar/render/renderer.hpp"
 #include "fumar/render/scene_io.hpp"
 #include "fumar/scene/scene.hpp"
@@ -52,23 +53,33 @@ void createStarterScene(Renderer& renderer) {
     // tools/get-materials), and the plain colour textures that ship on main
     // when it has not - so a fresh clone opens the same courtyard, only
     // flatter.
+    //
+    // A stock material is taken as a DESCRIPTION, made into the scene's own
+    // material with the scene's tiling - not loaded as the shared .fmat. The
+    // tiling belongs to these walls and this ground, not to every scene that
+    // uses grass, and a scene keeps its own materials when it is saved.
     const std::filesystem::path stock = stockMaterialsDirectory();
-    const auto pick = [&](const char* stockName, const char* name, Vec4 colour, const std::filesystem::path& texture) {
+    const auto pick = [&](const char* stockName, const char* name, Vec4 colour, const std::filesystem::path& texture,
+                          Vec2 tiling) {
         const std::filesystem::path fmat = stock / stockName / (std::string(stockName) + ".fmat");
         std::error_code ec;
         if (std::filesystem::exists(fmat, ec)) {
-            if (const MaterialHandle loaded = renderer.loadMaterialFile(fmat); loaded.valid()) {
-                return loaded;
+            if (std::optional<MaterialDesc> desc = readMaterialFile(fmat)) {
+                desc->uvScale = tiling;
+                return renderer.createMaterial(
+                    *desc, MaterialOrigin{.kind = MaterialOrigin::Kind::Builtin, .file = {}, .index = 0});
             }
         }
-        return renderer.createMaterial(name, colour, texture);
+        const MaterialHandle plain = renderer.createMaterial(name, colour, texture);
+        renderer.resources().material(plain).uvScale = tiling;
+        return plain;
     };
     const MaterialHandle grassMaterial =
-        pick("Grass", "Grass", Vec4{0.85f, 0.9f, 0.85f, 1.0f}, textures / "grass.jpg");
+        pick("Grass", "Grass", Vec4{0.85f, 0.9f, 0.85f, 1.0f}, textures / "grass.jpg", Vec2{14.0f, 14.0f});
     const MaterialHandle brickMaterial =
-        pick("Bricks", "Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, textures / "brick.jpg");
+        pick("Bricks", "Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, textures / "brick.jpg", Vec2{6.0f, 2.0f});
     const MaterialHandle woodMaterial =
-        pick("WoodFloor", "Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, textures / "wood.jpg");
+        pick("WoodFloor", "Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, textures / "wood.jpg", Vec2{3.0f, 3.0f});
     const MaterialHandle stoneMaterial =
         renderer.createMaterial("Stone", Vec4{0.34f, 0.335f, 0.32f, 1.0f});
     const MaterialHandle metalMaterial =
@@ -82,16 +93,15 @@ void createStarterScene(Renderer& renderer) {
     //
     // A stock material's roughness comes from its map, which the factor
     // scales - so only the plain fallbacks get a roughness set here.
-    const auto tune = [&](MaterialHandle handle, Vec2 tiling, f32 roughness) {
+    const auto roughen = [&](MaterialHandle handle, f32 roughness) {
         Material& material = resources.material(handle);
-        material.uvScale = tiling;
-        if (material.origin.kind != MaterialOrigin::Kind::Fmat) {
+        if (material.roughnessPath.empty() && material.packedMetallicRoughnessPath.empty()) {
             material.roughness = roughness;
         }
     };
-    tune(grassMaterial, Vec2{14.0f, 14.0f}, 0.95f);
-    tune(brickMaterial, Vec2{6.0f, 2.0f}, 0.85f);
-    tune(woodMaterial, Vec2{3.0f, 3.0f}, 0.55f);
+    roughen(grassMaterial, 0.95f);
+    roughen(brickMaterial, 0.85f);
+    roughen(woodMaterial, 0.55f);
 
     resources.material(stoneMaterial).roughness = 0.75f;
 
@@ -751,6 +761,10 @@ int main() {
             --state.focusContentFrames;
             ImGui::SetWindowFocus("Content");
         }
+
+        // After every panel that edits materials: a drag that has ended closes
+        // its undo step, so the next one opens another.
+        endMaterialGestureIfIdle(state);
 
         if (state.showImGuiDemo) {
             // Reachable from the Window menu: the fastest reference for what a

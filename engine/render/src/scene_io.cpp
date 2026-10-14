@@ -264,6 +264,30 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         entry["roughness"] = material.roughness;
         entry["uv_scale"] = Json::array({material.uvScale.x, material.uvScale.y});
 
+        // A built-in material is described in full: it belongs to nothing
+        // else, so the scene is the only place it can be kept - every map and
+        // factor, not only the colour texture it once was limited to.
+        if (material.origin.kind == MaterialOrigin::Kind::Builtin) {
+            const auto mapPath = [](const std::string& utf8) -> Json {
+                return utf8.empty() ? Json(nullptr) : Json(toPortablePathUtf8(utf8));
+            };
+            entry["maps"] = Json{
+                {"packed_metal_rough", mapPath(material.packedMetallicRoughnessPath)},
+                {"roughness", mapPath(material.roughnessPath)},
+                {"metallic", mapPath(material.metallicPath)},
+                {"normal", mapPath(material.normalPath)},
+                {"normal_dx", material.normalIsDirectX},
+                {"normal_scale", material.normalScale},
+                {"occlusion", mapPath(material.occlusionPath)},
+                {"occlusion_strength", material.occlusionStrength},
+                {"emissive", mapPath(material.emissivePath)},
+                {"emissive_color", toJson(material.emissiveColor)},
+                {"emissive_intensity", material.emissiveIntensity},
+                {"alpha_mask", material.alphaMode == AlphaMode::Mask},
+                {"alpha_cutoff", material.alphaCutoff},
+            };
+        }
+
         if (material.origin.kind == MaterialOrigin::Kind::Gltf) {
             entry["file"] = toPortablePath(material.origin.file);
             entry["index"] = material.origin.index;
@@ -523,6 +547,42 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
                 }
             }
             materials.push_back(found);
+            continue;
+        }
+
+        if (entry.contains("maps") && entry["maps"].is_object()) {
+            const Json& maps = entry["maps"];
+            const auto mapPath = [&maps](const char* key) -> std::filesystem::path {
+                return maps.contains(key) && maps[key].is_string() ? fromPortablePathUtf8(maps[key].get<std::string>())
+                                                                   : std::filesystem::path{};
+            };
+            MaterialDesc desc;
+            desc.name = entry.value("name", std::string{"material"});
+            desc.baseColor = entry.contains("texture") && entry["texture"].is_string()
+                                 ? fromPortablePathUtf8(entry["texture"].get<std::string>())
+                                 : std::filesystem::path{};
+            desc.baseColorFactor = vec4From(entry.value("color", Json::array()), Vec4{1.0f, 1.0f, 1.0f, 1.0f});
+            desc.metallicFactor = entry.value("metallic", desc.metallicFactor);
+            desc.roughnessFactor = entry.value("roughness", desc.roughnessFactor);
+            const Json uv = entry.value("uv_scale", Json::array());
+            if (uv.is_array() && uv.size() == 2 && uv[0].is_number() && uv[1].is_number()) {
+                desc.uvScale = Vec2{uv[0].get<f32>(), uv[1].get<f32>()};
+            }
+            desc.packedMetallicRoughness = mapPath("packed_metal_rough");
+            desc.roughness = mapPath("roughness");
+            desc.metallic = mapPath("metallic");
+            desc.normal = mapPath("normal");
+            desc.normalIsDirectX = maps.value("normal_dx", false);
+            desc.normalScale = maps.value("normal_scale", desc.normalScale);
+            desc.occlusion = mapPath("occlusion");
+            desc.occlusionStrength = maps.value("occlusion_strength", desc.occlusionStrength);
+            desc.emissive = mapPath("emissive");
+            desc.emissiveColor = vec3From(maps.value("emissive_color", Json::array()), desc.emissiveColor);
+            desc.emissiveIntensity = maps.value("emissive_intensity", desc.emissiveIntensity);
+            desc.alphaMode = maps.value("alpha_mask", false) ? AlphaMode::Mask : AlphaMode::Opaque;
+            desc.alphaCutoff = maps.value("alpha_cutoff", desc.alphaCutoff);
+            materials.push_back(renderer.createMaterial(
+                desc, MaterialOrigin{.kind = MaterialOrigin::Kind::Builtin, .file = pathToUtf8(desc.baseColor), .index = 0}));
             continue;
         }
 
