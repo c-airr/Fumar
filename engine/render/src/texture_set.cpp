@@ -162,11 +162,18 @@ std::optional<Pixels> loadPixels(const std::filesystem::path& file) {
     if (bytes.empty()) {
         return std::nullopt;
     }
+    return decodePixels(bytes.data(), bytes.size());
+}
+
+std::optional<Pixels> decodePixels(const void* bytes, usize size) {
+    if (bytes == nullptr || size == 0) {
+        return std::nullopt;
+    }
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc* data = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &width, &height, &channels,
-                                          STBI_rgb_alpha);
+    stbi_uc* data = stbi_load_from_memory(static_cast<const stbi_uc*>(bytes), static_cast<int>(size), &width, &height,
+                                          &channels, STBI_rgb_alpha);
     if (data == nullptr) {
         return std::nullopt;
     }

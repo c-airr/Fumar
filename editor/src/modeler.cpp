@@ -1,5 +1,6 @@
 #include "modeler.hpp"
 
+#include "materials_panel.hpp"
 #include "panels.hpp"
 
 #include "fumar/core/log.hpp"
@@ -1273,54 +1274,6 @@ void drawModelingToolsPanel(EditorState& state, Renderer& renderer) {
     ImGui::End();
 }
 
-void drawMaterialsPanel(EditorState& state, Renderer& renderer) {
-    dockBeside("Content");
-    if (!ImGui::Begin("Materials")) {
-        ImGui::End();
-        return;
-    }
-
-    Scene& scene = renderer.scene();
-    ResourceRegistry& resources = renderer.resources();
-    const bool hasTarget = state.selected != kInvalidNode && scene.isAlive(state.selected) &&
-                           resources.has(scene.node(state.selected).mesh);
-    const MaterialHandle current = hasTarget ? scene.node(state.selected).material : MaterialHandle{};
-
-    if (!hasTarget) {
-        ImGui::TextDisabled("Select an object to give it a material.");
-    }
-
-    // A grid of swatches with names, wrapping to the panel width. Clicking one
-    // puts it on the selected object.
-    const f32 cell = 120.0f;
-    const i32 columns = std::max(1, static_cast<i32>(ImGui::GetContentRegionAvail().x / cell));
-    if (ImGui::BeginTable("##materials", columns)) {
-        for (u32 i = 0; i < static_cast<u32>(resources.materialCount()); ++i) {
-            const MaterialHandle handle{i};
-            const Material& material = resources.material(handle);
-            ImGui::TableNextColumn();
-            ImGui::PushID(static_cast<int>(i));
-
-            const ImVec4 swatch(material.baseColorFactor.x, material.baseColorFactor.y, material.baseColorFactor.z, 1.0f);
-            ImGui::BeginDisabled(!hasTarget);
-            if (ImGui::ColorButton("##swatch", swatch, ImGuiColorEditFlags_NoTooltip, ImVec2(cell - 16.0f, 40.0f))) {
-                state.history.record(scene, state.selected);
-                scene.node(state.selected).material = handle;
-            }
-            ImGui::EndDisabled();
-            if (current == handle) {
-                ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), accentBright(), 3.0f,
-                                                    0, 2.0f);
-            }
-            ImGui::TextUnformatted(material.name.empty() ? "(unnamed)" : material.name.c_str());
-            ImGui::PopID();
-        }
-        ImGui::EndTable();
-    }
-
-    ImGui::End();
-}
-
 // --- smoke test ----------------------------------------------------------------
 
 bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const std::string& variant) {
@@ -1463,6 +1416,38 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         if (frame == 30) {
             const Material* m = blockMaterial();
             report("redo puts the edit back", m != nullptr && m->roughness == 0.9f);
+        }
+
+        // The panel's two ways of making a material to edit: a copy of a
+        // read-only one, and a new one. Driven through the same functions its
+        // buttons call.
+        if (frame == 32) {
+            const std::filesystem::path made = root / "made";
+            MaterialHandle helmet;
+            scene.traverse([&](NodeId id, u32) {
+                if (scene.node(id).name.starts_with("node_damagedHelmet")) {
+                    helmet = scene.node(id).material;
+                }
+            });
+            const MaterialHandle copy = duplicateAsFmat(renderer, helmet, made);
+            bool copied = copy.valid() && copy != helmet;
+            if (copied) {
+                const Material& c = renderer.resources().material(copy);
+                std::error_code ec;
+                const auto exists = [&](const std::string& p) { return !p.empty() && std::filesystem::exists(p, ec); };
+                copied = c.origin.kind == MaterialOrigin::Kind::Fmat && exists(c.origin.file) &&
+                         exists(c.baseColorPath) && exists(c.packedMetallicRoughnessPath) && exists(c.normalPath) &&
+                         exists(c.occlusionPath) && exists(c.emissivePath) && c.normal.valid() && c.emissive.valid();
+            }
+            report("a glTF material duplicated as a .fmat, its maps written out", copied);
+
+            const MaterialHandle first = newMaterial(renderer, made);
+            const MaterialHandle second = newMaterial(renderer, made);
+            std::error_code ec;
+            report("New Material twice: two files, two materials",
+                   first.valid() && second.valid() && first != second &&
+                       std::filesystem::exists(made / "New Material.fmat", ec) &&
+                       std::filesystem::exists(made / "New Material 2.fmat", ec));
             return false;
         }
         return true;
@@ -1704,13 +1689,15 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         if (variant != "save") {
             break;
         }
-        exitEditSession(state, renderer);
-        state.selected = kInvalidNode;
-        state.history.clear();
-        FUMAR_INFO("modeler smoke: reloaded: {}", loadScene(renderer, state.smokeScene) ? "ok" : "FAILED");
+        // Through the same deferred path as File > Open: a scene replaced in
+        // the middle of a frame would leave the panels' draw data - the
+        // material thumbnails among it - pointing at what was just destroyed.
+        state.openPath = state.smokeScene;
+        state.openRequested = true;
         break;
     case 86:
         if (variant == "save") {
+            FUMAR_INFO("modeler smoke: reloaded: {}", state.scenePath == state.smokeScene ? "ok" : "FAILED");
             state.selected = findNode("Block A");
         }
         break;

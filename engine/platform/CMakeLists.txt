@@ -7,6 +7,7 @@
 # ---------------------------------------------------------------------------
 
 add_library(fumar_platform STATIC
+    src/file_dialog.cpp
     src/paths.cpp
     src/ide.cpp
     src/window.cpp)

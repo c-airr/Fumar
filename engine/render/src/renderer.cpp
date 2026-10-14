@@ -1290,6 +1290,18 @@ TextureHandle Renderer::loadMaterialTexture(const std::string& material, const c
 }
 
 MaterialHandle Renderer::createMaterial(const MaterialDesc& desc, MaterialOrigin origin) {
+    return m_resources.addMaterial(buildMaterial(desc, std::move(origin)));
+}
+
+void Renderer::rebuildMaterial(MaterialHandle handle, const MaterialDesc& desc) {
+    if (!m_resources.has(handle)) {
+        return;
+    }
+    m_resources.material(handle) = buildMaterial(desc, m_resources.material(handle).origin);
+    markMaterialDirty(handle);
+}
+
+Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin) {
     Material material;
     material.name = desc.name;
     material.origin = std::move(origin);
@@ -1381,7 +1393,7 @@ MaterialHandle Renderer::createMaterial(const MaterialDesc& desc, MaterialOrigin
         material.normal = loadMaterialTexture(material.name, "normal map", desc.normal, false);
     }
 
-    return m_resources.addMaterial(std::move(material));
+    return material;
 }
 
 MaterialHandle Renderer::loadMaterialFile(const std::filesystem::path& file) {

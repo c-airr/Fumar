@@ -124,6 +124,12 @@ public:
     /// neutral texture; the path is kept, so saving does not lose it.
     MaterialHandle createMaterial(const MaterialDesc& desc, MaterialOrigin origin);
 
+    /// Rebuilds an existing material from a description, in place: same handle,
+    /// same origin, so every object using it follows. How a map is swapped in
+    /// the editor. The textures it used before stay in the registry - an undo
+    /// step may still point at them.
+    void rebuildMaterial(MaterialHandle handle, const MaterialDesc& desc);
+
     /// Loads a .fmat, or returns the handle it was already loaded as - one file
     /// is one material however many times it is asked for, by however many
     /// spellings of its path. Invalid on failure, with the reason logged.
@@ -631,6 +637,9 @@ private:
     /// Every .fmat loaded, by its canonical path, so one file is one material.
     /// Cleared with the registry it indexes.
     std::unordered_map<std::string, MaterialHandle> m_materialFiles;
+
+    /// The material a description makes, textures loaded, not yet registered.
+    Material buildMaterial(const MaterialDesc& desc, MaterialOrigin origin);
 
     /// A texture for one map of a material, or invalid with a warning.
     TextureHandle loadMaterialTexture(const std::string& material, const char* slot,

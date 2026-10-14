@@ -50,6 +50,9 @@ struct Pixels {
 /// Nothing on failure.
 std::optional<Pixels> loadPixels(const std::filesystem::path& file);
 
+/// The same, from an encoded image already in memory - one embedded in a .glb.
+std::optional<Pixels> decodePixels(const void* bytes, usize size);
+
 struct ImageSize {
     u32 width = 0;
     u32 height = 0;

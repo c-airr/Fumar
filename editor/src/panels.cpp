@@ -954,6 +954,9 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
 
             if (materialChanged) {
                 renderer.markMaterialDirty(node.material);
+                if (material.origin.kind == MaterialOrigin::Kind::Fmat) {
+                    state.modifiedMaterials.insert(node.material.index);
+                }
             }
         } else {
             ImGui::TextDisabled("Material: default");

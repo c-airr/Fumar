@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <set>
+#include <unordered_map>
 #include <vector>
 
 namespace fumar {
@@ -139,6 +141,36 @@ struct EditorState {
 
     /// Where FUMAR_MODELER_SMOKE=save writes its scene. Unused otherwise.
     std::string smokeScene;
+
+    // --- materials panel ------------------------------------------------------
+
+    /// The material shown in the editor half of the panel.
+    MaterialHandle editedMaterial;
+
+    /// What the selection was last frame, to notice it changing: a new
+    /// selection brings its material into the editor.
+    NodeId materialPanelSelection = kInvalidNode;
+
+    std::string materialFilter;
+
+    /// .fmat files found in the stock and user folders.
+    std::vector<std::filesystem::path> materialFiles;
+    bool materialFilesScanned = false;
+
+    /// Textures as ImGui can draw them, by texture index. Released by
+    /// resetMaterialsPanel before the registry they point into is replaced.
+    std::unordered_map<u32, ImTextureID> materialThumbnails;
+
+    /// The map slot and material the open file dialog is choosing for.
+    int pendingMapSlot = -1;
+    MaterialHandle pendingMapMaterial;
+
+    /// Material indices edited since they were last written to their .fmat.
+    std::set<u32> modifiedMaterials;
+
+    /// A drag or a visit to a colour picker is under way: one undo step for
+    /// all of it, not one per frame.
+    bool materialGestureOpen = false;
 
     /// True while the main loop is idling - nothing has happened for a while,
     /// or the window is in the background - and redraws only a few times a

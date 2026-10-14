@@ -1,8 +1,10 @@
+#include "materials_panel.hpp"
 #include "panels.hpp"
 
 #include "fumar/core/log.hpp"
 #include "fumar/core/math.hpp"
 #include "fumar/core/types.hpp"
+#include "fumar/platform/file_dialog.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/platform/window.hpp"
 #include "fumar/render/renderer.hpp"
@@ -487,6 +489,9 @@ int main() {
 
     EditorState state;
 
+    // The system's open-file dialog, for the Materials panel's map slots.
+    FileDialog fileDialog;
+
     // Material edits are steps of the scene's history too; undoing one has to
     // reach the GPU copy as well as the registry.
     state.history.trackMaterials(&renderer.resources(),
@@ -712,7 +717,7 @@ int main() {
         } else {
             // Where the content browser and the statistics were, the
             // materials; where the scripts were, the modelling tools.
-            drawMaterialsPanel(state, renderer);
+            drawMaterialsPanel(state, renderer, ui, fileDialog, window);
             drawModelingToolsPanel(state, renderer);
         }
 
@@ -817,7 +822,20 @@ int main() {
             if (state.scenePath.empty()) {
                 state.scenePath = (sceneDirectory / "untitled.fumar").string();
             }
-            if (saveScene(renderer, state.scenePath)) {
+            // Edited .fmat materials first: they are what the scene points at.
+            // "Saved" is only shown if everything was - a material that could
+            // not be written stays listed as unsaved, and says why in the log.
+            bool materialsSaved = true;
+            for (auto it = state.modifiedMaterials.begin(); it != state.modifiedMaterials.end();) {
+                if (renderer.saveMaterialFile(MaterialHandle{*it})) {
+                    it = state.modifiedMaterials.erase(it);
+                } else {
+                    FUMAR_ERROR("material #{} was not saved", *it);
+                    materialsSaved = false;
+                    ++it;
+                }
+            }
+            if (saveScene(renderer, state.scenePath) && materialsSaved) {
                 state.saveFlashSeconds = 1.5f;
             }
         }
@@ -825,6 +843,10 @@ int main() {
         if (state.openRequested) {
             state.openRequested = false;
             exitEditSession(state, renderer);
+            // The thumbnails point at textures the load is about to destroy,
+            // and the GPU may still be drawing them.
+            renderer.waitIdle();
+            resetMaterialsPanel(state, ui);
             if (loadScene(renderer, state.openPath)) {
                 state.scenePath = state.openPath;
                 state.selected = kInvalidNode;
@@ -845,6 +867,8 @@ int main() {
         if (state.newSceneRequested) {
             state.newSceneRequested = false;
             exitEditSession(state, renderer);
+            renderer.waitIdle();
+            resetMaterialsPanel(state, ui);
             renderer.resetScene();
             createStarterScene(renderer);
             state.scenePath.clear();

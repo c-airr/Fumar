@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fumar/core/types.hpp"
+#include "fumar/render/material_file.hpp"
 #include "fumar/render/resources.hpp"
 #include "fumar/rhi/vk_common.hpp"
 #include "fumar/scene/scene.hpp"
@@ -33,6 +34,16 @@ struct GltfLoadContext {
 ///
 /// Returns the node the file was rooted at, or kInvalidNode on failure - a
 /// failed load is a normal outcome, not a crash.
+/// Writes the maps of material `index` of a glTF file out as PNG files in
+/// `folder` - `<name>_Color.png` and so on - and points `desc` at them.
+///
+/// For making an editable copy of a material that lives inside a file: the
+/// textures of a .glb are not files anyone can point a .fmat at until they
+/// are. Factors in `desc` are left as they were. False if the file cannot be
+/// read or a map cannot be written.
+bool exportGltfMaterial(const std::filesystem::path& gltf, u32 index, const std::filesystem::path& folder,
+                        MaterialDesc& desc);
+
 NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContext& context, Scene& scene,
                          ResourceRegistry& resources, NodeId parent = kRootNode);
 

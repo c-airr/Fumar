@@ -223,10 +223,6 @@ bool drawEditViewport(EditorState& state, Renderer& renderer, Vec2 origin, Vec2 
 /// The modelling tools, where the script list is in the Level workspace.
 void drawModelingToolsPanel(EditorState& state, Renderer& renderer);
 
-/// The materials in the project, where the content browser is in the Level
-/// workspace. Click one to put it on the selected object.
-void drawMaterialsPanel(EditorState& state, Renderer& renderer);
-
 /// Drives the Modeler without anyone at the keyboard, one step per call.
 ///
 /// Selects Block A of the starter scene in the Modeler, checks it opened where

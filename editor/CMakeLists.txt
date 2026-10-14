@@ -9,6 +9,7 @@
 add_executable(fumar_editor
     src/history.cpp
     src/main.cpp
+    src/materials_panel.cpp
     src/modeler.cpp
     src/panels.cpp)
 

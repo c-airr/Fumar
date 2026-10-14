@@ -4,6 +4,7 @@
 #include "fumar/core/log.hpp"
 #include "fumar/render/tangents.hpp"
 #include "fumar/render/texture.hpp"
+#include "fumar/render/texture_set.hpp"
 #include "fumar/rhi/device.hpp"
 #include "fumar/rhi/upload_context.hpp"
 
@@ -261,6 +262,68 @@ Mesh buildMesh(const cgltf_primitive& primitive, rhi::Device& device, rhi::Uploa
 }
 
 } // namespace
+
+bool exportGltfMaterial(const std::filesystem::path& gltf, u32 index, const std::filesystem::path& folder,
+                        MaterialDesc& desc) {
+    const std::string pathString = gltf.string();
+    cgltf_options options{};
+    cgltf_data* raw = nullptr;
+    if (cgltf_parse_file(&options, pathString.c_str(), &raw) != cgltf_result_success) {
+        FUMAR_ERROR("could not parse glTF '{}'", pathString);
+        return false;
+    }
+    GltfData data(raw);
+    if (cgltf_load_buffers(&options, data.get(), pathString.c_str()) != cgltf_result_success ||
+        index >= data->materials_count) {
+        FUMAR_ERROR("could not read material {} of '{}'", index, pathString);
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+
+    const cgltf_material& source = data->materials[index];
+    const std::string stem = source.name != nullptr && source.name[0] != '\0' ? source.name : gltf.stem().string();
+    const std::filesystem::path base = gltf.parent_path();
+
+    // Decoded and written again as PNG rather than copied as they are: an
+    // embedded image has no file to copy, and one format for every map keeps
+    // the .fmat simple.
+    bool ok = true;
+    const auto write = [&](const cgltf_texture_view& view, const char* map) -> std::filesystem::path {
+        if (view.texture == nullptr || view.texture->image == nullptr) {
+            return {};
+        }
+        const cgltf_image& image = *view.texture->image;
+        std::optional<Pixels> pixels;
+        if (image.buffer_view != nullptr && image.buffer_view->buffer->data != nullptr) {
+            const auto* bytes = static_cast<const u8*>(image.buffer_view->buffer->data) + image.buffer_view->offset;
+            pixels = decodePixels(bytes, image.buffer_view->size);
+        } else if (image.uri != nullptr) {
+            std::string uri = image.uri;
+            cgltf_decode_uri(uri.data());
+            uri.resize(std::strlen(uri.c_str()));
+            pixels = loadPixels(base / uri);
+        }
+        const std::filesystem::path file = folder / (stem + "_" + map + ".png");
+        if (!pixels || !writePng(file, *pixels)) {
+            FUMAR_WARN("could not write the {} map of '{}' to '{}'", map, stem, file.string());
+            ok = false;
+            return {};
+        }
+        return file;
+    };
+
+    if (source.has_pbr_metallic_roughness) {
+        desc.baseColor = write(source.pbr_metallic_roughness.base_color_texture, "Color");
+        desc.packedMetallicRoughness = write(source.pbr_metallic_roughness.metallic_roughness_texture, "MetalRough");
+    }
+    desc.normal = write(source.normal_texture, "NormalGL");
+    desc.normalIsDirectX = false;
+    desc.occlusion = write(source.occlusion_texture, "AmbientOcclusion");
+    desc.emissive = write(source.emissive_texture, "Emission");
+    return ok;
+}
 
 NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContext& context, Scene& scene,
                          ResourceRegistry& resources, NodeId parent) {
