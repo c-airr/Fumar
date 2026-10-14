@@ -7,7 +7,7 @@
 // agree, so it lives in one file here to keep the number of places that can
 // drift as low as possible.
 //
-// The guaranteed minimum size is 128 bytes; this block is 88. What a surface
+// The guaranteed minimum size is 128 bytes; this block is 96. What a surface
 // looks like is not here: it is a record in the material buffer (see
 // material.glsl), and a draw names it by index.
 
@@ -27,6 +27,12 @@ layout(push_constant) uniform PushConstants {
     /// 0 = normal, 0.5 = under the cursor, 1 = selected, < 0 = draw the
     /// overlay colour instead.
     float highlight;     // 4,        offset 84
+
+    /// Index into the world-matrix buffer the GPU-workload vertex shader
+    /// reads. The other mesh shaders ignore it. Padding keeps the block a
+    /// multiple of sixteen, which std430 wants from a trailing uint.
+    uint nodeIndex;      // 4,        offset 88
+    uint pad;            // 4,        offset 92
 } object;
 
 #endif // FUMAR_OBJECT_GLSL

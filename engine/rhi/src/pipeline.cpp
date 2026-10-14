@@ -194,4 +194,37 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
                desc.fragmentShader.filename().string());
 }
 
+ComputePipeline::ComputePipeline(Device& device, const ComputePipelineDesc& desc) {
+    const vk::Device handle = device.handle();
+    const vk::UniqueShaderModule module = loadShaderModule(handle, desc.shader);
+
+    const vk::PushConstantRange pushConstantRange{
+        .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        .offset = 0,
+        .size = desc.pushConstantSize,
+    };
+    const bool hasPushConstants = desc.pushConstantSize > 0;
+    m_layout = handle.createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo{
+        .setLayoutCount = static_cast<u32>(desc.setLayouts.size()),
+        .pSetLayouts = desc.setLayouts.data(),
+        .pushConstantRangeCount = hasPushConstants ? 1u : 0u,
+        .pPushConstantRanges = hasPushConstants ? &pushConstantRange : nullptr,
+    });
+
+    const vk::ComputePipelineCreateInfo pipelineInfo{
+        .stage =
+            vk::PipelineShaderStageCreateInfo{
+                .stage = vk::ShaderStageFlagBits::eCompute,
+                .module = *module,
+                .pName = "main",
+            },
+        .layout = *m_layout,
+    };
+
+    auto result = handle.createComputePipelineUnique(nullptr, pipelineInfo);
+    FUMAR_VERIFY_MSG(result.result == vk::Result::eSuccess, "compute pipeline creation failed: {}",
+                     vk::to_string(result.result));
+    m_pipeline = std::move(result.value);
+}
+
 } // namespace fumar::rhi

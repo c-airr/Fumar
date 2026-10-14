@@ -1249,21 +1249,23 @@ void drawWorldSettings(Renderer& renderer) {
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip(
-                "GPU: the shaders transform, light and trace.\n"
-                "Balanced: the CPU transforms every vertex each frame and\n"
-                "uploads it. The fragment shader still lights. No ray tracing.\n"
-                "CPU: the CPU transforms and lights each vertex. The GPU only\n"
-                "rasterises that colour - no textures, rays, bloom or temporal.");
+                "Balanced is the ordinary renderer: CPU builds the node\n"
+                "matrices, the GPU transforms, shades and traces. Shadows stay.\n"
+                "GPU moves that matrix multiply into a compute shader. Shading\n"
+                "and rays stay where they are.\n"
+                "CPU transforms every vertex on the processor and uploads it.\n"
+                "The GPU still rasterises, shades and traces, so the scene does\n"
+                "not become a software renderer.");
         }
         switch (renderer.workload()) {
         case Renderer::Workload::Gpu:
-            ImGui::TextDisabled("Transforms, lighting and rays stay on the GPU.");
+            ImGui::TextDisabled("Compute shader builds world matrices. GPU still shades and traces.");
             break;
         case Renderer::Workload::Balanced:
-            ImGui::TextDisabled("CPU transforms vertices. GPU lights them. No rays.");
+            ImGui::TextDisabled("Ordinary path. CPU matrices, GPU transform, shading and rays.");
             break;
         case Renderer::Workload::Cpu:
-            ImGui::TextDisabled("CPU transforms and lights. GPU only rasterises.");
+            ImGui::TextDisabled("CPU transforms vertices. GPU still rasterises, shades and traces.");
             break;
         }
     }

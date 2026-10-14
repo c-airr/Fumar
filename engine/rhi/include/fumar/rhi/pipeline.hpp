@@ -117,4 +117,27 @@ private:
     vk::UniquePipeline m_pipeline;
 };
 
+struct ComputePipelineDesc {
+    std::filesystem::path shader;
+    std::span<const vk::DescriptorSetLayout> setLayouts;
+    u32 pushConstantSize = 0;
+};
+
+/// A compute pipeline. Same idea as GraphicsPipeline, without the fixed
+/// function state a draw needs: one shader, a layout, a dispatch.
+class ComputePipeline {
+public:
+    ComputePipeline(Device& device, const ComputePipelineDesc& desc);
+
+    ComputePipeline(const ComputePipeline&) = delete;
+    ComputePipeline& operator=(const ComputePipeline&) = delete;
+
+    vk::Pipeline handle() const { return *m_pipeline; }
+    vk::PipelineLayout layout() const { return *m_layout; }
+
+private:
+    vk::UniquePipelineLayout m_layout;
+    vk::UniquePipeline m_pipeline;
+};
+
 } // namespace fumar::rhi

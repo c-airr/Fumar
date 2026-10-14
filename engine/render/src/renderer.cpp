@@ -124,7 +124,7 @@ constexpr u32 kSamplePatternPeriod = 64;
 
 /// Push constants, matching the block in shaders/object.glsl.
 ///
-/// 88 bytes of the 128 every implementation guarantees. What a surface looks
+/// 96 bytes of the 128 every implementation guarantees. What a surface looks
 /// like is no longer here: it is a record in the material buffer, and a draw
 /// names it by index - which is what lets a ray, which has no push constants,
 /// see the same material the camera does.
@@ -137,12 +137,27 @@ struct ObjectPushConstants {
 
     u32 materialIndex;  // 4,        offset 80
     f32 highlight;      // 4,        offset 84: 0 = normal, 0.5 = hovered, 1 = selected, < 0 = overlay colour
+    u32 nodeIndex = 0;  // 4,        offset 88: GPU workload, index into the world-matrix buffer
+    u32 pad = 0;        // 4,        offset 92
 };
 
-static_assert(sizeof(ObjectPushConstants) == 88);
+static_assert(sizeof(ObjectPushConstants) == 96);
 static_assert(offsetof(ObjectPushConstants, overlayColor) == 64);
 static_assert(offsetof(ObjectPushConstants, materialIndex) == 80);
 static_assert(offsetof(ObjectPushConstants, highlight) == 84);
+static_assert(offsetof(ObjectPushConstants, nodeIndex) == 88);
+
+/// One node for world.comp. 80 bytes, which is the std430 stride of a mat4
+/// followed by four uints. parent is kInvalidNode at the root.
+struct GpuNode {
+    Mat4 local;
+    u32 parent = kInvalidNode;
+    u32 pad0 = 0;
+    u32 pad1 = 0;
+    u32 pad2 = 0;
+};
+static_assert(sizeof(GpuNode) == 80);
+static_assert(offsetof(GpuNode, parent) == 64);
 
 /// How many material records each frame's buffer holds before it grows.
 constexpr u32 kInitialMaterialCapacity = 256;
@@ -233,54 +248,28 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .samples = m_sampleCount,
                    });
 
-    // Always the non-tracing build, even on a GPU that can trace. Balanced
-    // binds it: same lighting, no rays. Gpu keeps m_pipeline, which is the
-    // tracing build when the device has one.
-    m_rasterPipeline = std::make_unique<rhi::GraphicsPipeline>(
+    const std::array<vk::DescriptorSetLayout, 2> gpuSetLayouts{*m_cameraSetLayout, *m_worldSetLayout};
+    m_gpuPipeline = std::make_unique<rhi::GraphicsPipeline>(
         *m_device, rhi::GraphicsPipelineDesc{
-                       .vertexShader = shaderDir / "mesh.vert.spv",
-                       .fragmentShader = shaderDir / "mesh.frag.spv",
+                       .vertexShader = shaderDir / "mesh_gpu.vert.spv",
+                       .fragmentShader = meshFragment,
                        .colorFormat = kSceneHdrFormat,
                        .depthFormat = m_depthFormat,
                        .vertexBindings = vertexBindings,
                        .vertexAttributes = vertexAttributes,
-                       .setLayouts = setLayouts,
+                       .setLayouts = gpuSetLayouts,
                        .pushConstantSize = sizeof(ObjectPushConstants),
                        .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
                                              vk::ShaderStageFlagBits::eFragment,
                        .samples = m_sampleCount,
                    });
 
-    const vk::VertexInputBindingDescription litBinding{
-        .binding = 0,
-        .stride = sizeof(LitVertex),
-        .inputRate = vk::VertexInputRate::eVertex,
-    };
-    const std::array<vk::VertexInputBindingDescription, 1> litBindings{litBinding};
-    const std::array<vk::VertexInputAttributeDescription, 2> litAttributes{
-        vk::VertexInputAttributeDescription{
-            .location = 0,
-            .binding = 0,
-            .format = vk::Format::eR32G32B32Sfloat,
-            .offset = offsetof(LitVertex, position),
-        },
-        vk::VertexInputAttributeDescription{
-            .location = 1,
-            .binding = 0,
-            .format = vk::Format::eR32G32B32Sfloat,
-            .offset = offsetof(LitVertex, color),
-        },
-    };
-    m_cpuPipeline = std::make_unique<rhi::GraphicsPipeline>(
-        *m_device, rhi::GraphicsPipelineDesc{
-                       .vertexShader = shaderDir / "mesh_lit.vert.spv",
-                       .fragmentShader = shaderDir / "mesh_lit.frag.spv",
-                       .colorFormat = kSceneHdrFormat,
-                       .depthFormat = m_depthFormat,
-                       .vertexBindings = litBindings,
-                       .vertexAttributes = litAttributes,
-                       .setLayouts = setLayouts,
-                       .samples = m_sampleCount,
+    const std::array<vk::DescriptorSetLayout, 1> computeSetLayouts{*m_computeSetLayout};
+    m_worldCompute = std::make_unique<rhi::ComputePipeline>(
+        *m_device, rhi::ComputePipelineDesc{
+                       .shader = shaderDir / "world.comp.spv",
+                       .setLayouts = computeSetLayouts,
+                       .pushConstantSize = sizeof(u32),
                    });
 
     m_outlinePipeline = std::make_unique<rhi::GraphicsPipeline>(
@@ -866,6 +855,15 @@ void Renderer::createDescriptors() {
                         vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment);
     m_cameraSetLayout = frameLayout.build(handle);
 
+    m_worldSetLayout = rhi::DescriptorSetLayoutBuilder()
+                           .binding(0, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eVertex)
+                           .build(handle);
+    m_computeSetLayout =
+        rhi::DescriptorSetLayoutBuilder()
+            .binding(0, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute)
+            .binding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute)
+            .build(handle);
+
     m_imageSetLayout = rhi::DescriptorSetLayoutBuilder()
                               .binding(0, vk::DescriptorType::eCombinedImageSampler,
                                        vk::ShaderStageFlagBits::eFragment)
@@ -910,7 +908,9 @@ void Renderer::createDescriptors() {
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                kInternalImageDescriptors + kMaxSceneTextures * rhi::kFramesInFlight},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight},
+        // Materials, plus the GPU-workload node buffer, world buffer (compute)
+        // and the same world buffer bound again for the vertex shader.
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight * 4},
     };
     if (m_device->rayTracingSupported()) {
         poolSizes.push_back(vk::DescriptorPoolSize{vk::DescriptorType::eAccelerationStructureKHR,
@@ -919,8 +919,8 @@ void Renderer::createDescriptors() {
         poolSizes.push_back(
             vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight});
     }
-    m_descriptorPool =
-        std::make_unique<rhi::DescriptorPool>(*m_device, rhi::kFramesInFlight + kInternalImageSets, poolSizes);
+    m_descriptorPool = std::make_unique<rhi::DescriptorPool>(
+        *m_device, rhi::kFramesInFlight * 3 + kInternalImageSets, poolSizes);
 
     // The uniform buffers themselves outlive any number of scene loads; only
     // the descriptor sets pointing at them are reallocated.
@@ -959,6 +959,22 @@ void Renderer::createDescriptors() {
                                                       });
     }
 
+    // A starting size. recordWorldCompute grows both if the scene outgrows it,
+    // after this frame's fence, and rewrites the descriptors then.
+    constexpr u32 kInitialGpuNodes = 64;
+    for (PerFrame& frame : m_perFrame) {
+        frame.gpuNodes = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                    .size = sizeof(GpuNode) * kInitialGpuNodes,
+                                                    .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                    .hostVisible = true,
+                                                });
+        frame.gpuWorlds = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                     .size = sizeof(Mat4) * kInitialGpuNodes,
+                                                     .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                     .hostVisible = false,
+                                                 });
+    }
+
     allocateDescriptorSets();
 }
 
@@ -974,6 +990,16 @@ void Renderer::allocateDescriptorSets() {
                           frame.instanceData.size(), vk::DescriptorType::eStorageBuffer);
         }
         writer.buffer(frame.cameraSet, 4, frame.materialData.handle(), frame.materialData.size(),
+                      vk::DescriptorType::eStorageBuffer);
+
+        frame.computeSet = m_descriptorPool->allocate(*m_computeSetLayout);
+        writer.buffer(frame.computeSet, 0, frame.gpuNodes.handle(), frame.gpuNodes.size(),
+                      vk::DescriptorType::eStorageBuffer);
+        writer.buffer(frame.computeSet, 1, frame.gpuWorlds.handle(), frame.gpuWorlds.size(),
+                      vk::DescriptorType::eStorageBuffer);
+
+        frame.worldSet = m_descriptorPool->allocate(*m_worldSetLayout);
+        writer.buffer(frame.worldSet, 0, frame.gpuWorlds.handle(), frame.gpuWorlds.size(),
                       vk::DescriptorType::eStorageBuffer);
 
         // Every slot, once: the binding is read as a whole, and a slot nobody
@@ -1727,7 +1753,7 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
     const Mat4 view = m_camera.view();
     const Mat4 projection = m_camera.projection(aspect);
     const Environment& env = m_environment;
-    const bool trace = m_workload == Workload::Gpu && m_device->rayTracingSupported();
+    const bool trace = m_device->rayTracingSupported();
 
     FrameUniforms uniforms{
         .view = view,
@@ -1751,17 +1777,13 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         // Zeroed rather than branched on in the shader when the GPU cannot
         // trace: the ray tracing functions are already compiled out there, and
         // leaving a live value in the buffer would be misleading to read back.
-        // Rays only in Gpu mode. Balanced and Cpu have already moved the
-        // vertices off the shader, and neither of those paths traces.
         .shadowStrength = trace ? env.shadowStrength : 0.0f,
         .occlusionStrength = trace ? env.occlusionStrength : 0.0f,
         .occlusionRadius = env.occlusionRadius,
         .reflectionStrength = trace ? env.reflectionStrength : 0.0f,
         .reflectionRoughnessLimit = env.reflectionRoughnessLimit,
         .indirectStrength = trace ? env.indirectStrength : 0.0f,
-        // Cpu has no bright shader output worth blooming; the pass still runs
-        // so the glow image keeps a defined layout.
-        .bloomStrength = m_workload == Workload::Cpu ? 0.0f : env.bloomStrength,
+        .bloomStrength = env.bloomStrength,
         .bloomThreshold = env.bloomThreshold,
         // Zero on the frame after the images were created, because there is no
         // history to carry over yet - the pair holds uninitialised memory, and
@@ -1849,9 +1871,7 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
 }
 
 void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex) {
-    // Balanced and Cpu are not going to trace, so building the structure would
-    // be GPU work those modes exist to turn off.
-    if (!m_device->rayTracingSupported() || m_workload != Workload::Gpu) {
+    if (!m_device->rayTracingSupported()) {
         return;
     }
 
@@ -1942,14 +1962,9 @@ void Renderer::ensureWorkloadBuffer(u32 frameIndex, vk::DeviceSize bytes) {
                                     });
 }
 
-void Renderer::prepareWorkloadGeometry(u32 frameIndex) {
+void Renderer::prepareCpuGeometry(u32 frameIndex) {
     m_workloadDraws.clear();
-    m_balancedVertices.clear();
-    m_litVertices.clear();
-
-    const bool lit = m_workload == Workload::Cpu;
-    const Environment& env = m_environment;
-    const Vec3 sun = env.sunDirection();
+    m_cpuVertices.clear();
 
     forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& world) {
         if (!m_resources.has(node.mesh)) {
@@ -1969,48 +1984,17 @@ void Renderer::prepareWorkloadGeometry(u32 frameIndex) {
         // Inverse-transpose takes normals along with a non-uniform scale. w = 0
         // drops the translation, so the full 4x4 is the 3x3 that was needed.
         const Mat4 normalMatrix = transpose(inverse(world));
-        const i32 base = static_cast<i32>(lit ? m_litVertices.size() : m_balancedVertices.size());
+        const i32 base = static_cast<i32>(m_cpuVertices.size());
 
-        if (lit) {
-            // Flat colour only: the textures live on the GPU, and this mode is
-            // the one that does not ask the fragment shader to read them.
-            const Material& material = m_resources.material(handle);
-            const Vec3 albedo{material.baseColorFactor.x, material.baseColorFactor.y,
-                              material.baseColorFactor.z};
-
-            for (const Vertex& in : mesh.vertices()) {
-                const Vec4 worldPosition = world * Vec4{in.position.x, in.position.y, in.position.z, 1.0f};
-                const Vec4 worldNormal =
-                    normalMatrix * Vec4{in.normal.x, in.normal.y, in.normal.z, 0.0f};
-                const Vec3 n = normalize(Vec3{worldNormal.x, worldNormal.y, worldNormal.z});
-                const f32 nDotL = std::max(dot(n, sun), 0.0f);
-
-                // The same sky term the fragment shader uses when it is not
-                // tracing: up-facing surfaces take the sky, down-facing ones
-                // the ground. Dividing the sun by pi is the Lambert factor.
-                const f32 up = n.y * 0.5f + 0.5f;
-                const Vec3 sky = lerp(env.skyHorizonColor, env.skyZenithColor, 0.35f);
-                const Vec3 ambient = lerp(env.groundColor, sky, up) * env.skyIntensity;
-                const Vec3 sunLight = env.sunColor * (env.sunIntensity * nDotL / kPi);
-
-                m_litVertices.push_back(LitVertex{
-                    .position = {worldPosition.x, worldPosition.y, worldPosition.z},
-                    .color = hadamard(albedo, ambient + sunLight),
-                });
-            }
-        } else {
-            for (const Vertex& in : mesh.vertices()) {
-                Vertex out = in;
-                const Vec4 worldPosition = world * Vec4{in.position.x, in.position.y, in.position.z, 1.0f};
-                const Vec4 worldNormal =
-                    normalMatrix * Vec4{in.normal.x, in.normal.y, in.normal.z, 0.0f};
-                const Vec4 worldTangent =
-                    world * Vec4{in.tangent.x, in.tangent.y, in.tangent.z, 0.0f};
-                out.position = {worldPosition.x, worldPosition.y, worldPosition.z};
-                out.normal = {worldNormal.x, worldNormal.y, worldNormal.z};
-                out.tangent = {worldTangent.x, worldTangent.y, worldTangent.z, in.tangent.w};
-                m_balancedVertices.push_back(out);
-            }
+        for (const Vertex& in : mesh.vertices()) {
+            Vertex out = in;
+            const Vec4 worldPosition = world * Vec4{in.position.x, in.position.y, in.position.z, 1.0f};
+            const Vec4 worldNormal = normalMatrix * Vec4{in.normal.x, in.normal.y, in.normal.z, 0.0f};
+            const Vec4 worldTangent = world * Vec4{in.tangent.x, in.tangent.y, in.tangent.z, 0.0f};
+            out.position = {worldPosition.x, worldPosition.y, worldPosition.z};
+            out.normal = {worldNormal.x, worldNormal.y, worldNormal.z};
+            out.tangent = {worldTangent.x, worldTangent.y, worldTangent.z, in.tangent.w};
+            m_cpuVertices.push_back(out);
         }
 
         m_workloadDraws.push_back(WorkloadDraw{
@@ -2022,21 +2006,127 @@ void Renderer::prepareWorkloadGeometry(u32 frameIndex) {
         });
     });
 
-    const void* data = nullptr;
-    vk::DeviceSize bytes = 0;
-    if (lit) {
-        data = m_litVertices.data();
-        bytes = static_cast<vk::DeviceSize>(m_litVertices.size() * sizeof(LitVertex));
-    } else {
-        data = m_balancedVertices.data();
-        bytes = static_cast<vk::DeviceSize>(m_balancedVertices.size() * sizeof(Vertex));
-    }
-    if (bytes == 0) {
+    if (m_cpuVertices.empty()) {
         return;
     }
 
+    const vk::DeviceSize bytes =
+        static_cast<vk::DeviceSize>(m_cpuVertices.size() * sizeof(Vertex));
     ensureWorkloadBuffer(frameIndex, bytes);
-    m_perFrame[frameIndex].workloadVertices.write(data, static_cast<usize>(bytes));
+    m_perFrame[frameIndex].workloadVertices.write(m_cpuVertices.data(), static_cast<usize>(bytes));
+}
+
+void Renderer::ensureGpuNodeBuffers(u32 frameIndex, u32 nodeCount) {
+    PerFrame& frame = m_perFrame[frameIndex];
+    const vk::DeviceSize nodesBytes = static_cast<vk::DeviceSize>(sizeof(GpuNode)) * nodeCount;
+    const vk::DeviceSize worldsBytes = static_cast<vk::DeviceSize>(sizeof(Mat4)) * nodeCount;
+    if (frame.gpuNodes.valid() && frame.gpuNodes.size() >= nodesBytes && frame.gpuWorlds.valid() &&
+        frame.gpuWorlds.size() >= worldsBytes) {
+        return;
+    }
+
+    u32 capacity = nodeCount;
+    if (frame.gpuNodes.valid()) {
+        const u32 have = static_cast<u32>(frame.gpuNodes.size() / sizeof(GpuNode));
+        capacity = std::max(nodeCount, have + have / 2);
+    }
+
+    frame.gpuNodes = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                .size = sizeof(GpuNode) * capacity,
+                                                .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                .hostVisible = true,
+                                            });
+    frame.gpuWorlds = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                 .size = sizeof(Mat4) * capacity,
+                                                 .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                 .hostVisible = false,
+                                             });
+
+    rhi::DescriptorWriter writer;
+    writer.buffer(frame.computeSet, 0, frame.gpuNodes.handle(), frame.gpuNodes.size(),
+                  vk::DescriptorType::eStorageBuffer);
+    writer.buffer(frame.computeSet, 1, frame.gpuWorlds.handle(), frame.gpuWorlds.size(),
+                  vk::DescriptorType::eStorageBuffer);
+    writer.buffer(frame.worldSet, 0, frame.gpuWorlds.handle(), frame.gpuWorlds.size(),
+                  vk::DescriptorType::eStorageBuffer);
+    writer.submit(m_device->handle());
+}
+
+void Renderer::recordWorldCompute(vk::CommandBuffer cmd, u32 frameIndex) {
+    u32 maxId = kRootNode;
+    std::vector<NodeId> pending{kRootNode};
+    while (!pending.empty()) {
+        const NodeId id = pending.back();
+        pending.pop_back();
+        maxId = std::max(maxId, id);
+        for (NodeId child : m_scene.node(id).children) {
+            if (m_scene.isAlive(child)) {
+                pending.push_back(child);
+            }
+        }
+    }
+
+    const u32 count = maxId + 1;
+    ensureGpuNodeBuffers(frameIndex, count);
+
+    std::vector<GpuNode> nodes(count);
+    for (GpuNode& node : nodes) {
+        node.local = identity();
+        node.parent = kInvalidNode;
+    }
+
+    pending.push_back(kRootNode);
+    while (!pending.empty()) {
+        const NodeId id = pending.back();
+        pending.pop_back();
+        const Node& node = m_scene.node(id);
+        nodes[id].local = node.transform.matrix();
+        nodes[id].parent = id == kRootNode ? kInvalidNode : node.parent;
+        for (NodeId child : node.children) {
+            if (m_scene.isAlive(child)) {
+                pending.push_back(child);
+            }
+        }
+    }
+
+    PerFrame& frame = m_perFrame[frameIndex];
+    frame.gpuNodes.write(nodes.data(), static_cast<usize>(count) * sizeof(GpuNode));
+
+    const vk::BufferMemoryBarrier2 hostToCompute{
+        .srcStageMask = vk::PipelineStageFlagBits2::eHost,
+        .srcAccessMask = vk::AccessFlagBits2::eHostWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = frame.gpuNodes.handle(),
+        .size = VK_WHOLE_SIZE,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &hostToCompute,
+    });
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, m_worldCompute->handle());
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, m_worldCompute->layout(), 0,
+                           frame.computeSet, {});
+    cmd.pushConstants<u32>(m_worldCompute->layout(), vk::ShaderStageFlagBits::eCompute, 0, count);
+    cmd.dispatch((count + 63u) / 64u, 1, 1);
+
+    const vk::BufferMemoryBarrier2 computeToVertex{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eVertexShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = frame.gpuWorlds.handle(),
+        .size = VK_WHOLE_SIZE,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers = &computeToVertex,
+    });
 }
 
 void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
@@ -2214,14 +2304,14 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     cmd.draw(3, 1, 0, 0);
 
     // --- geometry -----------------------------------------------------------
-    // Gpu draws the meshes where they were uploaded. Balanced and Cpu fill a
-    // host-visible buffer here and bind that instead.
-    const bool cpuVertices = m_workload != Workload::Gpu;
-    rhi::GraphicsPipeline& geometry = m_workload == Workload::Cpu        ? *m_cpuPipeline
-                                      : m_workload == Workload::Balanced ? *m_rasterPipeline
-                                                                         : *m_pipeline;
-    if (cpuVertices) {
-        prepareWorkloadGeometry(m_frames->currentFrame());
+    // Balanced: CPU world matrix, vertex shader transforms, fragment shader
+    // shades and traces. Gpu: the compute pass already wrote the world
+    // matrices. Cpu: vertices are already in world space, so the model is
+    // identity and the same fragment shader still traces.
+    rhi::GraphicsPipeline& geometry =
+        m_workload == Workload::Gpu ? *m_gpuPipeline : *m_pipeline;
+    if (m_workload == Workload::Cpu) {
+        prepareCpuGeometry(m_frames->currentFrame());
     }
 
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, geometry.handle());
@@ -2230,8 +2320,30 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     cmd.setScissor(0, scissor);
 
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, geometry.layout(), 0, frameSet, {});
+    if (m_workload == Workload::Gpu) {
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, geometry.layout(), 1,
+                               m_perFrame[m_frames->currentFrame()].worldSet, {});
+    }
 
-    if (!cpuVertices) {
+    if (m_workload == Workload::Cpu) {
+        if (!m_workloadDraws.empty()) {
+            cmd.bindVertexBuffers(0, m_perFrame[m_frames->currentFrame()].workloadVertices.handle(),
+                                  {0});
+            for (const WorkloadDraw& draw : m_workloadDraws) {
+                const ObjectPushConstants push{
+                    .model = identity(),
+                    .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
+                    .materialIndex = draw.materialIndex,
+                    .highlight = draw.highlight,
+                };
+                cmd.pushConstants<ObjectPushConstants>(
+                    geometry.layout(),
+                    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+                cmd.bindIndexBuffer(draw.indexBuffer, 0, vk::IndexType::eUint32);
+                cmd.drawIndexed(draw.indexCount, 1, 0, draw.vertexOffset, 0);
+            }
+        }
+    } else {
         forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
             if (!m_resources.has(node.mesh)) {
                 return;
@@ -2243,16 +2355,15 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
                 return;
             }
 
-            // The world transform comes straight from the last scene update, so
-            // this loop does no matrix work of its own.
             // Only the selection tints its faces. Hovering is answered by the
             // wireframe pass below and nothing else, so passing the cursor over a
             // crowded scene does not make objects flash.
             const ObjectPushConstants push{
-                .model = worldTransform,
+                .model = m_workload == Workload::Gpu ? identity() : worldTransform,
                 .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
                 .materialIndex = handle.index,
                 .highlight = id == m_selected ? 1.0f : 0.0f,
+                .nodeIndex = id,
             };
             cmd.pushConstants<ObjectPushConstants>(
                 geometry.layout(),
@@ -2260,31 +2371,6 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
 
             m_resources.mesh(node.mesh).draw(cmd);
         });
-    } else if (!m_workloadDraws.empty()) {
-        cmd.bindVertexBuffers(0, m_perFrame[m_frames->currentFrame()].workloadVertices.handle(),
-                              {0});
-
-        for (const WorkloadDraw& draw : m_workloadDraws) {
-            // Balanced still lights in the fragment shader, which needs the
-            // material. The model is identity because the vertices are already
-            // in world space. Cpu baked the colour into the vertex and has no
-            // push constants at all.
-            if (m_workload == Workload::Balanced) {
-                const ObjectPushConstants push{
-                    .model = identity(),
-                    .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
-                    .materialIndex = draw.materialIndex,
-                    .highlight = draw.highlight,
-                };
-                cmd.pushConstants<ObjectPushConstants>(
-                    geometry.layout(),
-                    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
-                    push);
-            }
-
-            cmd.bindIndexBuffer(draw.indexBuffer, 0, vk::IndexType::eUint32);
-            cmd.drawIndexed(draw.indexCount, 1, 0, draw.vertexOffset, 0);
-        }
     }
 
     // --- outlines -----------------------------------------------------------
@@ -2896,7 +2982,11 @@ void Renderer::recordCommands(u32 imageIndex) {
     // displayable image, and the interface draws into the window with that
     // image as one of its textures.
     // Before anything is drawn: the rays traced while shading need this
-    // frame's picture of the scene to already exist.
+    // frame's picture of the scene to already exist. The GPU workload's
+    // world matrices have to land first, because the vertex shader reads them.
+    if (m_workload == Workload::Gpu) {
+        recordWorldCompute(cmd, m_frames->currentFrame());
+    }
     recordAccelerationStructure(cmd, m_frames->currentFrame());
 
     recordSceneRendering(cmd);

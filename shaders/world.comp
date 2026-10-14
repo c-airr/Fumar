@@ -1,0 +1,44 @@
+#version 450
+
+// One thread per node. Walks parents and multiplies local matrices into the
+// world matrix the vertex shader will read. The CPU still uploads the local
+// matrices - those are edited on the CPU - and still keeps its own copy for
+// the gizmo and for picking. The draw itself does not use that copy.
+
+layout(local_size_x = 64) in;
+
+struct GpuNode {
+    mat4 local;
+    uint parent;
+    uint pad0;
+    uint pad1;
+    uint pad2;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Nodes {
+    GpuNode nodes[];
+};
+
+layout(std430, set = 0, binding = 1) buffer Worlds {
+    mat4 worlds[];
+};
+
+layout(push_constant) uniform Push {
+    uint count;
+} push;
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x;
+    if (index >= push.count) {
+        return;
+    }
+
+    mat4 world = nodes[index].local;
+    uint parent = nodes[index].parent;
+    // A guard rather than a promise: a broken parent link must not loop the GPU.
+    for (uint step = 0u; step < 32u && parent != 0xFFFFFFFFu; ++step) {
+        world = nodes[parent].local * world;
+        parent = nodes[parent].parent;
+    }
+    worlds[index] = world;
+}
