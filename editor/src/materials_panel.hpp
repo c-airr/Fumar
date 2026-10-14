@@ -35,6 +35,11 @@ std::filesystem::path stockMaterialsDirectory();
 /// about to be destroyed, and a handle would point at somebody else's material.
 void resetMaterialsPanel(EditorState& state, ImGuiLayer& ui);
 
+/// Releases every thumbnail, if the panel asked for it because it holds too
+/// many. Call before the frame begins, with the GPU idle; what is on screen is
+/// registered again as it is drawn.
+void releaseMaterialThumbnailsIfFull(EditorState& state, ImGuiLayer& ui);
+
 /// A widget changed `handle` this frame; `before` is the material as it was
 /// before the widget ran. The first change of a gesture - a drag of a slider, a
 /// visit to a colour picker - records an undo step holding `before`; the rest

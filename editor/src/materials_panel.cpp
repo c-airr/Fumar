@@ -26,6 +26,10 @@ namespace {
 
 constexpr f32 kThumbnail = 40.0f;
 
+/// How many thumbnails are kept registered before they are all released and
+/// only what is on screen comes back. Each is one of ImGui's descriptor sets.
+constexpr usize kMaxThumbnails = 256;
+
 /// The user's own materials, beside the executable - outside anything a build
 /// copies over.
 std::filesystem::path userDirectory() { return executableDirectory() / "materials"; }
@@ -81,12 +85,20 @@ ImTextureID thumbnail(EditorState& state, ImGuiLayer& ui, const Renderer& render
     const ImTextureID id =
         ui.registerTexture(renderer.resources().texture(texture).view(), renderer.viewportSampler());
     state.materialThumbnails.emplace(texture.index, id);
+    if (state.materialThumbnails.size() > kMaxThumbnails) {
+        state.materialThumbnailsFull = true;
+    }
     return id;
 }
 
-/// A square showing a material: its colour map, or its colour.
+/// A square showing a material: its colour map, or its colour. Off screen -
+/// scrolled out of the library - it is an empty button, and nothing is
+/// registered with ImGui for it: a long list costs what is visible of it.
 bool swatch(EditorState& state, ImGuiLayer& ui, const Renderer& renderer, const Material& material, const char* id,
             f32 size) {
+    if (!ImGui::IsRectVisible(ImVec2(size, size))) {
+        return ImGui::InvisibleButton(id, ImVec2(size, size));
+    }
     const ImTextureID image = thumbnail(state, ui, renderer, material.baseColor);
     if (image != 0) {
         const Vec4 tint = material.baseColorFactor;
@@ -455,6 +467,17 @@ std::filesystem::path stockMaterialsDirectory() {
     return executableDirectory() / "assets" / "materials";
 }
 
+void releaseMaterialThumbnailsIfFull(EditorState& state, ImGuiLayer& ui) {
+    if (!state.materialThumbnailsFull) {
+        return;
+    }
+    for (const auto& [index, id] : state.materialThumbnails) {
+        ui.unregisterTexture(id);
+    }
+    state.materialThumbnails.clear();
+    state.materialThumbnailsFull = false;
+}
+
 void materialEdited(EditorState& state, Renderer& renderer, MaterialHandle handle, const Material& before) {
     ResourceRegistry& resources = renderer.resources();
     if (!resources.has(handle)) {
@@ -487,6 +510,7 @@ void resetMaterialsPanel(EditorState& state, ImGuiLayer& ui) {
         ui.unregisterTexture(id);
     }
     state.materialThumbnails.clear();
+    state.materialThumbnailsFull = false;
     state.editedMaterial = MaterialHandle{};
     state.pendingMapSlot = -1;
     state.pendingMapMaterial = MaterialHandle{};

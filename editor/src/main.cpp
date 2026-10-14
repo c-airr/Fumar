@@ -635,6 +635,15 @@ int main() {
         }
         ui.setInputCaptured(window.relativeMouse());
 
+        // The Materials panel holds too many thumbnails: release them all now,
+        // before ImGui starts a frame and with nothing in flight still drawing
+        // them. A rare stall, in exchange for a descriptor pool that cannot run
+        // dry however many textures a scene has.
+        if (state.materialThumbnailsFull) {
+            renderer.waitIdle();
+            releaseMaterialThumbnailsIfFull(state, ui);
+        }
+
         // --- interface ------------------------------------------------------
         ui.beginFrame();
         ImGuizmo::BeginFrame();

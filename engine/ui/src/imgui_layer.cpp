@@ -257,16 +257,22 @@ ImGuiLayer::ImGuiLayer(Window& window, Renderer& renderer) : m_renderer(renderer
     // it also keeps a separate sampler descriptor, so the pool has to offer
     // both types - a pool missing one is a validation warning at init and an
     // out-of-pool-memory failure on drivers that report it properly.
+    //
+    // Room for 1024: every material thumbnail the editor shows is one set, and
+    // a scene can have hundreds of textures. The Materials panel also caps how
+    // many it keeps (see kMaxThumbnails there), so this is a ceiling it stays
+    // well under, not a budget it relies on. A set is a few dozen bytes.
+    constexpr u32 kSets = 1024;
     const std::array<vk::DescriptorPoolSize, 3> poolSizes{
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 64},
-        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 64},
-        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 64},
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kSets},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, kSets},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, kSets},
     };
     m_descriptorPool = renderer.device().handle().createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo{
         // ImGui frees individual sets when a texture goes away, which requires
         // this flag - without it the pool can only be reset wholesale.
         .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        .maxSets = 64,
+        .maxSets = kSets,
         .poolSizeCount = static_cast<u32>(poolSizes.size()),
         .pPoolSizes = poolSizes.data(),
     });

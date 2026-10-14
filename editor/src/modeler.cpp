@@ -1280,6 +1280,36 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
     Scene& scene = renderer.scene();
     const bool finish = variant == "finish";
 
+    // A scene with far more textured materials than ImGui keeps descriptors
+    // for at once - a big glTF, or a long session of map swaps - with the
+    // Materials panel open on them.
+    if (variant == "thumbnails") {
+        if (frame == 20) {
+            const std::filesystem::path image = std::filesystem::temp_directory_path() / "fumar_smoke_thumb.png";
+            Pixels pixels{.width = 4, .height = 4, .rgba = std::vector<u8>(4 * 4 * 4, 180)};
+            writePng(image, pixels);
+            for (int i = 0; i < 150; ++i) {
+                MaterialDesc desc;
+                desc.name = "thumb " + std::to_string(i);
+                desc.baseColor = image;
+                renderer.createMaterial(desc, MaterialOrigin{});
+            }
+            state.workspace = Workspace::Modeler;
+        }
+        if (frame == 25) {
+            // As if the panel had passed its cap: everything is released before
+            // the next frame, and what is on screen comes back.
+            state.materialThumbnailsFull = true;
+        }
+        if (frame == 30) {
+            FUMAR_INFO("modeler smoke: thumbnails: {} registered after a release, panel survived: {}",
+                       state.materialThumbnails.size(),
+                       !state.materialThumbnailsFull && !state.materialThumbnails.empty() ? "ok" : "FAILED");
+            return false;
+        }
+        return true;
+    }
+
     if (variant == "materials") {
         const auto report = [](const char* step, bool ok) {
             FUMAR_INFO("modeler smoke: materials {}: {}", step, ok ? "ok" : "FAILED");

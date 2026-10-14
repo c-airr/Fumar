@@ -161,6 +161,11 @@ struct EditorState {
     /// resetMaterialsPanel before the registry they point into is replaced.
     std::unordered_map<u32, ImTextureID> materialThumbnails;
 
+    /// Set when the thumbnails grew past their cap; the main loop releases
+    /// them all before the next frame begins, with the GPU idle, and the
+    /// visible ones come back as they are drawn.
+    bool materialThumbnailsFull = false;
+
     /// The map slot and material the open file dialog is choosing for.
     int pendingMapSlot = -1;
     MaterialHandle pendingMapMaterial;
