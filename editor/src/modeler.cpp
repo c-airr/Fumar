@@ -1280,6 +1280,34 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
     Scene& scene = renderer.scene();
     const bool finish = variant == "finish";
 
+    // Each workload in turn, with the profiler's table logged once it has
+    // settled - the numbers the Statistics panel shows, in a form a test run
+    // can keep. Ends back on Balanced, so switching back is exercised too.
+    if (variant == "workload") {
+        constexpr u32 kPhase = 150;
+        constexpr std::array<Renderer::Workload, 4> kOrder{Renderer::Workload::Balanced, Renderer::Workload::Gpu,
+                                                           Renderer::Workload::Cpu, Renderer::Workload::Balanced};
+        constexpr std::array<const char*, 4> kNames{"Balanced", "Gpu", "Cpu", "Balanced again"};
+        const u32 phase = frame / kPhase;
+        if (phase >= kOrder.size()) {
+            return false;
+        }
+        if (frame % kPhase == 0) {
+            renderer.setWorkload(kOrder[phase]);
+        }
+        if (frame % kPhase == kPhase - 1) {
+            const FrameProfiler& profiler = renderer.profiler();
+            for (usize i = 0; i < kProfileStageCount; ++i) {
+                const auto stage = static_cast<ProfileStage>(i);
+                if (profiler.cpuMs(stage) >= 0.0f || profiler.gpuMs(stage) >= 0.0f) {
+                    FUMAR_INFO("workload smoke: {:<14} {:<22} cpu {:7.3f}  gpu {:7.3f}", kNames[phase],
+                               FrameProfiler::name(stage), profiler.cpuMs(stage), profiler.gpuMs(stage));
+                }
+            }
+        }
+        return true;
+    }
+
     // A scene with far more textured materials than ImGui keeps descriptors
     // for at once - a big glTF, or a long session of map swaps - with the
     // Materials panel open on them.

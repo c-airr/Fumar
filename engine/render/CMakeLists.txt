@@ -14,6 +14,7 @@ add_library(fumar_render STATIC
     src/material_file.cpp
     src/material_gpu.cpp
     src/mesh.cpp
+    src/profiler.cpp
     src/renderer.cpp
     src/resources.cpp
     src/scene_io.cpp

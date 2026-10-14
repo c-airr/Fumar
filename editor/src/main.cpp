@@ -645,6 +645,9 @@ int main() {
         }
 
         // --- interface ------------------------------------------------------
+        // Timed from here to endFrame: building every panel's widgets is CPU
+        // work the profiler would otherwise not see at all.
+        const auto interfaceStart = std::chrono::steady_clock::now();
         ui.beginFrame();
         ImGuizmo::BeginFrame();
         // By default each handle flips to whichever side of the pivot faces
@@ -818,6 +821,9 @@ int main() {
         flushEditSession(state, renderer);
 
         ui.endFrame();
+        renderer.profiler().addCpu(
+            ProfileStage::Interface,
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - interfaceStart).count());
         renderer.drawFrame();
 
         // --- edits ------------------------------------------------------------

@@ -203,6 +203,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
     m_device = std::make_unique<rhi::Device>(*m_instance, m_surface);
     m_swapchain = std::make_unique<rhi::Swapchain>(*m_device, m_surface, window.framebufferSize());
     m_upload = std::make_unique<rhi::UploadContext>(*m_device);
+    m_profiler.init(*m_device, rhi::kFramesInFlight);
 
     createDefaultTexture();
     createViewportTarget(m_viewportExtent);
@@ -495,6 +496,7 @@ Renderer::~Renderer() {
     m_imageSetLayout.reset();
     m_cameraSetLayout.reset();
     m_descriptorPool.reset();
+    m_profiler.shutdown();
     m_frames.reset();
     m_bloomUpPipeline.reset();
     m_bloomDownPipeline.reset();
@@ -2389,10 +2391,6 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     // identity and the same fragment shader still traces.
     rhi::GraphicsPipeline& geometry =
         m_workload == Workload::Gpu ? *m_gpuPipeline : *m_pipeline;
-    if (m_workload == Workload::Cpu) {
-        prepareCpuGeometry(m_frames->currentFrame());
-    }
-
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, geometry.handle());
 
     cmd.setViewport(0, viewport);
@@ -3063,22 +3061,36 @@ void Renderer::recordCommands(u32 imageIndex) {
     // Before anything is drawn: the rays traced while shading need this
     // frame's picture of the scene to already exist. The GPU workload's
     // world matrices have to land first, because the vertex shader reads them.
-    if (m_workload == Workload::Gpu) {
-        recordWorldCompute(cmd, m_frames->currentFrame());
-    }
-    recordAccelerationStructure(cmd, m_frames->currentFrame());
+    //
+    // Each pass is bracketed twice: a clock on the CPU around recording it,
+    // and a pair of timestamps the GPU writes around running it.
+    const u32 frame = m_frames->currentFrame();
+    m_profiler.resetQueries(cmd, frame);
+    const auto timed = [&](ProfileStage stage, auto&& record) {
+        const FrameProfiler::Scope scope = m_profiler.cpu(stage);
+        m_profiler.gpuBegin(cmd, frame, stage);
+        record();
+        m_profiler.gpuEnd(cmd, frame, stage);
+    };
 
-    recordSceneRendering(cmd);
+    if (m_workload == Workload::Gpu) {
+        timed(ProfileStage::Nodes, [&] { recordWorldCompute(cmd, frame); });
+    }
+    if (m_device->rayTracingSupported()) {
+        timed(ProfileStage::Structure, [&] { recordAccelerationStructure(cmd, frame); });
+    }
+
+    timed(ProfileStage::Scene, [&] { recordSceneRendering(cmd); });
 
     // Before the bloom, and that order is not a preference: the glow is built
     // from the bright parts of the picture, and a speckle of sampling noise one
     // frame is a bright part the next. Blurring noise before averaging it away
     // would spread it over the screen instead.
-    recordTemporal(cmd);
+    timed(ProfileStage::Temporal, [&] { recordTemporal(cmd); });
 
-    recordBloom(cmd);
-    recordTonemap(cmd);
-    recordUiRendering(cmd, imageIndex);
+    timed(ProfileStage::Bloom, [&] { recordBloom(cmd); });
+    timed(ProfileStage::Tonemap, [&] { recordTonemap(cmd); });
+    timed(ProfileStage::Interface, [&] { recordUiRendering(cmd, imageIndex); });
 }
 
 void Renderer::drawFrame() {
@@ -3106,7 +3118,13 @@ void Renderer::drawFrame() {
 
     // Wait until the GPU is done with the frame that last used this slot, so
     // its command buffer, semaphores and uniform buffer are free to reuse.
-    m_frames->waitForFrameSlot();
+    {
+        const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Wait);
+        m_frames->waitForFrameSlot();
+    }
+
+    // That frame is finished, so the times its GPU passes wrote can be read.
+    m_profiler.collect(m_device->handle(), m_frames->currentFrame());
 
     // Which also means the frames before it are done, and with them anything
     // that could still have been reading a mesh replaced since.
@@ -3125,14 +3143,27 @@ void Renderer::drawFrame() {
     // One pass over the tree, turning local transforms into world transforms.
     // Done here rather than lazily during recording so each node is computed
     // exactly once even when several nodes share a parent.
-    m_scene.updateWorldTransforms();
+    {
+        const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Nodes);
+        m_scene.updateWorldTransforms();
+    }
 
     // After this slot's fence, before anything is recorded: the frame about to
     // be drawn sees every material edit and every texture added since its
     // last turn, and nothing the GPU is still reading is touched.
-    updateMaterialData(m_frames->currentFrame());
+    {
+        const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Materials);
+        updateMaterialData(m_frames->currentFrame());
+        updateFrameUniforms(m_frames->currentFrame());
+    }
 
-    updateFrameUniforms(m_frames->currentFrame());
+    // The Cpu workload's vertices, transformed before recording starts so
+    // their cost is their own line in the profiler rather than part of the
+    // scene pass that draws them.
+    if (m_workload == Workload::Cpu) {
+        const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Transform);
+        prepareCpuGeometry(m_frames->currentFrame());
+    }
 
     m_frames->beginCommandBuffer();
     recordCommands(*imageIndex);
@@ -3167,13 +3198,17 @@ void Renderer::drawFrame() {
 
     // The fence is signalled when this whole submission completes, which is
     // what waitForFrameSlot() blocks on two frames from now.
-    m_device->graphicsQueue().submit2(submitInfo, m_frames->inFlightFence());
+    {
+        const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Present);
+        m_device->graphicsQueue().submit2(submitInfo, m_frames->inFlightFence());
 
-    if (!m_swapchain->present(*imageIndex, m_frames->renderFinished(*imageIndex))) {
-        m_swapchainDirty = true;
+        if (!m_swapchain->present(*imageIndex, m_frames->renderFinished(*imageIndex))) {
+            m_swapchainDirty = true;
+        }
     }
 
     m_frames->advance();
+    m_profiler.endCpuFrame();
 }
 
 } // namespace fumar

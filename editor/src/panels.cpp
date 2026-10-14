@@ -1317,6 +1317,90 @@ void drawContentPanel(EditorState& state, Renderer& renderer) {
     ImGui::End();
 }
 
+namespace {
+
+/// Every stage of the frame, its cost on each processor, and how the work
+/// splits between them - what the "Runs on" switch moves around.
+void drawProfilerTable(const Renderer& renderer) {
+    const FrameProfiler& profiler = renderer.profiler();
+    ImGui::SeparatorText("Where the frame goes");
+
+    // Waiting and presenting are the CPU standing still, not working: left
+    // out of the share, or a GPU-bound frame would look CPU-heavy.
+    f32 cpuWork = 0.0f;
+    f32 gpuWork = 0.0f;
+    for (usize i = 0; i < kProfileStageCount; ++i) {
+        const auto stage = static_cast<ProfileStage>(i);
+        if (stage != ProfileStage::Wait && stage != ProfileStage::Present) {
+            cpuWork += std::max(profiler.cpuMs(stage), 0.0f);
+        }
+        gpuWork += std::max(profiler.gpuMs(stage), 0.0f);
+    }
+
+    const ImGuiTableFlags flags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("profile", 3, flags)) {
+        ImGui::TableSetupColumn("Stage", ImGuiTableColumnFlags_WidthStretch, 2.2f);
+        ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableHeadersRow();
+
+        const auto cell = [](f32 ms) {
+            if (ms < 0.0f) {
+                ImGui::TextDisabled("-");
+            } else {
+                ImGui::Text("%.2f", static_cast<f64>(ms));
+            }
+        };
+        for (usize i = 0; i < kProfileStageCount; ++i) {
+            const auto stage = static_cast<ProfileStage>(i);
+            const f32 cpu = profiler.cpuMs(stage);
+            const f32 gpu = profiler.gpuMs(stage);
+            if (cpu < 0.0f && gpu < 0.0f) {
+                continue;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(FrameProfiler::name(stage));
+            ImGui::TableNextColumn();
+            cell(cpu);
+            ImGui::TableNextColumn();
+            cell(gpu);
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Work, total");
+        ImGui::TableNextColumn();
+        ImGui::Text("%.2f", static_cast<f64>(cpuWork));
+        ImGui::TableNextColumn();
+        if (profiler.gpuSupported()) {
+            ImGui::Text("%.2f", static_cast<f64>(gpuWork));
+        } else {
+            ImGui::TextDisabled("n/a");
+        }
+        ImGui::EndTable();
+    }
+
+    if (profiler.gpuSupported() && cpuWork + gpuWork > 0.0f) {
+        const f32 cpuShare = cpuWork / (cpuWork + gpuWork);
+        char label[48];
+        std::snprintf(label, sizeof(label), "CPU %.0f%% / GPU %.0f%%", static_cast<f64>(cpuShare * 100.0f),
+                      static_cast<f64>((1.0f - cpuShare) * 100.0f));
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.659f, 0.373f, 0.173f, 1.0f));
+        ImGui::ProgressBar(cpuShare, ImVec2(-1.0f, 0.0f), label);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("How the frame's work splits between the processors -\n"
+                              "milliseconds each one spent busy, not waiting.\n"
+                              "The two run at the same time, so the frame takes about\n"
+                              "as long as the busier one, not the sum.");
+        }
+    }
+}
+
+} // namespace
+
 void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& renderer) {
     if (!state.showStats) {
         return;
@@ -1341,6 +1425,8 @@ void drawStatsPanel(EditorState& state, const Scene& scene, const Renderer& rend
             ImGui::Text("%.2f ms/frame (%.0f fps)", static_cast<f64>(state.smoothedFrameMs),
                         static_cast<f64>(1000.0f / state.smoothedFrameMs));
         }
+
+        drawProfilerTable(renderer);
 
         ImGui::SeparatorText("Scene");
         ImGui::Text("Nodes: %zu", scene.nodeCount());

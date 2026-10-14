@@ -6,6 +6,7 @@
 #include "fumar/render/material_file.hpp"
 #include "fumar/render/material_gpu.hpp"
 #include "fumar/render/mesh.hpp"
+#include "fumar/render/profiler.hpp"
 #include "fumar/render/resources.hpp"
 #include "fumar/rhi/acceleration_structure.hpp"
 #include "fumar/rhi/buffer.hpp"
@@ -193,6 +194,11 @@ public:
 
     void setWorkload(Workload workload) { m_workload = workload; }
     Workload workload() const { return m_workload; }
+
+    /// Where the last frames' time went, per stage, on each processor. The
+    /// editor adds its own widget-building time under ProfileStage::Interface.
+    FrameProfiler& profiler() { return m_profiler; }
+    const FrameProfiler& profiler() const { return m_profiler; }
 
     /// Blocks until the GPU has finished everything submitted so far.
     ///
@@ -730,6 +736,8 @@ private:
     Camera m_camera;
     Environment m_environment;
     Workload m_workload = Workload::Balanced;
+
+    FrameProfiler m_profiler;
 
     std::vector<WorkloadDraw> m_workloadDraws;
     std::vector<Vertex> m_cpuVertices;
