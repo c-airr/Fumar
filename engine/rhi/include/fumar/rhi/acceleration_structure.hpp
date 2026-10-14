@@ -90,6 +90,16 @@ public:
     void record(Device& device, vk::CommandBuffer cmd,
                 std::span<const vk::AccelerationStructureInstanceKHR> instances);
 
+    /// The other way to fill it: the GPU writes the instances itself.
+    ///
+    /// ensureCapacity first - it may reallocate, which moves instanceBuffer -
+    /// then a shader writes `count` instances at instanceBuffer()'s address,
+    /// then recordFromShader builds from them, behind a barrier that waits for
+    /// that shader's writes instead of the CPU's.
+    void ensureCapacity(Device& device, u32 count);
+    const Buffer& instanceBuffer() const { return m_instances; }
+    void recordFromShader(vk::CommandBuffer cmd, u32 count, vk::PipelineStageFlags2 writtenBy);
+
     vk::AccelerationStructureKHR handle() const { return m_structure; }
 
     bool valid() const { return static_cast<bool>(m_structure); }
@@ -97,6 +107,7 @@ public:
 private:
     void destroy();
     void reserve(Device& device, u32 instanceCapacity);
+    void recordBuild(vk::CommandBuffer cmd, u32 count, const vk::MemoryBarrier2& inputsReady);
 
     Device* m_device = nullptr;
 

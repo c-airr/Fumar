@@ -380,6 +380,11 @@ private:
     /// that writes world matrices. Recorded before the scene draw.
     void recordWorldCompute(vk::CommandBuffer cmd, u32 frameIndex);
 
+    /// Gpu workload, after recordWorldCompute: the compute pass that culls
+    /// each draw into an indirect command and writes the ray-tracing
+    /// instances. The CPU lists the draws; it no longer decides them.
+    void recordDrawCompute(vk::CommandBuffer cmd, u32 frameIndex);
+
     void ensureGpuNodeBuffers(u32 frameIndex, u32 nodeCount);
 
     /// Rebuilds this frame's picture of where everything is, for the rays to
@@ -442,6 +447,17 @@ private:
     std::unique_ptr<rhi::GraphicsPipeline> m_cpuPipeline;
 
     std::unique_ptr<rhi::ComputePipeline> m_worldCompute;
+    std::unique_ptr<rhi::ComputePipeline> m_drawCompute;
+
+    /// The Gpu workload's draws, in the order draws.comp wrote their
+    /// commands: the CPU binds each mesh, the command says how much to draw.
+    struct GpuDraw {
+        const Mesh* mesh = nullptr;
+        u32 materialIndex = 0;
+        NodeId id = kInvalidNode;
+    };
+    std::vector<GpuDraw> m_gpuDraws;
+    u32 m_gpuInstanceCount = 0;
 
     /// Fills the frame with sky before any geometry, from a fullscreen triangle
     /// and no vertex buffer at all.
@@ -694,9 +710,18 @@ private:
         /// World matrices the compute shader writes and mesh_gpu.vert reads.
         rhi::Buffer gpuWorlds;
 
+        /// Gpu workload: one entry per draw for draws.comp to read, and the
+        /// indirect draw commands it writes back.
+        rhi::Buffer gpuDrawInputs;
+        rhi::Buffer gpuIndirect;
+
         vk::DescriptorSet computeSet;
         vk::DescriptorSet worldSet;
     };
+
+    /// Points the frame's descriptor at its structure, when the structure was
+    /// reallocated since the last write.
+    void updateStructureDescriptor(PerFrame& frame);
 
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
 

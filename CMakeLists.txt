@@ -90,6 +90,7 @@ fumar_compile_shaders(fumar_shaders
         "${CMAKE_SOURCE_DIR}/shaders/mesh_cpu.vert"
         "${CMAKE_SOURCE_DIR}/shaders/mesh_cpu.frag"
         "${CMAKE_SOURCE_DIR}/shaders/world.comp"
+        "${CMAKE_SOURCE_DIR}/shaders/draws.comp"
         "${CMAKE_SOURCE_DIR}/shaders/outline.frag"
         "${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert"
         "${CMAKE_SOURCE_DIR}/shaders/sky.frag"

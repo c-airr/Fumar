@@ -102,6 +102,14 @@ Mesh::Mesh(rhi::Device& device, rhi::UploadContext& upload, std::span<const Vert
     }
 }
 
+void Mesh::bind(vk::CommandBuffer cmd) const {
+    if (!valid()) {
+        return;
+    }
+    cmd.bindVertexBuffers(0, m_vertexBuffer.handle(), {0});
+    cmd.bindIndexBuffer(m_indexBuffer.handle(), 0, vk::IndexType::eUint32);
+}
+
 void Mesh::draw(vk::CommandBuffer cmd) const {
     if (!valid()) {
         return;

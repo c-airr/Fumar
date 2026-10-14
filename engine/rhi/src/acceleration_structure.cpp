@@ -278,18 +278,45 @@ void TopLevelStructure::reserve(Device& device, u32 instanceCapacity) {
 
 void TopLevelStructure::record(Device& device, vk::CommandBuffer cmd,
                                std::span<const vk::AccelerationStructureInstanceKHR> instances) {
-    if (m_structure == nullptr || instances.size() > m_capacity) {
-        // Only legitimate because the renderer waits for the device before the
-        // first frame and whenever the scene is replaced.
-        device.waitIdle();
-        reserve(device, static_cast<u32>(instances.size()));
-    }
+    ensureCapacity(device, static_cast<u32>(instances.size()));
 
     if (!instances.empty()) {
         m_instances.write(instances.data(),
                           instances.size() * sizeof(vk::AccelerationStructureInstanceKHR));
     }
 
+    // The CPU wrote the instances; the build must see those writes.
+    recordBuild(cmd, static_cast<u32>(instances.size()),
+                vk::MemoryBarrier2{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eHost,
+                    .srcAccessMask = vk::AccessFlagBits2::eHostWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                    .dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR,
+                });
+}
+
+void TopLevelStructure::ensureCapacity(Device& device, u32 count) {
+    if (m_structure == nullptr || count > m_capacity) {
+        // Growing replaces buffers a frame in flight may still be reading.
+        // Rare, so a full stall is acceptable.
+        device.waitIdle();
+        reserve(device, count);
+    }
+}
+
+void TopLevelStructure::recordFromShader(vk::CommandBuffer cmd, u32 count, vk::PipelineStageFlags2 writtenBy) {
+    // A shader wrote the instances, through their address; the build reads
+    // them as a shader read, which is what the barrier has to make visible.
+    recordBuild(cmd, std::min(count, m_capacity),
+                vk::MemoryBarrier2{
+                    .srcStageMask = writtenBy,
+                    .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                    .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+                });
+}
+
+void TopLevelStructure::recordBuild(vk::CommandBuffer cmd, u32 count, const vk::MemoryBarrier2& inputsReady) {
     const vk::AccelerationStructureGeometryKHR geometryInfo{
         .geometryType = vk::GeometryTypeKHR::eInstances,
         .geometry =
@@ -310,26 +337,21 @@ void TopLevelStructure::record(Device& device, vk::CommandBuffer cmd,
         .geometryCount = 1,
         .pGeometries = &geometryInfo,
         .scratchData = {.deviceAddress = alignUp(m_scratch.deviceAddress(),
-                                                 scratchAlignment(device))},
+                                                 scratchAlignment(*m_device))},
     };
 
     const vk::AccelerationStructureBuildRangeInfoKHR range{
-        .primitiveCount = static_cast<u32>(instances.size()),
+        .primitiveCount = count,
     };
     const vk::AccelerationStructureBuildRangeInfoKHR* rangePtr = &range;
 
-    // The CPU wrote the instance buffer through a mapped pointer; the build
-    // reads it on the GPU. Coherent memory makes the write visible, but the
-    // dependency still has to be stated or the build may run first.
-    const vk::MemoryBarrier2 hostWrite{
-        .srcStageMask = vk::PipelineStageFlagBits2::eHost,
-        .srcAccessMask = vk::AccessFlagBits2::eHostWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
-        .dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR,
-    };
+    // Whoever wrote the instance buffer - the CPU through a mapped pointer, or
+    // a shader through its address - the build reads it on the GPU. Coherent
+    // memory makes a CPU write visible, but the dependency still has to be
+    // stated or the build may run first.
     cmd.pipelineBarrier2(vk::DependencyInfo{
         .memoryBarrierCount = 1,
-        .pMemoryBarriers = &hostWrite,
+        .pMemoryBarriers = &inputsReady,
     });
 
     cmd.buildAccelerationStructuresKHR(1, &buildInfo, &rangePtr);

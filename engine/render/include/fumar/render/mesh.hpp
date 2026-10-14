@@ -91,6 +91,10 @@ public:
     /// Binds the buffers and issues the indexed draw.
     void draw(vk::CommandBuffer cmd) const;
 
+    /// Binds the buffers only, for a draw whose parameters come from
+    /// somewhere else - a buffer the GPU filled, in the Gpu workload.
+    void bind(vk::CommandBuffer cmd) const;
+
     u32 indexCount() const { return m_indexCount; }
 
     /// Local-space bounds, computed once when the mesh was built.

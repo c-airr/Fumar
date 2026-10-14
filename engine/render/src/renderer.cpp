@@ -162,6 +162,31 @@ struct GpuNode {
 static_assert(sizeof(GpuNode) == 80);
 static_assert(offsetof(GpuNode, parent) == 64);
 
+/// One draw, as draws.comp reads it (DrawInput there).
+struct GpuDrawInput {
+    Vec4 boundsMin;
+    Vec4 boundsMax;
+    u32 node = 0;
+    u32 indexCount = 0;
+    u32 instanceSlot = ~0u;
+    u32 pad = 0;
+    u64 blasAddress = 0;
+    u64 pad2 = 0;
+};
+static_assert(sizeof(GpuDrawInput) == 64);
+
+/// draws.comp's push constants: the view, and four buffer addresses.
+struct DrawComputePush {
+    Mat4 viewProjection;
+    vk::DeviceAddress draws = 0;
+    vk::DeviceAddress worlds = 0;
+    vk::DeviceAddress commands = 0;
+    vk::DeviceAddress instances = 0;
+    u32 count = 0;
+};
+static_assert(offsetof(DrawComputePush, draws) == 64);
+static_assert(offsetof(DrawComputePush, count) == 96);
+
 /// How many material records each frame's buffer holds before it grows.
 constexpr u32 kInitialMaterialCapacity = 256;
 
@@ -315,6 +340,15 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .shader = shaderDir / "world.comp.spv",
                        .setLayouts = computeSetLayouts,
                        .pushConstantSize = sizeof(u32),
+                   });
+
+    // No descriptor sets at all: every buffer arrives as an address in the
+    // push constants. See draws.comp.
+    m_drawCompute = std::make_unique<rhi::ComputePipeline>(
+        *m_device, rhi::ComputePipelineDesc{
+                       .shader = shaderDir / "draws.comp.spv",
+                       .setLayouts = {},
+                       .pushConstantSize = sizeof(DrawComputePush),
                    });
 
     m_outlinePipeline = std::make_unique<rhi::GraphicsPipeline>(
@@ -544,6 +578,7 @@ Renderer::~Renderer() {
     m_outlinePipeline.reset();
     m_cpu.reset();
     m_cpuPipeline.reset();
+    m_drawCompute.reset();
     m_pipeline.reset();
     m_upload.reset();
     m_swapchain.reset();
@@ -1018,7 +1053,8 @@ void Renderer::createDescriptors() {
                                                 });
         frame.gpuWorlds = rhi::Buffer(*m_device, rhi::BufferDesc{
                                                      .size = sizeof(Mat4) * kInitialGpuNodes,
-                                                     .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                     .usage = vk::BufferUsageFlagBits::eStorageBuffer |
+                                                              vk::BufferUsageFlagBits::eShaderDeviceAddress,
                                                      .hostVisible = false,
                                                  });
     }
@@ -2030,6 +2066,14 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
     // structures hold the triangles; this holds nothing but a matrix and a
     // pointer to one, which is why rebuilding it every frame is affordable and
     // rebuilding the meshes would not be.
+    // The Gpu workload's instances were written by draws.comp, records and
+    // all; only the build is left.
+    if (m_workload == Workload::Gpu) {
+        frame.topLevel.recordFromShader(cmd, m_gpuInstanceCount, vk::PipelineStageFlagBits2::eComputeShader);
+        updateStructureDescriptor(frame);
+        return;
+    }
+
     m_instances.clear();
     m_instanceRecords.clear();
 
@@ -2080,8 +2124,12 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
 
     frame.topLevel.record(*m_device, cmd, m_instances);
 
+    updateStructureDescriptor(frame);
+}
+
+void Renderer::updateStructureDescriptor(PerFrame& frame) {
     // Reallocating the structure invalidates the descriptor pointing at it.
-    // record() waits for the device before it does that, so writing here is
+    // Growing waits for the device before it does that, so writing here is
     // safe - and it only happens when the handle actually changed.
     if (frame.topLevel.handle() != frame.writtenStructure) {
         rhi::DescriptorWriter writer;
@@ -2203,7 +2251,8 @@ void Renderer::ensureGpuNodeBuffers(u32 frameIndex, u32 nodeCount) {
                                             });
     frame.gpuWorlds = rhi::Buffer(*m_device, rhi::BufferDesc{
                                                  .size = sizeof(Mat4) * capacity,
-                                                 .usage = vk::BufferUsageFlagBits::eStorageBuffer,
+                                                 .usage = vk::BufferUsageFlagBits::eStorageBuffer |
+                                                          vk::BufferUsageFlagBits::eShaderDeviceAddress,
                                                  .hostVisible = false,
                                              });
 
@@ -2278,10 +2327,11 @@ void Renderer::recordWorldCompute(vk::CommandBuffer cmd, u32 frameIndex) {
     cmd.pushConstants<u32>(m_worldCompute->layout(), vk::ShaderStageFlagBits::eCompute, 0, count);
     cmd.dispatch((count + 63u) / 64u, 1, 1);
 
+    // Read next by draws.comp, then by the vertex shader.
     const vk::BufferMemoryBarrier2 computeToVertex{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eVertexShader,
+        .dstStageMask = vk::PipelineStageFlagBits2::eVertexShader | vk::PipelineStageFlagBits2::eComputeShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2291,6 +2341,117 @@ void Renderer::recordWorldCompute(vk::CommandBuffer cmd, u32 frameIndex) {
     cmd.pipelineBarrier2(vk::DependencyInfo{
         .bufferMemoryBarrierCount = 1,
         .pBufferMemoryBarriers = &computeToVertex,
+    });
+}
+
+void Renderer::recordDrawCompute(vk::CommandBuffer cmd, u32 frameIndex) {
+    PerFrame& frame = m_perFrame[frameIndex];
+    const bool trace = m_device->rayTracingSupported();
+
+    // The list of draws, in the order their commands will be written and
+    // read. The same objects the other workloads draw, through the same
+    // filter; and for each one with a ray-tracing structure, the record a ray
+    // reads when it hits it - which mesh, which material. Only the matrix in
+    // the instance is left to the GPU.
+    m_gpuDraws.clear();
+    m_instanceRecords.clear();
+    std::vector<GpuDrawInput> inputs;
+    forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4&) {
+        if (!m_resources.has(node.mesh)) {
+            return;
+        }
+        const Mesh& mesh = m_resources.mesh(node.mesh);
+        const MaterialHandle handle =
+            m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
+        if (!mesh.valid() || !m_resources.has(handle)) {
+            return;
+        }
+
+        GpuDrawInput input{
+            .boundsMin = point(mesh.bounds().min),
+            .boundsMax = point(mesh.bounds().max),
+            .node = id,
+            .indexCount = mesh.indexCount(),
+        };
+        if (trace && mesh.accelerationStructure().valid() && m_instanceRecords.size() < kMaxInstances) {
+            input.instanceSlot = static_cast<u32>(m_instanceRecords.size());
+            input.blasAddress = mesh.accelerationStructure().deviceAddress();
+            m_instanceRecords.push_back(InstanceRecord{
+                .vertices = mesh.vertexBuffer().deviceAddress(),
+                .indices = mesh.indexBuffer().deviceAddress(),
+                .materialIndex = handle.index,
+                .padding = 0,
+            });
+        }
+        inputs.push_back(input);
+        m_gpuDraws.push_back(GpuDraw{.mesh = &mesh, .materialIndex = handle.index, .id = id});
+    });
+    m_gpuInstanceCount = static_cast<u32>(m_instanceRecords.size());
+
+    if (trace) {
+        // Before the shader is given the instance buffer's address: making
+        // room may replace the buffer.
+        frame.topLevel.ensureCapacity(*m_device, m_gpuInstanceCount);
+        if (!m_instanceRecords.empty() && frame.instanceData.valid()) {
+            frame.instanceData.write(m_instanceRecords.data(), m_instanceRecords.size() * sizeof(InstanceRecord));
+        }
+    }
+    if (inputs.empty()) {
+        return;
+    }
+
+    const auto inputBytes = static_cast<vk::DeviceSize>(inputs.size() * sizeof(GpuDrawInput));
+    const auto commandBytes = static_cast<vk::DeviceSize>(inputs.size() * sizeof(vk::DrawIndexedIndirectCommand));
+    ensureHostBuffer(frame.gpuDrawInputs, inputBytes,
+                     vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress);
+    if (!frame.gpuIndirect.valid() || frame.gpuIndirect.size() < commandBytes) {
+        frame.gpuIndirect = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                                       .size = std::max<vk::DeviceSize>(commandBytes * 2, 4096),
+                                                       .usage = vk::BufferUsageFlagBits::eIndirectBuffer |
+                                                                vk::BufferUsageFlagBits::eStorageBuffer |
+                                                                vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                                                       .hostVisible = false,
+                                                   });
+    }
+    frame.gpuDrawInputs.write(inputs.data(), static_cast<usize>(inputBytes));
+
+    const vk::MemoryBarrier2 hostToCompute{
+        .srcStageMask = vk::PipelineStageFlagBits2::eHost,
+        .srcAccessMask = vk::AccessFlagBits2::eHostWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead,
+    };
+    // The previous frame's draws read this slot's commands two frames ago;
+    // the fence covers that, so only this frame's own order matters here.
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &hostToCompute,
+    });
+
+    // updateFrameUniforms left this frame's view-projection here.
+    const DrawComputePush push{
+        .viewProjection = m_prevViewProjection,
+        .draws = frame.gpuDrawInputs.deviceAddress(),
+        .worlds = frame.gpuWorlds.deviceAddress(),
+        .commands = frame.gpuIndirect.deviceAddress(),
+        .instances = trace ? frame.topLevel.instanceBuffer().deviceAddress() : 0,
+        .count = static_cast<u32>(inputs.size()),
+    };
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, m_drawCompute->handle());
+    cmd.pushConstants<DrawComputePush>(m_drawCompute->layout(), vk::ShaderStageFlagBits::eCompute, 0, push);
+    cmd.dispatch((push.count + 63u) / 64u, 1, 1);
+
+    // The commands are read by the draw itself, at the indirect stage; the
+    // instances by the structure build, whose own barrier says so.
+    const vk::MemoryBarrier2 computeToIndirect{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eDrawIndirect,
+        .dstAccessMask = vk::AccessFlagBits2::eIndirectCommandRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &computeToIndirect,
     });
 }
 
@@ -2508,6 +2669,26 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
                     vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
                 cmd.drawIndexed(draw.indexCount, 1, draw.firstIndex, draw.vertexOffset, 0);
             }
+        }
+    } else if (m_workload == Workload::Gpu) {
+        // One draw per object, as always - but how many instances each one
+        // draws, one or none, is in a buffer draws.comp wrote. The CPU
+        // records the same commands whatever is in view.
+        const PerFrame& frame = m_perFrame[m_frames->currentFrame()];
+        for (u32 i = 0; i < m_gpuDraws.size() && frame.gpuIndirect.valid(); ++i) {
+            const GpuDraw& draw = m_gpuDraws[i];
+            const ObjectPushConstants push{
+                .model = identity(),
+                .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
+                .materialIndex = draw.materialIndex,
+                .highlight = draw.id == m_selected ? 1.0f : 0.0f,
+                .nodeIndex = draw.id,
+            };
+            cmd.pushConstants<ObjectPushConstants>(
+                geometry.layout(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+            draw.mesh->bind(cmd);
+            cmd.drawIndexedIndirect(frame.gpuIndirect.handle(), i * sizeof(vk::DrawIndexedIndirectCommand), 1,
+                                    sizeof(vk::DrawIndexedIndirectCommand));
         }
     } else {
         forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
@@ -3164,6 +3345,7 @@ void Renderer::recordCommands(u32 imageIndex) {
 
     if (m_workload == Workload::Gpu) {
         timed(ProfileStage::Nodes, [&] { recordWorldCompute(cmd, frame); });
+        timed(ProfileStage::Culling, [&] { recordDrawCompute(cmd, frame); });
     }
     // The Cpu workload traces against its own copy of the scene, so the
     // GPU's structure is not built at all.

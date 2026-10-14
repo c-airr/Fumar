@@ -1,0 +1,116 @@
+#version 460
+
+// The Gpu workload's second compute pass: one thread per draw, run after
+// world.comp has written every node's world matrix.
+//
+// Two jobs the CPU does in the Balanced workload, moved here:
+//
+// - Culling. The draw's box is carried into clip space; if all eight corners
+//   are beyond one edge of the view, the object cannot be seen, and the draw
+//   command this writes asks for zero instances. The CPU still records one
+//   draw per object - it has to bind each mesh's buffers - but it no longer
+//   knows or decides which of them draw anything. vkCmdDrawIndexedIndirect
+//   reads the count from this buffer when the draw runs.
+//
+// - The ray-tracing instances. Every object's world matrix goes into the
+//   instance list the top-level structure is built from - culled or not, since
+//   an object behind the camera still casts a shadow in front of it.
+//
+// Every buffer is reached through its ADDRESS, handed over in the push
+// constants, rather than through a descriptor set: the same pointers the ray
+// tracing shaders already use to read vertices, and nothing to rebind when a
+// buffer grows.
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64) in;
+
+/// GpuDrawInput in engine/render/src/renderer.cpp, 64 bytes.
+struct DrawInput {
+    vec4 boundsMin;     // the mesh's own-space box
+    vec4 boundsMax;
+    uint node;          // index into the world matrices
+    uint indexCount;
+    uint instanceSlot;  // where its ray-tracing instance goes; ~0 for none
+    uint pad;
+    uint64_t blasAddress;
+    uint64_t pad2;
+};
+
+/// VkDrawIndexedIndirectCommand, field for field.
+struct DrawCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+/// VkAccelerationStructureInstanceKHR: a 3x4 row-major transform, then the
+/// custom index and mask packed into one word, the hit-group offset and
+/// flags into another, then the bottom-level structure's address.
+struct TlasInstance {
+    vec4 rows[3];
+    uint customIndexAndMask;
+    uint sbtOffsetAndFlags;
+    uint64_t blasAddress;
+};
+
+layout(buffer_reference, scalar) readonly buffer Draws { DrawInput draws[]; };
+layout(buffer_reference, std430) readonly buffer Worlds { mat4 worlds[]; };
+layout(buffer_reference, scalar) writeonly buffer Commands { DrawCommand commands[]; };
+layout(buffer_reference, scalar) writeonly buffer Instances { TlasInstance instances[]; };
+
+layout(push_constant) uniform Push {
+    mat4 viewProjection;
+    Draws draws;
+    Worlds worlds;
+    Commands commands;
+    Instances instances;
+    uint count;
+} push;
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x;
+    if (index >= push.count) {
+        return;
+    }
+
+    const DrawInput draw = push.draws.draws[index];
+    const mat4 world = push.worlds.worlds[draw.node];
+    const mat4 toClip = push.viewProjection * world;
+
+    // Counted per side: off screen only when EVERY corner is past the SAME
+    // side. Corners split between sides may still straddle the view.
+    uint left = 0u, right = 0u, below = 0u, above = 0u, behind = 0u;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        const vec3 local = vec3((corner & 1u) != 0u ? draw.boundsMax.x : draw.boundsMin.x,
+                                (corner & 2u) != 0u ? draw.boundsMax.y : draw.boundsMin.y,
+                                (corner & 4u) != 0u ? draw.boundsMax.z : draw.boundsMin.z);
+        const vec4 clip = toClip * vec4(local, 1.0);
+        left += clip.x < -clip.w ? 1u : 0u;
+        right += clip.x > clip.w ? 1u : 0u;
+        below += clip.y < -clip.w ? 1u : 0u;
+        above += clip.y > clip.w ? 1u : 0u;
+        behind += clip.w <= 0.0 ? 1u : 0u;
+    }
+    const bool visible = left < 8u && right < 8u && below < 8u && above < 8u && behind < 8u;
+
+    push.commands.commands[index] = DrawCommand(draw.indexCount, visible ? 1u : 0u, 0u, 0, 0u);
+
+    if (draw.instanceSlot != 0xFFFFFFFFu) {
+        TlasInstance instance;
+        // GLSL matrices are column-major; the instance wants rows.
+        instance.rows[0] = vec4(world[0][0], world[1][0], world[2][0], world[3][0]);
+        instance.rows[1] = vec4(world[0][1], world[1][1], world[2][1], world[3][1]);
+        instance.rows[2] = vec4(world[0][2], world[1][2], world[2][2], world[3][2]);
+        // Custom index = the instance's record, as the CPU path sets it; every
+        // ray mask bit; facing culling off (flag bit 0), as on the CPU path.
+        instance.customIndexAndMask = (draw.instanceSlot & 0xFFFFFFu) | (0xFFu << 24);
+        instance.sbtOffsetAndFlags = 1u << 24;
+        instance.blasAddress = draw.blasAddress;
+        push.instances.instances[draw.instanceSlot] = instance;
+    }
+}
