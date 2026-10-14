@@ -22,16 +22,22 @@ struct BadField {
 };
 
 /// A path as the file stores it: relative to the file's folder where it can
-/// be, absolute where it cannot (another drive).
+/// be, absolute where it cannot (another drive). UTF-8, forward slashes.
 Json pathToJson(const std::filesystem::path& path, const std::filesystem::path& folder) {
     if (path.empty()) {
         return nullptr;
     }
     std::error_code ec;
     const std::filesystem::path relative = std::filesystem::relative(path, folder, ec);
-    return (ec || relative.empty() ? path : relative).generic_string();
+    const std::u8string text = (ec || relative.empty() ? path : relative).generic_u8string();
+    return std::string(text.begin(), text.end());
 }
 
+/// A path the file gives, made absolute.
+///
+/// A path to another machine is refused: opening \\server\share\x.png makes
+/// Windows connect to that server and offer the user's credentials to it, and
+/// a material downloaded from anywhere must not be able to make it do that.
 std::filesystem::path pathFromJson(const Json& value, const std::filesystem::path& folder, const char* field) {
     if (value.is_null()) {
         return {};
@@ -39,7 +45,12 @@ std::filesystem::path pathFromJson(const Json& value, const std::filesystem::pat
     if (!value.is_string()) {
         throw BadField{field};
     }
-    const std::filesystem::path stored(value.get<std::string>());
+    const std::string text = value.get<std::string>();
+    const auto separator = [](char c) { return c == '/' || c == '\\'; };
+    if (text.size() >= 2 && separator(text[0]) && separator(text[1])) {
+        throw BadField{std::string(field) + " (a network path)"};
+    }
+    const std::filesystem::path stored = pathFromUtf8(text);
     return (stored.is_absolute() ? stored : folder / stored).lexically_normal();
 }
 
@@ -91,10 +102,38 @@ const Json& field(const Json& object, const char* key) {
 
 } // namespace
 
+std::string safeFileName(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        const auto byte = static_cast<unsigned char>(c);
+        const bool reserved = byte < 0x20 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+                              c == '"' || c == '<' || c == '>' || c == '|';
+        out.push_back(reserved ? '_' : c);
+    }
+    const auto trimmed = [](char c) { return c == '.' || c == ' '; };
+    while (!out.empty() && trimmed(out.front())) {
+        out.erase(out.begin());
+    }
+    while (!out.empty() && trimmed(out.back())) {
+        out.pop_back();
+    }
+    return out.empty() ? "Material" : out;
+}
+
+std::string pathToUtf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+std::filesystem::path pathFromUtf8(std::string_view text) {
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
 std::optional<MaterialDesc> readMaterialFile(const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary);
     if (!in) {
-        FUMAR_WARN("material file '{}' cannot be opened", file.string());
+        FUMAR_WARN("material file '{}' cannot be opened", pathToUtf8(file));
         return std::nullopt;
     }
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -102,11 +141,11 @@ std::optional<MaterialDesc> readMaterialFile(const std::filesystem::path& file) 
     // Without exceptions: a file that is not JSON is a warning, not a crash.
     const Json root = Json::parse(text, nullptr, false);
     if (!root.is_object() || !root.contains("fumarMaterial") || !root["fumarMaterial"].is_number_integer()) {
-        FUMAR_WARN("'{}' is not a fumar material file", file.string());
+        FUMAR_WARN("'{}' is not a fumar material file", pathToUtf8(file));
         return std::nullopt;
     }
     if (root["fumarMaterial"].get<int>() != kFormatVersion) {
-        FUMAR_WARN("'{}' is material format version {}, this build reads {}", file.string(),
+        FUMAR_WARN("'{}' is material format version {}, this build reads {}", pathToUtf8(file),
                    root["fumarMaterial"].get<int>(), kFormatVersion);
         return std::nullopt;
     }
@@ -120,7 +159,7 @@ std::optional<MaterialDesc> readMaterialFile(const std::filesystem::path& file) 
             }
             desc.name = root["name"].get<std::string>();
         } else {
-            desc.name = file.stem().string();
+            desc.name = pathToUtf8(file.stem());
         }
 
         const Json& base = section(root, "baseColor");
@@ -168,7 +207,7 @@ std::optional<MaterialDesc> readMaterialFile(const std::filesystem::path& file) 
         desc.uvScale = Vec2{uv[0], uv[1]};
         return desc;
     } catch (const BadField& bad) {
-        FUMAR_WARN("material file '{}': '{}' has the wrong type", file.string(), bad.what);
+        FUMAR_WARN("material file '{}': '{}' is not usable", pathToUtf8(file), bad.what);
         return std::nullopt;
     }
 }
@@ -209,20 +248,22 @@ bool writeMaterialFile(const std::filesystem::path& file, const MaterialDesc& de
     {
         std::ofstream out(partial, std::ios::binary | std::ios::trunc);
         if (!out) {
-            FUMAR_ERROR("cannot write material file '{}'", file.string());
+            FUMAR_ERROR("cannot write material file '{}'", pathToUtf8(file));
             return false;
         }
-        out << root.dump(2) << '\n';
+        // Invalid UTF-8 - a name typed in a code page - is replaced, not thrown:
+        // a material that cannot be saved perfectly is still worth saving.
+        out << root.dump(2, ' ', false, Json::error_handler_t::replace) << '\n';
         out.close();
         if (!out) {
-            FUMAR_ERROR("cannot write material file '{}': the write did not complete", file.string());
+            FUMAR_ERROR("cannot write material file '{}': the write did not complete", pathToUtf8(file));
             std::filesystem::remove(partial, ec);
             return false;
         }
     }
     std::filesystem::rename(partial, file, ec);
     if (ec) {
-        FUMAR_ERROR("cannot replace material file '{}': {}", file.string(), ec.message());
+        FUMAR_ERROR("cannot replace material file '{}': {}", pathToUtf8(file), ec.message());
         std::filesystem::remove(partial, ec);
         return false;
     }
@@ -232,14 +273,14 @@ bool writeMaterialFile(const std::filesystem::path& file, const MaterialDesc& de
 MaterialDesc describeMaterial(const Material& material) {
     return MaterialDesc{
         .name = material.name,
-        .baseColor = material.baseColorPath,
-        .packedMetallicRoughness = material.packedMetallicRoughnessPath,
-        .metallic = material.metallicPath,
-        .roughness = material.roughnessPath,
-        .normal = material.normalPath,
+        .baseColor = pathFromUtf8(material.baseColorPath),
+        .packedMetallicRoughness = pathFromUtf8(material.packedMetallicRoughnessPath),
+        .metallic = pathFromUtf8(material.metallicPath),
+        .roughness = pathFromUtf8(material.roughnessPath),
+        .normal = pathFromUtf8(material.normalPath),
         .normalIsDirectX = material.normalIsDirectX,
-        .occlusion = material.occlusionPath,
-        .emissive = material.emissivePath,
+        .occlusion = pathFromUtf8(material.occlusionPath),
+        .emissive = pathFromUtf8(material.emissivePath),
         .baseColorFactor = material.baseColorFactor,
         .metallicFactor = material.metallic,
         .roughnessFactor = material.roughness,

@@ -1344,6 +1344,23 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
                    again == imported && respelled == imported &&
                        std::filesystem::last_write_time(setFolder / "fumar_smoke_set.fmat", ec) == writtenAt);
 
+            // A map swapped in the editor reloads that map and nothing else:
+            // every reload is a texture that stays alive for undo, and the
+            // array the shaders read has 1024 slots.
+            if (imported.valid()) {
+                const usize before = renderer.resources().textureCount();
+                MaterialDesc desc = describeMaterial(renderer.resources().material(imported));
+                desc.emissive = setFolder / "smoke_Color.png";
+                renderer.rebuildMaterial(imported, desc);
+                const usize afterOne = renderer.resources().textureCount();
+                renderer.rebuildMaterial(imported, desc);
+                const usize afterNone = renderer.resources().textureCount();
+                report("one map swapped loads one texture, none swapped loads none",
+                       afterOne == before + 1 && afterNone == afterOne);
+                desc.emissive.clear();
+                renderer.rebuildMaterial(imported, desc);
+            }
+
             const NodeId blockA = nodeNamed("Block A");
             if (blockA != kInvalidNode && imported.valid()) {
                 scene.node(blockA).material = imported;

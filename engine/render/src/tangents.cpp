@@ -54,7 +54,12 @@ void texCoord(const SMikkTSpaceContext* context, float out[], int face, int vert
 void setTangent(const SMikkTSpaceContext* context, const float tangent[], float sign, int face, int vert) {
     MikkMesh& mesh = meshOf(context);
     Vertex& v = mesh.vertices[mesh.indices[static_cast<usize>(face) * 3 + static_cast<usize>(vert)]];
-    v.tangent = Vec4{tangent[0], tangent[1], tangent[2], sign < 0.0f ? -1.0f : 1.0f};
+    // Negated. MikkTSpace hands back the handedness for a V that runs UP the
+    // image, as Blender's does; glTF - and so every mesh here - has V running
+    // DOWN it, row 0 at the top. Taken as given, the bitangent would point down
+    // the image while a normal map's green points up, and every bump would be
+    // lit from below. three.js and glTF-Transform make the same correction.
+    v.tangent = Vec4{tangent[0], tangent[1], tangent[2], sign < 0.0f ? 1.0f : -1.0f};
 }
 
 } // namespace

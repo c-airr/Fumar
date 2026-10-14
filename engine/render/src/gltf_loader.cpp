@@ -283,7 +283,10 @@ bool exportGltfMaterial(const std::filesystem::path& gltf, u32 index, const std:
     std::filesystem::create_directories(folder, ec);
 
     const cgltf_material& source = data->materials[index];
-    const std::string stem = source.name != nullptr && source.name[0] != '\0' ? source.name : gltf.stem().string();
+    // The name comes from the file, so it is made a plain file name before it
+    // goes anywhere near one: "../../x" must not write outside `folder`.
+    const std::string stem =
+        safeFileName(source.name != nullptr && source.name[0] != '\0' ? std::string(source.name) : pathToUtf8(gltf.stem()));
     const std::filesystem::path base = gltf.parent_path();
 
     // Decoded and written again as PNG rather than copied as they are: an
@@ -305,9 +308,9 @@ bool exportGltfMaterial(const std::filesystem::path& gltf, u32 index, const std:
             uri.resize(std::strlen(uri.c_str()));
             pixels = loadPixels(base / uri);
         }
-        const std::filesystem::path file = folder / (stem + "_" + map + ".png");
+        const std::filesystem::path file = folder / pathFromUtf8(stem + "_" + map + ".png");
         if (!pixels || !writePng(file, *pixels)) {
-            FUMAR_WARN("could not write the {} map of '{}' to '{}'", map, stem, file.string());
+            FUMAR_WARN("could not write the {} map of '{}' to '{}'", map, stem, pathToUtf8(file));
             ok = false;
             return {};
         }

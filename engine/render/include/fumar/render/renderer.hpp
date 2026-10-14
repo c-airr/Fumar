@@ -705,7 +705,11 @@ private:
     std::unordered_map<std::string, MaterialHandle> m_materialFiles;
 
     /// The material a description makes, textures loaded, not yet registered.
-    Material buildMaterial(const MaterialDesc& desc, MaterialOrigin origin);
+    ///
+    /// With `previous`, a slot whose file is the same as there takes that
+    /// slot's texture instead of loading it again: swapping one map in the
+    /// editor loads one map. A slot that failed to load before is tried again.
+    Material buildMaterial(const MaterialDesc& desc, MaterialOrigin origin, const Material* previous = nullptr);
 
     /// A texture for one map of a material, or invalid with a warning.
     TextureHandle loadMaterialTexture(const std::string& material, const char* slot,

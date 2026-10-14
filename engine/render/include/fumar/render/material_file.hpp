@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace fumar {
 
@@ -42,6 +43,22 @@ struct MaterialDesc {
 
     friend bool operator==(const MaterialDesc&, const MaterialDesc&) = default;
 };
+
+/// A path as UTF-8 text - what JSON holds, what fumar keeps paths in, what the
+/// log prints - whatever the platform's own narrow encoding is. On Windows
+/// path::string() goes through the ANSI code page: a letter outside it throws,
+/// and one inside it comes out as bytes that are not UTF-8 at all.
+std::string pathToUtf8(const std::filesystem::path& path);
+
+/// The other way: UTF-8 text as a path.
+std::filesystem::path pathFromUtf8(std::string_view text);
+
+/// Text from a file - a material's name - made safe to be one component of a
+/// file name: path separators, ':' and the other characters Windows reserves
+/// become '_', and leading and trailing dots and spaces go, so the result can
+/// neither climb out of a folder nor name a drive. Letters beyond ASCII stay.
+/// Never empty.
+std::string safeFileName(std::string_view text);
 
 /// Reads a .fmat. Nothing - with the reason logged - for a file that is
 /// missing, is not JSON, is not a fumar material, is a newer format version,

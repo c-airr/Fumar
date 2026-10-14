@@ -1322,13 +1322,13 @@ MaterialHandle Renderer::createMaterial(std::string name, Vec4 baseColor,
     material.name = std::move(name);
     material.baseColorFactor = baseColor;
 
-    material.origin = MaterialOrigin{.kind = MaterialOrigin::Kind::Builtin, .file = baseColorTexture.string(), .index = 0};
+    material.origin = MaterialOrigin{.kind = MaterialOrigin::Kind::Builtin, .file = pathToUtf8(baseColorTexture), .index = 0};
 
     if (!baseColorTexture.empty()) {
         rhi::Image texture = loadTextureFromFile(*m_device, *m_upload, baseColorTexture);
         if (texture.valid()) {
             material.baseColor = m_resources.addTexture(std::move(texture));
-            material.baseColorPath = baseColorTexture.string();
+            material.baseColorPath = pathToUtf8(baseColorTexture);
         } else {
             FUMAR_WARN("material '{}' falls back to a flat colour", material.name);
         }
@@ -1346,18 +1346,18 @@ TextureHandle Renderer::loadMaterialTexture(const std::string& material, const c
     // as one texture would be read into memory whole and then refused anyway.
     const std::optional<ImageSize> size = readImageSize(file);
     if (!size) {
-        FUMAR_WARN("material '{}': cannot read {} '{}', using the neutral map", material, slot, file.string());
+        FUMAR_WARN("material '{}': cannot read {} '{}', using the neutral map", material, slot, pathToUtf8(file));
         return {};
     }
     const u32 limit = m_device->properties().limits.maxImageDimension2D;
     if (size->width > limit || size->height > limit) {
         FUMAR_WARN("material '{}': {} '{}' is {}x{}, larger than the GPU's {}; using the neutral map", material,
-                   slot, file.string(), size->width, size->height, limit);
+                   slot, pathToUtf8(file), size->width, size->height, limit);
         return {};
     }
     std::optional<Pixels> pixels = loadPixels(file);
     if (!pixels) {
-        FUMAR_WARN("material '{}': cannot decode {} '{}', using the neutral map", material, slot, file.string());
+        FUMAR_WARN("material '{}': cannot decode {} '{}', using the neutral map", material, slot, pathToUtf8(file));
         return {};
     }
     rhi::Image image =
@@ -1373,11 +1373,12 @@ void Renderer::rebuildMaterial(MaterialHandle handle, const MaterialDesc& desc) 
     if (!m_resources.has(handle)) {
         return;
     }
-    m_resources.material(handle) = buildMaterial(desc, m_resources.material(handle).origin);
+    const Material previous = m_resources.material(handle);
+    m_resources.material(handle) = buildMaterial(desc, previous.origin, &previous);
     markMaterialDirty(handle);
 }
 
-Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin) {
+Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin, const Material* previous) {
     Material material;
     material.name = desc.name;
     material.origin = std::move(origin);
@@ -1394,23 +1395,50 @@ Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin
 
     // Kept whether or not the files load: a material saved again should still
     // point at a map that is missing today, so putting the file back fixes it.
-    material.baseColorPath = desc.baseColor.string();
-    material.packedMetallicRoughnessPath = desc.packedMetallicRoughness.string();
-    material.metallicPath = desc.metallic.string();
-    material.roughnessPath = desc.roughness.string();
-    material.normalPath = desc.normal.string();
+    material.baseColorPath = pathToUtf8(desc.baseColor);
+    material.packedMetallicRoughnessPath = pathToUtf8(desc.packedMetallicRoughness);
+    material.metallicPath = pathToUtf8(desc.metallic);
+    material.roughnessPath = pathToUtf8(desc.roughness);
+    material.normalPath = pathToUtf8(desc.normal);
     material.normalIsDirectX = desc.normalIsDirectX;
-    material.occlusionPath = desc.occlusion.string();
-    material.emissivePath = desc.emissive.string();
+    material.occlusionPath = pathToUtf8(desc.occlusion);
+    material.emissivePath = pathToUtf8(desc.emissive);
 
     // One submit for every map of the material, rather than one each.
     const rhi::UploadBatch batch(*m_upload);
 
-    material.baseColor = loadMaterialTexture(material.name, "colour map", desc.baseColor, true);
-    material.emissive = loadMaterialTexture(material.name, "emission map", desc.emissive, true);
-    material.occlusion = loadMaterialTexture(material.name, "occlusion map", desc.occlusion, false);
+    // The previous material's texture for a slot whose source has not changed
+    // and which did load: no second copy of the same image on the GPU.
+    const auto reuse = [&](TextureHandle before, bool unchanged) {
+        return previous != nullptr && unchanged && m_resources.has(before) ? before : TextureHandle{};
+    };
 
-    if (!desc.packedMetallicRoughness.empty()) {
+    material.baseColor = reuse(previous ? previous->baseColor : TextureHandle{},
+                               previous && previous->baseColorPath == material.baseColorPath);
+    if (!material.baseColor.valid()) {
+        material.baseColor = loadMaterialTexture(material.name, "colour map", desc.baseColor, true);
+    }
+    material.emissive = reuse(previous ? previous->emissive : TextureHandle{},
+                              previous && previous->emissivePath == material.emissivePath);
+    if (!material.emissive.valid()) {
+        material.emissive = loadMaterialTexture(material.name, "emission map", desc.emissive, true);
+    }
+    material.occlusion = reuse(previous ? previous->occlusion : TextureHandle{},
+                               previous && previous->occlusionPath == material.occlusionPath);
+    if (!material.occlusion.valid()) {
+        material.occlusion = loadMaterialTexture(material.name, "occlusion map", desc.occlusion, false);
+    }
+    material.metallicRoughness =
+        reuse(previous ? previous->metallicRoughness : TextureHandle{},
+              previous && previous->packedMetallicRoughnessPath == material.packedMetallicRoughnessPath &&
+                  previous->roughnessPath == material.roughnessPath && previous->metallicPath == material.metallicPath);
+    material.normal = reuse(previous ? previous->normal : TextureHandle{},
+                            previous && previous->normalPath == material.normalPath &&
+                                previous->normalIsDirectX == material.normalIsDirectX);
+
+    if (material.metallicRoughness.valid()) {
+        // Kept from before.
+    } else if (!desc.packedMetallicRoughness.empty()) {
         material.metallicRoughness =
             loadMaterialTexture(material.name, "metal-rough map", desc.packedMetallicRoughness, false);
     } else if (!desc.roughness.empty() || !desc.metallic.empty()) {
@@ -1423,13 +1451,13 @@ Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin
             const u32 limit = m_device->properties().limits.maxImageDimension2D;
             if (!size || size->width > limit || size->height > limit) {
                 FUMAR_WARN("material '{}': cannot use {} '{}', using the neutral map", material.name, slot,
-                           file.string());
+                           pathToUtf8(file));
                 return std::nullopt;
             }
             std::optional<Pixels> pixels = loadPixels(file);
             if (!pixels) {
                 FUMAR_WARN("material '{}': cannot decode {} '{}', using the neutral map", material.name, slot,
-                           file.string());
+                           pathToUtf8(file));
             }
             return pixels;
         };
@@ -1446,13 +1474,19 @@ Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin
         }
     }
 
-    if (desc.normalIsDirectX && !desc.normal.empty()) {
+    if (material.normal.valid()) {
+        // Kept from before.
+    } else if (desc.normalIsDirectX && !desc.normal.empty()) {
         // DirectX normal maps point green down; fumar's frame points it up.
-        // Flipped once, here, rather than in every shader that reads it.
-        std::optional<Pixels> pixels = loadPixels(desc.normal);
+        // Flipped once, here, rather than in every shader that reads it. The
+        // size is asked before anything is decoded, as for every other map.
         const std::optional<ImageSize> size = readImageSize(desc.normal);
         const u32 limit = m_device->properties().limits.maxImageDimension2D;
-        if (pixels && size && size->width <= limit && size->height <= limit) {
+        std::optional<Pixels> pixels;
+        if (size && size->width <= limit && size->height <= limit) {
+            pixels = loadPixels(desc.normal);
+        }
+        if (pixels) {
             for (usize i = 1; i < pixels->rgba.size(); i += 4) {
                 pixels->rgba[i] = static_cast<u8>(255 - pixels->rgba[i]);
             }
@@ -1463,7 +1497,7 @@ Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin
             }
         } else {
             FUMAR_WARN("material '{}': cannot use normal map '{}', using the neutral map", material.name,
-                       desc.normal.string());
+                       pathToUtf8(desc.normal));
         }
     } else {
         material.normal = loadMaterialTexture(material.name, "normal map", desc.normal, false);
@@ -1474,7 +1508,7 @@ Material Renderer::buildMaterial(const MaterialDesc& desc, MaterialOrigin origin
 
 MaterialHandle Renderer::loadMaterialFile(const std::filesystem::path& file) {
     std::error_code ec;
-    const std::string key = std::filesystem::weakly_canonical(std::filesystem::absolute(file), ec).string();
+    const std::string key = pathToUtf8(std::filesystem::weakly_canonical(std::filesystem::absolute(file), ec));
     if (const auto found = m_materialFiles.find(key); found != m_materialFiles.end()) {
         return found->second;
     }
@@ -1486,7 +1520,7 @@ MaterialHandle Renderer::loadMaterialFile(const std::filesystem::path& file) {
     const MaterialHandle handle =
         createMaterial(*desc, MaterialOrigin{.kind = MaterialOrigin::Kind::Fmat, .file = key, .index = 0});
     m_materialFiles.emplace(key, handle);
-    FUMAR_INFO("material '{}' loaded from '{}'", desc->name, std::filesystem::path(key).filename().string());
+    FUMAR_INFO("material '{}' loaded from '{}'", desc->name, pathToUtf8(pathFromUtf8(key).filename()));
     return handle;
 }
 
@@ -1506,7 +1540,9 @@ MaterialHandle Renderer::importMaterialFolder(const std::filesystem::path& folde
     // A trailing separator leaves the last component empty; the name is the
     // folder's own.
     const std::filesystem::path base = normalized.has_filename() ? normalized : normalized.parent_path();
-    const std::filesystem::path fmat = base / (base.filename().string() + ".fmat");
+    std::filesystem::path fmatName = base.filename();
+    fmatName += ".fmat";
+    const std::filesystem::path fmat = base / fmatName;
 
     std::error_code ec;
     if (std::filesystem::exists(fmat, ec)) {
@@ -1515,12 +1551,12 @@ MaterialHandle Renderer::importMaterialFolder(const std::filesystem::path& folde
 
     const TextureSetFiles set = findTextureSet(base);
     if (!set.usable()) {
-        FUMAR_WARN("'{}' holds no colour or normal map; no material made from it", base.string());
+        FUMAR_WARN("'{}' holds no colour or normal map; no material made from it", pathToUtf8(base));
         return {};
     }
 
     MaterialDesc desc;
-    desc.name = base.filename().string();
+    desc.name = pathToUtf8(base.filename());
     desc.baseColor = set.baseColor;
     desc.normal = set.normal;
     desc.normalIsDirectX = set.normalIsDirectX;
@@ -1538,7 +1574,7 @@ MaterialHandle Renderer::importMaterialFolder(const std::filesystem::path& folde
     if (!writeMaterialFile(fmat, desc)) {
         return {};
     }
-    FUMAR_INFO("material '{}' made from '{}'", desc.name, base.string());
+    FUMAR_INFO("material '{}' made from '{}'", desc.name, pathToUtf8(base));
     return loadMaterialFile(fmat);
 }
 

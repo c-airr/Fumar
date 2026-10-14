@@ -1,5 +1,7 @@
 #include "fumar/render/texture_set.hpp"
 
+#include "fumar/render/material_file.hpp"
+
 #include <stb_image.h>
 #include <stb_image_write.h>
 
@@ -48,20 +50,43 @@ std::string lower(std::string text) {
 }
 
 bool isImage(const std::filesystem::path& file) {
-    const std::string extension = lower(file.extension().string());
+    const std::string extension = lower(pathToUtf8(file.extension()));
     return extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".tga";
 }
 
-/// Whether `suffix` appears in `stem` as a whole token: followed by the end of
-/// the name or a separator, never by more letters.
-bool hasSuffix(std::string_view stem, std::string_view suffix) {
+/// Where `suffix` last appears in `stem` as a whole token - followed by the end
+/// of the name or a separator, never by more letters - or npos.
+usize tokenAt(std::string_view stem, std::string_view suffix) {
+    usize found = std::string_view::npos;
     for (usize at = stem.find(suffix); at != std::string_view::npos; at = stem.find(suffix, at + 1)) {
         const usize end = at + suffix.size();
         if (end == stem.size() || stem[end] == '_' || stem[end] == '-' || stem[end] == '.') {
-            return true;
+            found = at;
         }
     }
-    return false;
+    return found;
+}
+
+/// Which suffix names this file's map, by its index in kSuffixes, or
+/// kSuffixes.size() for none. The one nearest the END of the name wins: the
+/// map is what a set's naming appends, and words before it belong to the
+/// asset - "painted_metal_shutter_ao" is an occlusion map, not a metal one.
+/// Two suffixes ending at the same place (_normal and _nor_gl cannot, but a
+/// table can grow) fall back to table order.
+usize suffixOf(std::string_view stem) {
+    usize best = kSuffixes.size();
+    usize bestAt = 0;
+    for (usize i = 0; i < kSuffixes.size(); ++i) {
+        const usize at = tokenAt(stem, kSuffixes[i].first);
+        if (at == std::string_view::npos) {
+            continue;
+        }
+        if (best == kSuffixes.size() || at > bestAt) {
+            best = i;
+            bestAt = at;
+        }
+    }
+    return best;
 }
 
 std::vector<u8> readFile(const std::filesystem::path& file) {
@@ -103,25 +128,22 @@ TextureSetFiles findTextureSet(std::span<const std::filesystem::path> files) {
         if (!isImage(file)) {
             continue;
         }
-        const std::string stem = lower(file.stem().string());
-        for (usize i = 0; i < kSuffixes.size(); ++i) {
-            if (!hasSuffix(stem, kSuffixes[i].first)) {
-                continue;
+        const usize i = suffixOf(lower(pathToUtf8(file.stem())));
+        if (i == kSuffixes.size()) {
+            continue;
+        }
+        const auto slot = static_cast<usize>(kSuffixes[i].second);
+        if (i < claimedBy[slot]) {
+            claimedBy[slot] = i;
+            switch (kSuffixes[i].second) {
+            case Slot::BaseColor: set.baseColor = file; break;
+            case Slot::NormalGl: set.normal = file; break;
+            case Slot::NormalDx: break; // decided below, after the GL one had its chance
+            case Slot::Roughness: set.roughness = file; break;
+            case Slot::Metallic: set.metallic = file; break;
+            case Slot::Occlusion: set.occlusion = file; break;
+            case Slot::Emissive: set.emissive = file; break;
             }
-            const auto slot = static_cast<usize>(kSuffixes[i].second);
-            if (i < claimedBy[slot]) {
-                claimedBy[slot] = i;
-                switch (kSuffixes[i].second) {
-                case Slot::BaseColor: set.baseColor = file; break;
-                case Slot::NormalGl: set.normal = file; break;
-                case Slot::NormalDx: break; // decided below, after the GL one had its chance
-                case Slot::Roughness: set.roughness = file; break;
-                case Slot::Metallic: set.metallic = file; break;
-                case Slot::Occlusion: set.occlusion = file; break;
-                case Slot::Emissive: set.emissive = file; break;
-                }
-            }
-            break;
         }
     }
 
@@ -130,7 +152,7 @@ TextureSetFiles findTextureSet(std::span<const std::filesystem::path> files) {
     if (set.normal.empty() && claimedBy[static_cast<usize>(Slot::NormalDx)] < kSuffixes.size()) {
         const usize i = claimedBy[static_cast<usize>(Slot::NormalDx)];
         for (const std::filesystem::path& file : files) {
-            if (isImage(file) && hasSuffix(lower(file.stem().string()), kSuffixes[i].first)) {
+            if (isImage(file) && suffixOf(lower(pathToUtf8(file.stem()))) == i) {
                 set.normal = file;
                 set.normalIsDirectX = true;
                 break;

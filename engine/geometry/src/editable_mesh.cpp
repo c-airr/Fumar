@@ -132,9 +132,12 @@ TriangleMesh EditableMesh::triangulate() const {
         if (lengthSquared(tangent) < 1e-24f) {
             continue;
         }
+        // The handedness that makes cross(n, t) * w point UP the image, where
+        // a normal map's green points. `bitangent` runs towards larger V, and V
+        // runs DOWN the image, as in glTF - so up is the opposite of it.
         const Vec3 direction = normalize(tangent);
         faceTangents[f] = Vec4{direction.x, direction.y, direction.z,
-                               dot(cross(normals[f], tangent), bitangent) < 0.0f ? -1.0f : 1.0f};
+                               dot(cross(normals[f], tangent), bitangent) < 0.0f ? 1.0f : -1.0f};
     }
 
     usize corners = 0;

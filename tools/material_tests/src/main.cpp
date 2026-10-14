@@ -4,6 +4,7 @@
 // expected, and the exit code says whether any failed.
 
 #include "fumar/geometry/primitives.hpp"
+#include "fumar/render/gltf_loader.hpp"
 #include "fumar/render/material_file.hpp"
 #include "fumar/render/material_gpu.hpp"
 #include "fumar/render/mesh.hpp"
@@ -39,10 +40,13 @@ bool near(f32 a, f32 b, f32 tolerance) { return std::abs(a - b) <= tolerance; }
 
 /// A unit quad on the ground, facing up, with U along +X and V along +Z.
 ///
-/// The tangent follows U, so it is +X. The handedness w is whatever turns
-/// cross(normal, tangent) into the direction V runs: cross(+Y, +X) is -Z, and V
-/// runs along +Z, so w is -1. A frame with w the wrong way round lights every
-/// normal-map bump from the opposite side, and looks plausible doing it.
+/// The tangent follows U, so it is +X. The bitangent, cross(normal, tangent) *
+/// w, has to point where the normal map's green does: UP the image. glTF's V
+/// runs DOWN the image (row 0 at the top, as the file stores it), so image-up
+/// is towards smaller V - here -Z. cross(+Y, +X) is already -Z, so w is +1.
+/// MikkTSpace on its own answers -1, the sign for a V that runs up; that sign
+/// shows every normal-mapped bump lit from below, and Khronos's
+/// NormalTangentTest shows it as reflections turned upside down.
 void mikkTangentsOnQuad() {
     std::vector<Vertex> vertices{
         Vertex{.position = {0, 0, 0}, .normal = {0, 1, 0}, .uv = {0, 0}, .tangent = {}},
@@ -58,9 +62,9 @@ void mikkTangentsOnQuad() {
     bool alongU = true;
     for (const Vertex& v : vertices) {
         alongU = alongU && near(v.tangent.x, 1.0f, 1e-4f) && near(v.tangent.y, 0.0f, 1e-4f) &&
-                 near(v.tangent.z, 0.0f, 1e-4f) && v.tangent.w == -1.0f;
+                 near(v.tangent.z, 0.0f, 1e-4f) && v.tangent.w == 1.0f;
     }
-    check(alongU, "quad tangents are (1, 0, 0) with w = -1");
+    check(alongU, "quad tangents are (1, 0, 0) with w = +1: the bitangent points up the image");
 }
 
 /// MikkTSpace over a whole sphere: every tangent usable by a normal map.
@@ -155,6 +159,21 @@ void textureSetPolyHaven() {
           "Poly Haven: nor_dx is a normal map, flagged DirectX");
     check(name(set.roughness) == "brick_wall_rough_2k.jpg", "Poly Haven: rough found");
     check(name(set.occlusion) == "brick_wall_ao_2k.jpg", "Poly Haven: ao found");
+}
+
+/// A Poly Haven name with a map word inside the asset's own name: in
+/// painted_metal_shutter_ao_2k the map is the suffix nearest the end, "ao" -
+/// not the "metal" that is part of what the shutter is called.
+void textureSetMultiWordName() {
+    const Paths files{"painted_metal_shutter_ao_2k.jpg", "painted_metal_shutter_diff_2k.jpg",
+                      "painted_metal_shutter_metal_2k.jpg", "painted_metal_shutter_nor_gl_2k.jpg",
+                      "painted_metal_shutter_rough_2k.jpg"};
+    const TextureSetFiles set = findTextureSet(files);
+    check(name(set.occlusion) == "painted_metal_shutter_ao_2k.jpg", "multi-word name: ao is the occlusion map");
+    check(name(set.metallic) == "painted_metal_shutter_metal_2k.jpg", "multi-word name: metal is the metalness map");
+    check(name(set.baseColor) == "painted_metal_shutter_diff_2k.jpg" &&
+              name(set.roughness) == "painted_metal_shutter_rough_2k.jpg",
+          "multi-word name: colour and roughness found");
 }
 
 void textureSetMixedCase() {
@@ -285,6 +304,69 @@ void hugeImageRefused() {
     check(size.has_value() && size->width == 20000 && size->height == 1, "an image's size is read from its header");
 }
 
+/// A texture path pointing at another machine. Opening it makes Windows
+/// connect to that server and offer the user's credentials, so a .fmat from a
+/// downloaded pack must not be able to ask for one.
+void fmatNetworkPathRefused() {
+    const auto dir = scratch();
+    writeText(dir / "unc.fmat", R"({"fumarMaterial": 1, "baseColor": {"texture": "\\\\evil\\share\\x.png"}})");
+    writeText(dir / "unc2.fmat", R"({"fumarMaterial": 1, "normal": {"texture": "//evil/share/n.png"}})");
+    check(!readMaterialFile(dir / "unc.fmat").has_value(), "a \\\\server\\share texture path is refused");
+    check(!readMaterialFile(dir / "unc2.fmat").has_value(), "a //server/share texture path is refused");
+}
+
+/// Paths with letters outside ASCII - a Polish user's folder - written and read
+/// back unchanged. The narrow-string conversions of std::filesystem go through
+/// the ANSI code page on Windows, which mangles them or throws.
+void fmatUnicodePaths() {
+    const auto dir = scratch() / std::filesystem::path(u8"zażółć gęślą");
+    std::filesystem::create_directories(dir);
+    MaterialDesc desc;
+    desc.name = reinterpret_cast<const char*>(u8"Cegła");
+    desc.baseColor = dir / std::filesystem::path(u8"cegła_Color.png");
+    desc.normal = dir / std::filesystem::path(u8"łąka 東京_NormalGL.png");
+    const auto file = dir / std::filesystem::path(u8"cegła.fmat");
+    bool written = false;
+    try {
+        written = writeMaterialFile(file, desc);
+    } catch (...) {
+        written = false;
+    }
+    std::optional<MaterialDesc> read;
+    try {
+        read = written ? readMaterialFile(file) : std::nullopt;
+    } catch (...) {
+        read.reset();
+    }
+    check(written && read.has_value() && *read == desc, "paths outside ASCII survive the round trip");
+}
+
+/// A glTF whose material is named to climb out of the folder its maps are
+/// exported to. The name comes from the file, and the file comes from
+/// anywhere: the maps must land in the folder asked for, whatever it says.
+void gltfExportStaysInFolder() {
+    const auto dir = scratch() / "export";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir / "src");
+    const Pixels red = solid(4, 4, 200);
+    writePng(dir / "src" / "img.png", red);
+    writeText(dir / "src" / "evil.gltf", R"({
+        "asset": {"version": "2.0"},
+        "images": [{"uri": "img.png"}],
+        "textures": [{"source": 0}],
+        "materials": [{"name": "../../escaped", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+    })");
+
+    const auto out = dir / "out" / "deep";
+    MaterialDesc desc;
+    const bool ok = exportGltfMaterial(dir / "src" / "evil.gltf", 0, out, desc);
+    std::error_code ec;
+    const bool inside = !desc.baseColor.empty() && desc.baseColor.parent_path() == out &&
+                        std::filesystem::exists(desc.baseColor, ec);
+    const bool escaped = std::filesystem::exists(dir / "escaped_Color.png", ec);
+    check(ok && inside && !escaped, "a glTF material name cannot write outside the export folder");
+}
+
 } // namespace
 
 int main() {
@@ -299,6 +381,7 @@ int main() {
     section("texture sets");
     textureSetAmbientCg();
     textureSetPolyHaven();
+    textureSetMultiWordName();
     textureSetMixedCase();
     textureSetUnusable();
     packingSizes();
@@ -308,6 +391,9 @@ int main() {
     fmatRoundTrip();
     fmatMalformed();
     fmatMissingTexture();
+    fmatNetworkPathRefused();
+    fmatUnicodePaths();
+    gltfExportStaysInFolder();
 
     std::printf(failures == 0 ? "\nall good\n" : "\n%d check(s) failed\n", failures);
     return failures == 0 ? 0 : 1;

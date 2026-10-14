@@ -205,11 +205,11 @@ void drawLibrary(EditorState& state, Renderer& renderer, ImGuiLayer& ui) {
     }
 
     for (const std::filesystem::path& file : state.materialFiles) {
-        if (std::find(loadedFiles.begin(), loadedFiles.end(), file.string()) != loadedFiles.end() ||
-            !contains(file.stem().string(), state.materialFilter)) {
+        if (std::find(loadedFiles.begin(), loadedFiles.end(), pathToUtf8(file)) != loadedFiles.end() ||
+            !contains(pathToUtf8(file.stem()), state.materialFilter)) {
             continue;
         }
-        ImGui::PushID(file.string().c_str());
+        ImGui::PushID(pathToUtf8(file).c_str());
         if (ImGui::Button("load", ImVec2(kThumbnail, kThumbnail))) {
             const MaterialHandle loaded = renderer.loadMaterialFile(file);
             if (loaded.valid()) {
@@ -219,7 +219,7 @@ void drawLibrary(EditorState& state, Renderer& renderer, ImGuiLayer& ui) {
         }
         ImGui::SameLine();
         ImGui::BeginGroup();
-        ImGui::TextUnformatted(file.stem().string().c_str());
+        ImGui::TextUnformatted(pathToUtf8(file.stem()).c_str());
         ImGui::TextDisabled("not loaded yet");
         ImGui::EndGroup();
         ImGui::PopID();
@@ -271,7 +271,7 @@ void drawMapSlot(EditorState& state, Renderer& renderer, ImGuiLayer& ui, FileDia
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::TextUnformatted(label);
-    const std::string shown = !path.empty()          ? std::filesystem::path(path).filename().string()
+    const std::string shown = !path.empty()          ? pathToUtf8(pathFromUtf8(path).filename())
                               : texture.valid()      ? "(inside the file)"
                                                      : "-";
     ImGui::TextDisabled("%s", shown.c_str());
@@ -283,7 +283,7 @@ void drawMapSlot(EditorState& state, Renderer& renderer, ImGuiLayer& ui, FileDia
         if (ImGui::Button("...")) {
             static constexpr std::array<FileFilter, 1> kImages{{{"Images", "png;jpg;jpeg;tga"}}};
             const Material& material = renderer.resources().material(handle);
-            dialog.openFile(window, kImages, std::filesystem::path(material.origin.file).parent_path());
+            dialog.openFile(window, kImages, pathFromUtf8(material.origin.file).parent_path());
             state.pendingMapSlot = static_cast<int>(slot);
             state.pendingMapMaterial = handle;
         }
@@ -339,7 +339,7 @@ void drawEditor(EditorState& state, Renderer& renderer, ImGuiLayer& ui, FileDial
                               "with the maps written out as PNG files.");
         }
     } else {
-        ImGui::TextDisabled("%s", std::filesystem::path(material.origin.file).filename().string().c_str());
+        ImGui::TextDisabled("%s", pathToUtf8(pathFromUtf8(material.origin.file).filename()).c_str());
     }
     ImGui::Separator();
 
@@ -486,7 +486,7 @@ MaterialHandle newMaterial(Renderer& renderer, const std::filesystem::path& dire
     std::filesystem::create_directories(directory, ec);
     const std::filesystem::path file = unusedPath(directory, "New Material", ".fmat");
     MaterialDesc desc;
-    desc.name = file.stem().string();
+    desc.name = pathToUtf8(file.stem());
     desc.roughnessFactor = 0.6f;
     if (!writeMaterialFile(file, desc)) {
         return {};
@@ -507,18 +507,18 @@ MaterialHandle duplicateAsFmat(Renderer& renderer, MaterialHandle source, const 
     std::filesystem::create_directories(directory, ec);
     const std::filesystem::path folder = unusedPath(directory, fileNameFor(material.name), "");
     std::filesystem::create_directories(folder, ec);
-    desc.name = folder.filename().string();
+    desc.name = pathToUtf8(folder.filename());
 
     if (material.origin.kind == MaterialOrigin::Kind::Gltf &&
         !exportGltfMaterial(material.origin.file, material.origin.index, folder, desc)) {
         FUMAR_WARN("'{}' copied without some of its maps", material.name);
     }
 
-    const std::filesystem::path file = folder / (desc.name + ".fmat");
+    const std::filesystem::path file = folder / pathFromUtf8(desc.name + ".fmat");
     if (!writeMaterialFile(file, desc)) {
         return {};
     }
-    FUMAR_INFO("material '{}' copied to '{}'", material.name, file.string());
+    FUMAR_INFO("material '{}' copied to '{}'", material.name, pathToUtf8(file));
     return renderer.loadMaterialFile(file);
 }
 

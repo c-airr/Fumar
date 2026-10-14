@@ -1,5 +1,7 @@
 #include "fumar/render/scene_io.hpp"
 
+#include "fumar/render/material_file.hpp"
+
 #include "fumar/core/log.hpp"
 #include "fumar/platform/paths.hpp"
 #include "fumar/render/gltf_writer.hpp"
@@ -88,6 +90,20 @@ std::string fileNameFor(const std::string& name) {
         result += (std::isalnum(u) != 0 || c == '-' || c == '_') ? c : '_';
     }
     return result.empty() ? std::string("mesh") : result;
+}
+
+/// toPortablePath for a path held as UTF-8 text - how materials keep theirs.
+std::string toPortablePathUtf8(const std::string& absolute) {
+    std::error_code ec;
+    const std::filesystem::path path = pathFromUtf8(absolute);
+    const auto relative = std::filesystem::relative(path, executableDirectory(), ec);
+    return pathToUtf8(ec || relative.empty() ? path : std::filesystem::path(relative.generic_u8string()));
+}
+
+/// fromPortablePath for text written by toPortablePathUtf8.
+std::filesystem::path fromPortablePathUtf8(const std::string& stored) {
+    const std::filesystem::path path = pathFromUtf8(stored);
+    return path.is_absolute() ? path : executableDirectory() / path;
 }
 
 std::filesystem::path fromPortablePath(const std::string& stored) {
@@ -238,7 +254,7 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         // file holds everything else, so one material edited and saved there
         // changes every scene that uses it.
         if (material.origin.kind == MaterialOrigin::Kind::Fmat) {
-            entry["fmat"] = toPortablePath(material.origin.file);
+            entry["fmat"] = toPortablePathUtf8(material.origin.file);
             materials.push_back(std::move(entry));
             continue;
         }
@@ -252,7 +268,7 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
             entry["file"] = toPortablePath(material.origin.file);
             entry["index"] = material.origin.index;
         } else if (!material.baseColorPath.empty()) {
-            entry["texture"] = toPortablePath(material.baseColorPath);
+            entry["texture"] = toPortablePathUtf8(material.baseColorPath);
         }
         materials.push_back(std::move(entry));
     }
@@ -479,7 +495,7 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
     std::vector<MaterialHandle> materials;
     for (const Json& entry : root.value("materials", Json::array())) {
         if (entry.contains("fmat") && entry["fmat"].is_string()) {
-            const std::filesystem::path materialFile = fromPortablePath(entry["fmat"].get<std::string>());
+            const std::filesystem::path materialFile = fromPortablePathUtf8(entry["fmat"].get<std::string>());
             MaterialHandle loaded = renderer.loadMaterialFile(materialFile);
             if (!loaded.valid()) {
                 // Moved or deleted since the scene was saved. The scene still
@@ -513,7 +529,7 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         const MaterialHandle created = renderer.createMaterial(
             entry.value("name", std::string{"material"}),
             vec4From(entry.value("color", Json::array()), Vec4{1.0f, 1.0f, 1.0f, 1.0f}),
-            entry.contains("texture") ? fromPortablePath(entry["texture"].get<std::string>())
+            entry.contains("texture") ? fromPortablePathUtf8(entry["texture"].get<std::string>())
                                       : std::filesystem::path{});
 
         Material& material = renderer.resources().material(created);

@@ -197,7 +197,9 @@ void tangents() {
     check(tangentsSound(makeUvSphere(1.0f).triangulate()), "sphere tangents are unit, orthogonal, signed");
 
     // The plane's U runs along +X and its V along +Z (see makePlane), facing
-    // +Y: the tangent follows U, and cross(n, t) * w has to follow V.
+    // +Y. The tangent follows U. The bitangent, cross(n, t) * w, follows the
+    // normal map's green, which points UP the image - and V runs DOWN it, as
+    // in glTF - so the bitangent points towards smaller V: -Z.
     const TriangleMesh plane = makePlane(1.0f).triangulate();
     bool alongUv = !plane.tangents.empty();
     for (usize i = 0; i < plane.tangents.size(); ++i) {
@@ -205,9 +207,9 @@ void tangents() {
         const Vec3 tangent{t.x, t.y, t.z};
         const Vec3 bitangent = cross(plane.normals[i], tangent) * t.w;
         alongUv = alongUv && dot(tangent, Vec3{1.0f, 0.0f, 0.0f}) > 0.99f &&
-                  dot(bitangent, Vec3{0.0f, 0.0f, 1.0f}) > 0.99f;
+                  dot(bitangent, Vec3{0.0f, 0.0f, -1.0f}) > 0.99f;
     }
-    check(alongUv, "plane tangent follows +U, bitangent follows +V");
+    check(alongUv, "plane tangent follows +U, bitangent points up the image (-V)");
 
     // No UV area at all: nothing to take a direction from, and still no NaN.
     EditableMesh flat = makePlane(1.0f);
