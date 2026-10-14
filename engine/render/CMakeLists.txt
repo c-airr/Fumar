@@ -9,6 +9,7 @@
 
 add_library(fumar_render STATIC
     src/camera.cpp
+    src/cpu_workload.cpp
     src/gltf_loader.cpp
     src/gltf_writer.cpp
     src/material_file.cpp

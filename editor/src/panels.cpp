@@ -1248,24 +1248,43 @@ void drawWorldSettings(Renderer& renderer) {
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip(
-                "Balanced is the ordinary renderer: CPU builds the node\n"
-                "matrices, the GPU transforms, shades and traces. Shadows stay.\n"
-                "GPU moves that matrix multiply into a compute shader. Shading\n"
-                "and rays stay where they are.\n"
-                "CPU transforms every vertex on the processor and uploads it.\n"
-                "The GPU still rasterises, shades and traces, so the scene does\n"
-                "not become a software renderer.");
+                "Which processor does most of the frame. Statistics shows\n"
+                "where the milliseconds go in each.\n\n"
+                "Balanced: the ordinary renderer. CPU builds the node\n"
+                "matrices; the GPU transforms, shades and traces per pixel.\n\n"
+                "GPU: the node matrices move to a compute shader as well;\n"
+                "the CPU does little more than record commands.\n\n"
+                "CPU: vertex transform and every ray - shadows, sky\n"
+                "occlusion, bounced light - run on all cores, per vertex.\n"
+                "The GPU only rasterises and evaluates materials, so the\n"
+                "editor stays usable instead of becoming a slideshow.");
         }
         switch (renderer.workload()) {
         case Renderer::Workload::Gpu:
-            ImGui::TextDisabled("Compute shader builds world matrices. GPU still shades and traces.");
+            ImGui::TextDisabled("Compute shader builds world matrices. GPU shades and traces.");
             break;
         case Renderer::Workload::Balanced:
             ImGui::TextDisabled("Ordinary path. CPU matrices, GPU transform, shading and rays.");
             break;
-        case Renderer::Workload::Cpu:
-            ImGui::TextDisabled("CPU transforms vertices. GPU still rasterises, shades and traces.");
+        case Renderer::Workload::Cpu: {
+            Renderer::CpuWorkloadSettings& cpu = renderer.cpuWorkloadSettings();
+            ImGui::SliderFloat("Vertex spacing", &cpu.vertexSpacing, 0.1f, 2.0f, "%.2f m");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("The CPU lights each VERTEX, so meshes are split until no\n"
+                                  "edge is longer than this. Smaller: finer shadows, more\n"
+                                  "vertices to transform and trace.");
+            }
+            ImGui::SliderFloat("Ray budget", &cpu.budgetMs, 1.0f, 30.0f, "%.0f ms");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Time per frame the CPU spends tracing, on every core.\n"
+                                  "More converges faster after a change, and costs frame rate.");
+            }
+            const u32 samples = renderer.cpuLightSamples();
+            const u32 most = Renderer::cpuLightMaxSamples();
+            ImGui::TextDisabled("%u threads, lighting %u/%u samples%s", renderer.cpuThreads(), samples, most,
+                                samples >= most ? " (done)" : "");
             break;
+        }
         }
     }
 }

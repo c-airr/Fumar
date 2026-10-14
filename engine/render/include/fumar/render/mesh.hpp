@@ -131,6 +131,11 @@ public:
 
     bool valid() const { return m_indexCount > 0; }
 
+    /// A number no other mesh built in this run has. Caches of what was
+    /// derived from a mesh key on it: a handle can be pointed at a new mesh,
+    /// and an address can be reused, but a serial never repeats.
+    u64 serial() const { return m_serial; }
+
 private:
     rhi::Buffer m_vertexBuffer;
     rhi::Buffer m_indexBuffer;
@@ -141,6 +146,7 @@ private:
     std::vector<Vertex> m_vertices;
     std::vector<u32> m_indices;
     std::vector<u32> m_polygonSizes;
+    u64 m_serial = 0;
 };
 
 /// Uploads an editable mesh: triangulated, with a normal per corner as its

@@ -11,7 +11,50 @@
 #include "frame.glsl"
 #include "material.glsl"
 
-#ifdef FUMAR_RAY_QUERY
+#if defined(FUMAR_CPU_LIGHTING)
+
+// The Cpu workload. Every answer below was traced on the CPU, once per VERTEX,
+// and arrives here interpolated across the triangle - see engine/render/src/
+// cpu_workload.hpp. Nothing is traced in this shader at all. The values are
+// raw fractions; the strength sliders are applied here, so moving one does not
+// throw away what the CPU has gathered.
+layout(location = 4) in vec4 vCpuVisibility; // sun, sky, occlusion within the AO radius
+layout(location = 5) in vec4 vCpuLamps;      // lamps 0..3
+layout(location = 6) in vec3 vCpuBounce;
+
+float sunVisibility(vec3 position, vec3 normal, float nDotL) {
+    if (nDotL <= 0.0) {
+        return 1.0;
+    }
+    return mix(1.0, clamp(vCpuVisibility.x, 0.0, 1.0), frame.shadowStrength);
+}
+
+/// Only the first four lamps have answers from the CPU; the rest are lit
+/// without shadows.
+float lightVisibility(int lightIndex, vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
+                      float nDotL) {
+    if (lightIndex >= 4 || nDotL <= 0.0) {
+        return 1.0;
+    }
+    return mix(1.0, clamp(vCpuLamps[lightIndex], 0.0, 1.0), frame.shadowStrength);
+}
+
+/// Per-vertex reflections would be a smear, so the CPU traces none: what is
+/// reflected is the sky.
+vec3 traceReflection(vec3 origin, vec3 rayDirection) {
+    return skyWithSun(rayDirection);
+}
+
+vec3 indirectBounce(vec3 position, vec3 normal, out float skyVisibility) {
+    skyVisibility = clamp(vCpuVisibility.y, 0.0, 1.0);
+    return max(vCpuBounce, vec3(0.0));
+}
+
+float ambientOcclusion(vec3 position, vec3 normal) {
+    return mix(1.0, clamp(vCpuVisibility.z, 0.0, 1.0), frame.occlusionStrength);
+}
+
+#elif defined(FUMAR_RAY_QUERY)
 
 // The whole scene, as a tree of bounding volumes over every triangle in it.
 // Rebuilt each frame, because objects move.
@@ -233,7 +276,7 @@ float sunVisibility(vec3 position, vec3 normal, float nDotL) {
 /// Same idea as the sun, with one difference that matters: the ray stops AT the
 /// light rather than carrying on to infinity. Something behind the lamp is not
 /// between you and it.
-float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
+float lightVisibility(int lightIndex, vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
                       float nDotL) {
     if (nDotL <= 0.0 || frame.shadowStrength <= 0.0) {
         return 1.0;
@@ -518,7 +561,7 @@ float sunVisibility(vec3 position, vec3 normal, float nDotL) {
     return 1.0;
 }
 
-float lightVisibility(vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
+float lightVisibility(int lightIndex, vec3 position, vec3 normal, vec3 lightPosition, float sourceRadius,
                       float nDotL) {
     return 1.0;
 }

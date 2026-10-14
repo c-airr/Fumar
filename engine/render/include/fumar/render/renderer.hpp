@@ -23,6 +23,8 @@
 
 namespace fumar {
 
+class CpuWorkload;
+
 class Window;
 
 namespace rhi {
@@ -182,18 +184,43 @@ public:
     /// rather than leaving the sliders looking broken.
     bool rayTracingSupported() const;
 
-    /// Where the per-frame transform work runs. Shading, rasterisation and ray
-    /// tracing stay on the GPU in every mode, which is what keeps shadows and
-    /// keeps a full scene from becoming a software renderer.
+    /// Which processor does most of a frame's work - the point being to SEE
+    /// what moving it does, in the viewport and in the profiler.
     ///
-    /// Balanced is the ordinary path: the CPU multiplies the node hierarchy
-    /// and the vertex shader transforms each vertex. Gpu moves that hierarchy
-    /// multiply into a compute shader. Cpu transforms every vertex on the CPU
-    /// and uploads the result; the GPU still fills pixels and traces rays.
+    /// Balanced is the ordinary path: the CPU multiplies the node hierarchy,
+    /// the GPU transforms, shades and traces every ray per pixel.
+    ///
+    /// Gpu moves the hierarchy multiply into a compute shader too, so the CPU
+    /// does little more than record commands.
+    ///
+    /// Cpu moves the transform AND every ray onto the processor: shadows, sky
+    /// occlusion and bounced light are traced per vertex on all cores, against
+    /// the CPU's own copy of the scene, and handed to the GPU as a vertex
+    /// attribute. The GPU is left rasterising and evaluating materials - the
+    /// part that would make a software renderer crawl. See cpu_workload.hpp.
     enum class Workload { Gpu, Balanced, Cpu };
 
     void setWorkload(Workload workload) { m_workload = workload; }
     Workload workload() const { return m_workload; }
+
+    /// How the Cpu workload spends its time.
+    struct CpuWorkloadSettings {
+        /// The longest a triangle edge may be, in metres, before it is split:
+        /// lighting is per vertex there, so this is how fine a shadow can be.
+        f32 vertexSpacing = 0.5f;
+
+        /// Milliseconds per frame the CPU spends tracing, on every core.
+        f32 budgetMs = 8.0f;
+    };
+    CpuWorkloadSettings& cpuWorkloadSettings() { return m_cpuSettings; }
+
+    /// Samples per vertex the Cpu workload's lighting has gathered so far -
+    /// the least of any visible vertex - out of cpuLightMaxSamples().
+    u32 cpuLightSamples() const;
+    static u32 cpuLightMaxSamples();
+
+    /// Threads the Cpu workload traces on, the main thread included.
+    u32 cpuThreads() const;
 
     /// Where the last frames' time went, per stage, on each processor. The
     /// editor adds its own widget-building time under ProfileStage::Interface.
@@ -341,13 +368,13 @@ private:
     void allocateDescriptorSets();
     void updateFrameUniforms(u32 frameIndex);
 
-    /// Grows this frame's host-visible vertex buffer until it can hold `bytes`.
-    /// Safe only after this slot's fence has been waited on.
-    void ensureWorkloadBuffer(u32 frameIndex, vk::DeviceSize bytes);
-
-    /// Cpu workload: transforms every rendered mesh into this frame's vertex
-    /// buffer, in world space. The GPU still shades and traces.
+    /// Cpu workload: culls, subdivides and transforms every rendered mesh,
+    /// traces this frame's share of the lighting, and uploads all three
+    /// streams. Before recording, so its stages are timed on their own.
     void prepareCpuGeometry(u32 frameIndex);
+
+    /// Grows a host-visible buffer until it holds `bytes`.
+    void ensureHostBuffer(rhi::Buffer& buffer, vk::DeviceSize bytes, vk::BufferUsageFlags usage);
 
     /// Gpu workload: uploads local matrices and dispatches the compute shader
     /// that writes world matrices. Recorded before the scene draw.
@@ -409,6 +436,10 @@ private:
     /// mesh_gpu.vert: the model matrix comes from the compute shader's buffer
     /// rather than from a push constant the CPU wrote.
     std::unique_ptr<rhi::GraphicsPipeline> m_gpuPipeline;
+
+    /// The Cpu workload's: a second vertex stream carries what the CPU traced,
+    /// and the fragment shader reads it instead of tracing.
+    std::unique_ptr<rhi::GraphicsPipeline> m_cpuPipeline;
 
     std::unique_ptr<rhi::ComputePipeline> m_worldCompute;
 
@@ -648,9 +679,13 @@ private:
         /// scene's textures; the rest still hold the white neutral one.
         u32 texturesWritten = 0;
 
-        /// Vertices the Cpu workload uploads every frame, already in world
-        /// space. Host-visible, so the write is a memcpy.
+        /// The Cpu workload's three streams, rewritten every frame: vertices
+        /// already in world space, what the CPU traced for each of them, and
+        /// the subdivided meshes' indices. Host-visible, so each write is a
+        /// memcpy.
         rhi::Buffer workloadVertices;
+        rhi::Buffer workloadLight;
+        rhi::Buffer workloadIndices;
 
         /// Local matrix and parent index, one entry per node slot. The compute
         /// shader reads it. Host-visible because the CPU fills it each frame.
@@ -661,17 +696,6 @@ private:
 
         vk::DescriptorSet computeSet;
         vk::DescriptorSet worldSet;
-    };
-
-    /// One drawable after prepareCpuGeometry. Indices stay in the mesh's
-    /// own buffer - topology did not change - and vertexOffset says where in
-    /// the shared workload buffer this object's vertices start.
-    struct WorkloadDraw {
-        vk::Buffer indexBuffer;
-        u32 indexCount = 0;
-        i32 vertexOffset = 0;
-        u32 materialIndex = 0;
-        f32 highlight = 0.0f;
     };
 
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
@@ -739,8 +763,10 @@ private:
 
     FrameProfiler m_profiler;
 
-    std::vector<WorkloadDraw> m_workloadDraws;
-    std::vector<Vertex> m_cpuVertices;
+    /// The Cpu workload's caches, thread pool and lighting. Created on first
+    /// use, so the other workloads never start its threads.
+    std::unique_ptr<CpuWorkload> m_cpu;
+    CpuWorkloadSettings m_cpuSettings;
     OverlayCallback m_overlay;
 
     NodeId m_selected = kInvalidNode;

@@ -9,9 +9,10 @@
 // neighbours (G), and how much light a facet reflects at this angle rather than
 // letting through (F).
 
-// No #version here: this file is the BODY of two shaders, not a shader. Which
-// one is being built is decided by whether FUMAR_RAY_QUERY is defined before
-// the include - see mesh.frag and mesh_rq.frag. Both variants exist because
+// No #version here: this file is the BODY of three shaders, not a shader.
+// Which one is being built is decided by what is defined before the include:
+// FUMAR_RAY_QUERY in mesh_rq.frag, FUMAR_CPU_LIGHTING in mesh_cpu.frag (the Cpu
+// workload, whose visibility answers come from the CPU), neither in mesh.frag. Both variants exist because
 // tracing rays needs an extension not every GPU has, and a single shader cannot
 // be half-compiled.
 
@@ -204,7 +205,7 @@ void main() {
 
         float shadow = 1.0;
         if (light.shape.w > 0.5) {
-            shadow = lightVisibility(vWorldPosition, n, light.positionRange.xyz, light.shape.y,
+            shadow = lightVisibility(i, vWorldPosition, n, light.positionRange.xyz, light.shape.y,
                                      lightNDotL);
         }
 

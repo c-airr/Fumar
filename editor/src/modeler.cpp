@@ -1283,6 +1283,12 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
     // Each workload in turn, with the profiler's table logged once it has
     // settled - the numbers the Statistics panel shows, in a form a test run
     // can keep. Ends back on Balanced, so switching back is exercised too.
+    // Just switch, for screenshots of one workload.
+    if (variant == "cpu" || variant == "gpu") {
+        renderer.setWorkload(variant == "cpu" ? Renderer::Workload::Cpu : Renderer::Workload::Gpu);
+        return false;
+    }
+
     if (variant == "workload") {
         constexpr u32 kPhase = 150;
         constexpr std::array<Renderer::Workload, 4> kOrder{Renderer::Workload::Balanced, Renderer::Workload::Gpu,
@@ -1296,6 +1302,10 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
             renderer.setWorkload(kOrder[phase]);
         }
         if (frame % kPhase == kPhase - 1) {
+            if (kOrder[phase] == Renderer::Workload::Cpu) {
+                FUMAR_INFO("workload smoke: Cpu lighting {}/{} samples on {} threads", renderer.cpuLightSamples(),
+                           Renderer::cpuLightMaxSamples(), renderer.cpuThreads());
+            }
             const FrameProfiler& profiler = renderer.profiler();
             for (usize i = 0; i < kProfileStageCount; ++i) {
                 const auto stage = static_cast<ProfileStage>(i);

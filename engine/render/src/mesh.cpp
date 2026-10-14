@@ -5,6 +5,7 @@
 #include "fumar/rhi/upload_context.hpp"
 
 #include <array>
+#include <atomic>
 #include <vector>
 
 namespace fumar {
@@ -56,6 +57,9 @@ Mesh::Mesh(rhi::Device& device, rhi::UploadContext& upload, std::span<const Vert
       m_vertices(vertices.begin(), vertices.end()),
       m_indices(indices.begin(), indices.end()),
       m_polygonSizes(polygonSizes.begin(), polygonSizes.end()) {
+    static std::atomic<u64> next{1};
+    m_serial = next.fetch_add(1, std::memory_order_relaxed);
+
     FUMAR_ASSERT(!vertices.empty() && !indices.empty());
 
     // Computed here, on the CPU copy, because once the data is in device-local

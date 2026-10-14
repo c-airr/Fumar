@@ -1,5 +1,7 @@
 #include "fumar/render/renderer.hpp"
 
+#include "cpu_workload.hpp"
+
 #include "fumar/core/assert.hpp"
 #include "fumar/core/log.hpp"
 #include "fumar/geometry/primitives.hpp"
@@ -272,6 +274,41 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .fragmentConstants = textureSlotConstant,
                    });
 
+    // The Cpu workload's: binding 1 is a second stream, CpuLightVertex, read
+    // at locations 4 to 6 beside the ordinary vertex.
+    const std::array<vk::VertexInputBindingDescription, 2> cpuBindings{
+        Vertex::binding(),
+        vk::VertexInputBindingDescription{
+            .binding = 1,
+            .stride = sizeof(CpuLightVertex),
+            .inputRate = vk::VertexInputRate::eVertex,
+        },
+    };
+    std::vector<vk::VertexInputAttributeDescription> cpuAttributes(vertexAttributes.begin(), vertexAttributes.end());
+    for (u32 i = 0; i < 3; ++i) {
+        cpuAttributes.push_back(vk::VertexInputAttributeDescription{
+            .location = 4 + i,
+            .binding = 1,
+            .format = vk::Format::eR32G32B32A32Sfloat,
+            .offset = i * static_cast<u32>(sizeof(Vec4)),
+        });
+    }
+    m_cpuPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "mesh_cpu.vert.spv",
+                       .fragmentShader = shaderDir / "mesh_cpu.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       .depthFormat = m_depthFormat,
+                       .vertexBindings = cpuBindings,
+                       .vertexAttributes = cpuAttributes,
+                       .setLayouts = setLayouts,
+                       .pushConstantSize = sizeof(ObjectPushConstants),
+                       .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
+                                             vk::ShaderStageFlagBits::eFragment,
+                       .samples = m_sampleCount,
+                       .fragmentConstants = textureSlotConstant,
+                   });
+
     const std::array<vk::DescriptorSetLayout, 1> computeSetLayouts{*m_computeSetLayout};
     m_worldCompute = std::make_unique<rhi::ComputePipeline>(
         *m_device, rhi::ComputePipelineDesc{
@@ -505,6 +542,8 @@ Renderer::~Renderer() {
     m_tonemapPipeline.reset();
     m_skyPipeline.reset();
     m_outlinePipeline.reset();
+    m_cpu.reset();
+    m_cpuPipeline.reset();
     m_pipeline.reset();
     m_upload.reset();
     m_swapchain.reset();
@@ -1834,7 +1873,10 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
     const Mat4 view = m_camera.view();
     const Mat4 projection = m_camera.projection(aspect);
     const Environment& env = m_environment;
-    const bool trace = m_device->rayTracingSupported();
+
+    // Whether anything traces rays this frame: the GPU when it can, or the
+    // CPU in its own workload - which works on any GPU at all.
+    const bool trace = m_device->rayTracingSupported() || m_workload == Workload::Cpu;
 
     FrameUniforms uniforms{
         .view = view,
@@ -1939,6 +1981,32 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
 
     uniforms.lightCount = static_cast<i32>(lightCount);
 
+    // The same picture of the lights and the sky for the CPU's rays.
+    if (m_workload == Workload::Cpu) {
+        if (!m_cpu) {
+            m_cpu = std::make_unique<CpuWorkload>();
+        }
+        CpuLightInputs& in = m_cpu->inputs;
+        in.sunDirection = env.sunDirection();
+        in.sunAngularRadius = uniforms.sunAngularRadius;
+        in.sunRadiance = env.sunColor * env.sunIntensity;
+        in.skyZenith = env.skyZenithColor;
+        in.skyHorizon = env.skyHorizonColor;
+        in.ground = env.groundColor;
+        in.skyIntensity = env.skyIntensity;
+        in.occlusionRadius = env.occlusionRadius;
+        in.lampCount = std::min(lightCount, CpuLightInputs::kMaxLamps);
+        for (u32 i = 0; i < in.lampCount; ++i) {
+            const LightUniform& light = uniforms.lights[i];
+            in.lamps[i] = CpuLightInputs::Lamp{
+                .position = Vec3{light.positionRange.x, light.positionRange.y, light.positionRange.z},
+                .range = light.positionRange.w,
+                .sourceRadius = light.shape.y,
+                .castsShadow = light.shape.w > 0.5f,
+            };
+        }
+    }
+
     // A plain memcpy into persistently mapped memory. No fence is needed: this
     // slot's previous frame was already waited on before we got here.
     m_perFrame[frameIndex].cameraUniforms.write(&uniforms, sizeof(uniforms));
@@ -2023,8 +2091,7 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
     }
 }
 
-void Renderer::ensureWorkloadBuffer(u32 frameIndex, vk::DeviceSize bytes) {
-    rhi::Buffer& buffer = m_perFrame[frameIndex].workloadVertices;
+void Renderer::ensureHostBuffer(rhi::Buffer& buffer, vk::DeviceSize bytes, vk::BufferUsageFlags usage) {
     if (buffer.valid() && buffer.size() >= bytes) {
         return;
     }
@@ -2038,15 +2105,25 @@ void Renderer::ensureWorkloadBuffer(u32 frameIndex, vk::DeviceSize bytes) {
 
     buffer = rhi::Buffer(*m_device, rhi::BufferDesc{
                                         .size = size,
-                                        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+                                        .usage = usage,
                                         .hostVisible = true,
                                     });
 }
 
-void Renderer::prepareCpuGeometry(u32 frameIndex) {
-    m_workloadDraws.clear();
-    m_cpuVertices.clear();
+u32 Renderer::cpuLightSamples() const { return m_cpu ? m_cpu->samples() : 0; }
 
+u32 Renderer::cpuLightMaxSamples() { return CpuWorkload::kMaxSamples; }
+
+u32 Renderer::cpuThreads() const { return m_cpu ? m_cpu->threadCount() : 0; }
+
+void Renderer::prepareCpuGeometry(u32 frameIndex) {
+    if (!m_cpu) {
+        m_cpu = std::make_unique<CpuWorkload>();
+    }
+    m_cpu->settings.vertexSpacing = m_cpuSettings.vertexSpacing;
+    m_cpu->settings.budgetMs = m_cpuSettings.budgetMs;
+
+    std::vector<CpuDrawable> drawables;
     forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& world) {
         if (!m_resources.has(node.mesh)) {
             return;
@@ -2055,46 +2132,53 @@ void Renderer::prepareCpuGeometry(u32 frameIndex) {
         if (!mesh.valid()) {
             return;
         }
-
         const MaterialHandle handle =
             m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
         if (!m_resources.has(handle)) {
             return;
         }
 
-        // Inverse-transpose takes normals along with a non-uniform scale. w = 0
-        // drops the translation, so the full 4x4 is the 3x3 that was needed.
-        const Mat4 normalMatrix = transpose(inverse(world));
-        const i32 base = static_cast<i32>(m_cpuVertices.size());
+        // What a ray landing on this object sees. The CPU has no copy of the
+        // texture pixels, so a textured colour is taken at half its factor -
+        // a stand-in for a typical texture's middle tone. Bounced light is
+        // broad and dim enough that the difference rarely shows.
+        const Material& material = m_resources.material(handle);
+        const f32 textured = material.baseColor.valid() ? 0.5f : 1.0f;
+        const Vec3 albedo = Vec3{material.baseColorFactor.x, material.baseColorFactor.y, material.baseColorFactor.z} *
+                            textured;
+        const Vec3 emissive = material.emissiveColor * material.emissiveIntensity *
+                              (material.emissive.valid() ? 0.5f : 1.0f);
 
-        for (const Vertex& in : mesh.vertices()) {
-            Vertex out = in;
-            const Vec4 worldPosition = world * Vec4{in.position.x, in.position.y, in.position.z, 1.0f};
-            const Vec4 worldNormal = normalMatrix * Vec4{in.normal.x, in.normal.y, in.normal.z, 0.0f};
-            const Vec4 worldTangent = world * Vec4{in.tangent.x, in.tangent.y, in.tangent.z, 0.0f};
-            out.position = {worldPosition.x, worldPosition.y, worldPosition.z};
-            out.normal = {worldNormal.x, worldNormal.y, worldNormal.z};
-            out.tangent = {worldTangent.x, worldTangent.y, worldTangent.z, in.tangent.w};
-            m_cpuVertices.push_back(out);
-        }
-
-        m_workloadDraws.push_back(WorkloadDraw{
-            .indexBuffer = mesh.indexBuffer().handle(),
-            .indexCount = mesh.indexCount(),
-            .vertexOffset = base,
+        drawables.push_back(CpuDrawable{
+            .id = id,
+            .mesh = &mesh,
+            .world = world,
             .materialIndex = handle.index,
             .highlight = id == m_selected ? 1.0f : 0.0f,
+            .albedo = albedo,
+            .emissive = emissive,
         });
     });
 
-    if (m_cpuVertices.empty()) {
+    // updateFrameUniforms has just run and left this frame's view-projection
+    // in m_prevViewProjection, ready for the next frame's motion vectors.
+    m_cpu->prepare(drawables, m_prevViewProjection, m_profiler);
+    m_cpu->light(m_profiler);
+
+    const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Transform);
+    PerFrame& frame = m_perFrame[frameIndex];
+    const auto vertices = m_cpu->vertices();
+    const auto light = m_cpu->lightVertices();
+    const auto indices = m_cpu->indices();
+    if (vertices.empty()) {
         return;
     }
-
-    const vk::DeviceSize bytes =
-        static_cast<vk::DeviceSize>(m_cpuVertices.size() * sizeof(Vertex));
-    ensureWorkloadBuffer(frameIndex, bytes);
-    m_perFrame[frameIndex].workloadVertices.write(m_cpuVertices.data(), static_cast<usize>(bytes));
+    ensureHostBuffer(frame.workloadVertices, vertices.size_bytes(), vk::BufferUsageFlagBits::eVertexBuffer);
+    ensureHostBuffer(frame.workloadLight, light.size_bytes(), vk::BufferUsageFlagBits::eVertexBuffer);
+    ensureHostBuffer(frame.workloadIndices, indices.size_bytes(), vk::BufferUsageFlagBits::eIndexBuffer);
+    frame.workloadVertices.write(vertices.data(), vertices.size_bytes());
+    frame.workloadLight.write(light.data(), light.size_bytes());
+    frame.workloadIndices.write(indices.data(), indices.size_bytes());
 }
 
 void Renderer::ensureGpuNodeBuffers(u32 frameIndex, u32 nodeCount) {
@@ -2389,8 +2473,9 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     // shades and traces. Gpu: the compute pass already wrote the world
     // matrices. Cpu: vertices are already in world space, so the model is
     // identity and the same fragment shader still traces.
-    rhi::GraphicsPipeline& geometry =
-        m_workload == Workload::Gpu ? *m_gpuPipeline : *m_pipeline;
+    rhi::GraphicsPipeline& geometry = m_workload == Workload::Gpu   ? *m_gpuPipeline
+                                      : m_workload == Workload::Cpu ? *m_cpuPipeline
+                                                                    : *m_pipeline;
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, geometry.handle());
 
     cmd.setViewport(0, viewport);
@@ -2403,10 +2488,15 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     }
 
     if (m_workload == Workload::Cpu) {
-        if (!m_workloadDraws.empty()) {
-            cmd.bindVertexBuffers(0, m_perFrame[m_frames->currentFrame()].workloadVertices.handle(),
-                                  {0});
-            for (const WorkloadDraw& draw : m_workloadDraws) {
+        const PerFrame& frame = m_perFrame[m_frames->currentFrame()];
+        if (m_cpu && !m_cpu->draws().empty() && frame.workloadVertices.valid()) {
+            // Two streams side by side: the vertex, and what the CPU traced
+            // for it. One index buffer for every object, offset per draw.
+            const std::array<vk::Buffer, 2> streams{frame.workloadVertices.handle(), frame.workloadLight.handle()};
+            const std::array<vk::DeviceSize, 2> offsets{0, 0};
+            cmd.bindVertexBuffers(0, streams, offsets);
+            cmd.bindIndexBuffer(frame.workloadIndices.handle(), 0, vk::IndexType::eUint32);
+            for (const CpuWorkload::Draw& draw : m_cpu->draws()) {
                 const ObjectPushConstants push{
                     .model = identity(),
                     .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
@@ -2416,8 +2506,7 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
                 cmd.pushConstants<ObjectPushConstants>(
                     geometry.layout(),
                     vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
-                cmd.bindIndexBuffer(draw.indexBuffer, 0, vk::IndexType::eUint32);
-                cmd.drawIndexed(draw.indexCount, 1, 0, draw.vertexOffset, 0);
+                cmd.drawIndexed(draw.indexCount, 1, draw.firstIndex, draw.vertexOffset, 0);
             }
         }
     } else {
@@ -3076,7 +3165,9 @@ void Renderer::recordCommands(u32 imageIndex) {
     if (m_workload == Workload::Gpu) {
         timed(ProfileStage::Nodes, [&] { recordWorldCompute(cmd, frame); });
     }
-    if (m_device->rayTracingSupported()) {
+    // The Cpu workload traces against its own copy of the scene, so the
+    // GPU's structure is not built at all.
+    if (m_device->rayTracingSupported() && m_workload != Workload::Cpu) {
         timed(ProfileStage::Structure, [&] { recordAccelerationStructure(cmd, frame); });
     }
 
@@ -3161,7 +3252,6 @@ void Renderer::drawFrame() {
     // their cost is their own line in the profiler rather than part of the
     // scene pass that draws them.
     if (m_workload == Workload::Cpu) {
-        const FrameProfiler::Scope scope = m_profiler.cpu(ProfileStage::Transform);
         prepareCpuGeometry(m_frames->currentFrame());
     }
 
