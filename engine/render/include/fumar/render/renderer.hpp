@@ -694,6 +694,16 @@ private:
 
     std::vector<InstanceRecord> m_instanceRecords;
 
+    /// How many textures the shaders' array holds on this GPU: kMaxSceneTextures,
+    /// or fewer where the device's descriptor limits say so. Fixed at start-up;
+    /// the descriptor layout, the shaders' specialization constant and the
+    /// material records all use it.
+    u32 m_textureSlots = kMaxSceneTextures;
+
+    /// Works m_textureSlots out from the device. FUMAR_TEXTURE_SLOTS lowers it
+    /// further, to test the path a GPU with low limits takes on one without.
+    void chooseTextureSlots();
+
     /// The slots of the three neutral textures, from registerBuiltins.
     NeutralTextures m_neutral;
 

@@ -90,6 +90,11 @@ struct GraphicsPipelineDesc {
     /// reversed-Z projection, which trades nothing for far better depth
     /// precision - worth doing later, but it has to change in both places.
     vk::CompareOp depthCompare = vk::CompareOp::eLess;
+
+    /// Specialization constants for the fragment shader: entry i sets
+    /// `layout(constant_id = i)`. A constant the shader does not declare is
+    /// ignored, so one list can be handed to every pipeline that might use it.
+    std::span<const u32> fragmentConstants{};
 };
 
 /// A compiled graphics pipeline plus the layout it was built with.

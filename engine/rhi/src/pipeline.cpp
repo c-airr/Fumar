@@ -6,6 +6,7 @@
 #include "fumar/rhi/device.hpp"
 
 #include <array>
+#include <vector>
 #include <utility>
 
 namespace fumar::rhi {
@@ -31,6 +32,21 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
     const vk::UniqueShaderModule vertexModule = loadShaderModule(handle, desc.vertexShader);
     const vk::UniqueShaderModule fragmentModule = loadShaderModule(handle, desc.fragmentShader);
 
+    std::vector<vk::SpecializationMapEntry> constantEntries;
+    for (u32 i = 0; i < static_cast<u32>(desc.fragmentConstants.size()); ++i) {
+        constantEntries.push_back(vk::SpecializationMapEntry{
+            .constantID = i,
+            .offset = i * static_cast<u32>(sizeof(u32)),
+            .size = sizeof(u32),
+        });
+    }
+    const vk::SpecializationInfo fragmentSpecialization{
+        .mapEntryCount = static_cast<u32>(constantEntries.size()),
+        .pMapEntries = constantEntries.data(),
+        .dataSize = desc.fragmentConstants.size_bytes(),
+        .pData = desc.fragmentConstants.data(),
+    };
+
     const std::array<vk::PipelineShaderStageCreateInfo, 2> stages{
         vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eVertex,
@@ -41,6 +57,7 @@ GraphicsPipeline::GraphicsPipeline(Device& device, const GraphicsPipelineDesc& d
             .stage = vk::ShaderStageFlagBits::eFragment,
             .module = *fragmentModule,
             .pName = "main",
+            .pSpecializationInfo = constantEntries.empty() ? nullptr : &fragmentSpecialization,
         },
     };
 

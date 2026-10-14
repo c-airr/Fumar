@@ -9,9 +9,12 @@
 #ifndef FUMAR_MATERIAL_GLSL
 #define FUMAR_MATERIAL_GLSL
 
-/// Must match kMaxSceneTextures in engine/render/include/fumar/render/
-/// material_gpu.hpp.
-const int kMaxSceneTextures = 1024;
+/// The texture array's size: 1024 (kMaxSceneTextures in engine/render/include/
+/// fumar/render/material_gpu.hpp) unless the GPU's descriptor limits allow
+/// fewer, in which case the renderer sets it to what they allow when it builds
+/// the pipeline. A specialization constant, because the descriptor layout is
+/// sized at run time and the shader's array has to agree with it.
+layout(constant_id = 0) const int kMaxSceneTextures = 1024;
 
 /// One material. Laid out exactly as fumar::MaterialRecord in
 /// engine/render/include/fumar/render/material_gpu.hpp, whose offsets are

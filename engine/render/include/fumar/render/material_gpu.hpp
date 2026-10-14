@@ -8,9 +8,11 @@
 
 namespace fumar {
 
-/// How many textures the shaders can reach: the size of the array every
-/// material's maps are read from. Must match kMaxSceneTextures in
-/// shaders/material.glsl.
+/// The most textures the shaders reach: the size of the array every
+/// material's maps are read from, on a GPU whose limits allow it. A GPU with
+/// lower limits gets a smaller array - see Renderer's texture slots - and the
+/// shaders are told its size through a specialization constant
+/// (kMaxSceneTextures in shaders/material.glsl).
 inline constexpr u32 kMaxSceneTextures = 1024;
 
 /// Where the neutral textures sit in that array. A material slot with no map
@@ -59,10 +61,10 @@ static_assert(offsetof(MaterialRecord, emissiveTexture) == 72);
 
 /// The array slot a texture is read from, or `neutral` when it cannot be read:
 /// no texture, a handle past the `textureCount` the scene has, or a texture
-/// past the end of the array.
-u32 textureSlot(TextureHandle handle, usize textureCount, u32 neutral);
+/// past the end of an array of `slots`.
+u32 textureSlot(TextureHandle handle, usize textureCount, u32 neutral, u32 slots);
 
-/// A material as the shaders want it.
-MaterialRecord toRecord(const Material& material, const NeutralTextures& neutral, usize textureCount);
+/// A material as the shaders want it, for an array of `slots` textures.
+MaterialRecord toRecord(const Material& material, const NeutralTextures& neutral, usize textureCount, u32 slots);
 
 } // namespace fumar

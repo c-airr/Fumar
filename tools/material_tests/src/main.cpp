@@ -94,10 +94,13 @@ void mikkTangentsOrthonormal() {
 /// texture past the end of the array - reads the neutral one instead of a slot
 /// nobody wrote.
 void textureSlots() {
-    check(textureSlot(TextureHandle{5}, 10, 0) == 5, "a texture in range keeps its slot");
-    check(textureSlot(TextureHandle{}, 10, 7) == 7, "no texture reads the neutral slot");
-    check(textureSlot(TextureHandle{12}, 10, 7) == 7, "a handle past the scene's textures reads the neutral slot");
-    check(textureSlot(TextureHandle{1500}, 2000, 7) == 7, "a texture past the array's 1024 slots reads the neutral slot");
+    check(textureSlot(TextureHandle{5}, 10, 0, 1024) == 5, "a texture in range keeps its slot");
+    check(textureSlot(TextureHandle{}, 10, 7, 1024) == 7, "no texture reads the neutral slot");
+    check(textureSlot(TextureHandle{12}, 10, 7, 1024) == 7, "a handle past the scene's textures reads the neutral slot");
+    check(textureSlot(TextureHandle{1500}, 2000, 7, 1024) == 7, "a texture past the array's 1024 slots reads the neutral slot");
+    // A GPU whose limits allow a smaller array: the same rule at its size.
+    check(textureSlot(TextureHandle{50}, 200, 7, 64) == 50 && textureSlot(TextureHandle{100}, 200, 7, 64) == 7,
+          "on a 64-slot array, slot 50 is read and slot 100 is not");
 }
 
 void recordFromMaterial() {
@@ -106,7 +109,7 @@ void recordFromMaterial() {
     Material material;
     material.emissiveColor = Vec3{1.0f, 0.5f, 0.0f};
     material.emissiveIntensity = 4.0f;
-    const MaterialRecord glowing = toRecord(material, neutral, 10);
+    const MaterialRecord glowing = toRecord(material, neutral, 10, 1024);
     check(glowing.emissive.x == 4.0f && glowing.emissive.y == 2.0f && glowing.emissive.z == 0.0f,
           "emissive is colour times intensity");
     check(glowing.normalTexture == neutral.flatNormal, "no normal map reads the flat normal");
@@ -119,10 +122,10 @@ void recordFromMaterial() {
 
     material.alphaMode = AlphaMode::Mask;
     material.alphaCutoff = 0.3f;
-    check(toRecord(material, neutral, 10).alphaCutoff == 0.3f, "a masked material carries its cutoff");
+    check(toRecord(material, neutral, 10, 1024).alphaCutoff == 0.3f, "a masked material carries its cutoff");
 
     material.baseColor = TextureHandle{4};
-    check(toRecord(material, neutral, 10).baseColorTexture == 4, "a colour map reads its own slot");
+    check(toRecord(material, neutral, 10, 1024).baseColorTexture == 4, "a colour map reads its own slot");
 }
 
 // --- texture sets -----------------------------------------------------------------

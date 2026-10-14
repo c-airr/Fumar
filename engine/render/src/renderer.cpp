@@ -20,6 +20,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -205,6 +206,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
 
     createDefaultTexture();
     createViewportTarget(m_viewportExtent);
+    chooseTextureSlots();
     createDescriptors();
 
     const std::array<vk::VertexInputBindingDescription, 1> vertexBindings{Vertex::binding()};
@@ -220,6 +222,9 @@ Renderer::Renderer(Window& window) : m_window(window) {
     // between compiled shaders rather than branching inside one keeps the
     // fallback free of any cost, and is the only option anyway - an extension
     // has to be declared when the shader is compiled, not when it runs.
+    // The texture array's size, for the shaders that declare it.
+    const std::array<u32, 1> textureSlotConstant{m_textureSlots};
+
     const std::filesystem::path meshFragment = m_device->rayTracingSupported()
                                                    ? shaderDir / "mesh_rq.frag.spv"
                                                    : shaderDir / "mesh.frag.spv";
@@ -246,6 +251,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        // into. A pipeline built for one sample simply cannot
                        // render into a multisampled target.
                        .samples = m_sampleCount,
+                       .fragmentConstants = textureSlotConstant,
                    });
 
     const std::array<vk::DescriptorSetLayout, 2> gpuSetLayouts{*m_cameraSetLayout, *m_worldSetLayout};
@@ -262,6 +268,7 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
                                              vk::ShaderStageFlagBits::eFragment,
                        .samples = m_sampleCount,
+                       .fragmentConstants = textureSlotConstant,
                    });
 
     const std::array<vk::DescriptorSetLayout, 1> computeSetLayouts{*m_computeSetLayout};
@@ -850,7 +857,7 @@ void Renderer::createDescriptors() {
     // another feature to require - with the slots past the scene holding the
     // white neutral texture, so nothing ever reads a descriptor nobody wrote.
     frameLayout.binding(3, vk::DescriptorType::eCombinedImageSampler, vk::ShaderStageFlagBits::eFragment,
-                        kMaxSceneTextures);
+                        m_textureSlots);
     frameLayout.binding(4, vk::DescriptorType::eStorageBuffer,
                         vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment);
     m_cameraSetLayout = frameLayout.build(handle);
@@ -907,7 +914,7 @@ void Renderer::createDescriptors() {
     std::vector<vk::DescriptorPoolSize> poolSizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, rhi::kFramesInFlight},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kInternalImageDescriptors + kMaxSceneTextures * rhi::kFramesInFlight},
+                               kInternalImageDescriptors + m_textureSlots * rhi::kFramesInFlight},
         // Materials, plus the GPU-workload node buffer, world buffer (compute)
         // and the same world buffer bound again for the vertex shader.
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, rhi::kFramesInFlight * 4},
@@ -1005,7 +1012,7 @@ void Renderer::allocateDescriptorSets() {
         // Every slot, once: the binding is read as a whole, and a slot nobody
         // wrote is undefined behaviour rather than a visible mistake. The
         // scene's own textures replace these as they arrive.
-        for (u32 slot = 0; slot < kMaxSceneTextures; ++slot) {
+        for (u32 slot = 0; slot < m_textureSlots; ++slot) {
             writer.image(frame.cameraSet, 3, m_defaultTexture.view(), *m_sampler,
                          vk::ImageLayout::eShaderReadOnlyOptimal, slot);
         }
@@ -1052,6 +1059,41 @@ std::string lowerExtension(const std::filesystem::path& path) {
 }
 
 } // namespace
+
+void Renderer::chooseTextureSlots() {
+    // Every combined image sampler in the array counts against four limits at
+    // once - per stage and per set, as a sampler and as an image - and the
+    // tightest wins. A few are left over for anything else a pipeline binds.
+    const vk::PhysicalDeviceLimits& limits = m_device->properties().limits;
+    u32 slots = std::min({kMaxSceneTextures, limits.maxPerStageDescriptorSamplers,
+                          limits.maxPerStageDescriptorSampledImages, limits.maxDescriptorSetSamplers,
+                          limits.maxDescriptorSetSampledImages});
+    slots = slots > 16 ? slots - 8 : slots;
+
+    // _dupenv_s rather than getenv, which MSVC's runtime deprecates.
+#if defined(_WIN32)
+    char* forced = nullptr;
+    usize length = 0;
+    if (_dupenv_s(&forced, &length, "FUMAR_TEXTURE_SLOTS") != 0) {
+        forced = nullptr;
+    }
+#else
+    const char* forced = std::getenv("FUMAR_TEXTURE_SLOTS");
+#endif
+    if (forced != nullptr) {
+        const long value = std::strtol(forced, nullptr, 10);
+        if (value >= 4 && static_cast<u32>(value) < slots) {
+            slots = static_cast<u32>(value);
+        }
+#if defined(_WIN32)
+        std::free(forced);
+#endif
+    }
+    m_textureSlots = slots;
+    if (m_textureSlots < kMaxSceneTextures) {
+        FUMAR_INFO("texture array: {} slots (the GPU's descriptor limits, or FUMAR_TEXTURE_SLOTS)", m_textureSlots);
+    }
+}
 
 void Renderer::registerBuiltins() {
     // Into an empty registry, so they take the first slots every time. A slot
@@ -1105,12 +1147,12 @@ void Renderer::updateMaterialData(u32 frameIndex) {
 
     // --- textures added since this frame's array was last written ------------
     const usize textureCount = m_resources.textureCount();
-    if (textureCount > kMaxSceneTextures && !m_warnedTextureOverflow) {
+    if (textureCount > m_textureSlots && !m_warnedTextureOverflow) {
         FUMAR_WARN("{} textures in the scene; the shaders reach {} - the rest read white", textureCount,
-                   kMaxSceneTextures);
+                   m_textureSlots);
         m_warnedTextureOverflow = true;
     }
-    const u32 reachable = static_cast<u32>(std::min<usize>(textureCount, kMaxSceneTextures));
+    const u32 reachable = static_cast<u32>(std::min<usize>(textureCount, m_textureSlots));
     for (u32 slot = frame.texturesWritten; slot < reachable; ++slot) {
         writer.image(frame.cameraSet, 3, m_resources.texture(TextureHandle{slot}).view(), *m_sampler,
                      vk::ImageLayout::eShaderReadOnlyOptimal, slot);
@@ -1144,7 +1186,8 @@ void Renderer::updateMaterialData(u32 frameIndex) {
         if (!frame.materialDirty[i]) {
             continue;
         }
-        const MaterialRecord record = toRecord(m_resources.material(MaterialHandle{i}), m_neutral, textureCount);
+        const MaterialRecord record =
+            toRecord(m_resources.material(MaterialHandle{i}), m_neutral, textureCount, m_textureSlots);
         frame.materialData.write(&record, sizeof(record), sizeof(MaterialRecord) * i);
         frame.materialDirty[i] = false;
     }
