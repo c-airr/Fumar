@@ -26,9 +26,10 @@ namespace {
 
 constexpr f32 kThumbnail = 40.0f;
 
-/// The stock library and the user's own materials, beside the executable.
-std::filesystem::path stockDirectory() { return executableDirectory() / "assets" / "materials"; }
+/// The user's own materials, beside the executable - outside anything a build
+/// copies over.
 std::filesystem::path userDirectory() { return executableDirectory() / "materials"; }
+std::filesystem::path stockDirectory() { return stockMaterialsDirectory(); }
 
 /// A name made safe to be a file name: anything a file system might object to
 /// becomes '_'.
@@ -455,6 +456,16 @@ void drawMaterialsPanel(EditorState& state, Renderer& renderer, ImGuiLayer& ui, 
     }
 
     ImGui::End();
+}
+
+std::filesystem::path stockMaterialsDirectory() {
+#if defined(FUMAR_MATERIALS_SOURCE_DIR)
+    std::error_code ec;
+    if (std::filesystem::exists(FUMAR_MATERIALS_SOURCE_DIR, ec)) {
+        return FUMAR_MATERIALS_SOURCE_DIR;
+    }
+#endif
+    return executableDirectory() / "assets" / "materials";
 }
 
 void resetMaterialsPanel(EditorState& state, ImGuiLayer& ui) {

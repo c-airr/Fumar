@@ -24,6 +24,11 @@ struct EditorState;
 /// an editable .fmat copy.
 void drawMaterialsPanel(EditorState& state, Renderer& renderer, ImGuiLayer& ui, FileDialog& dialog, Window& window);
 
+/// Where the stock library is: the source tree's assets/materials in a
+/// development build - so an edit lands where the build will not overwrite it
+/// - and the copy beside the executable in a distributed one.
+std::filesystem::path stockMaterialsDirectory();
+
 /// Forgets every thumbnail and every handle the panel holds. For just before
 /// the registry is replaced - a scene loaded or a new one started - and with
 /// the GPU idle: a thumbnail is a descriptor pointing at a texture that is

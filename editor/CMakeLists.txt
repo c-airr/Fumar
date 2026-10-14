@@ -42,7 +42,11 @@ endif()
 # a development build works on the SOURCE, not on the copy made beside the
 # executable. Absent from a distributed build, where the copy is all there is.
 target_compile_definitions(fumar_editor PRIVATE
-    FUMAR_LUA_SOURCE_DIR="${CMAKE_SOURCE_DIR}/scripts/lua")
+    FUMAR_LUA_SOURCE_DIR="${CMAKE_SOURCE_DIR}/scripts/lua"
+    # The stock materials, for the same reason: edited in the Materials panel,
+    # a .fmat must change in the source tree, not in the copy beside the
+    # executable that the next build overwrites with the source.
+    FUMAR_MATERIALS_SOURCE_DIR="${CMAKE_SOURCE_DIR}/assets/materials")
 
 # The interface fonts, from ImGui's own misc/fonts directory.
 if(EXISTS "${FUMAR_IMGUI_FONT_DIR}")

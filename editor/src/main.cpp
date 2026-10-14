@@ -47,12 +47,28 @@ void createStarterScene(Renderer& renderer) {
     // shows. Something that looks mid-grey on screen reflects about 20% of the
     // light hitting it, not 50. Where a texture supplies the colour the factor
     // stays near white and only trims the brightness.
+    //
+    // The stock library's full materials when it has been fetched (see
+    // tools/get-materials), and the plain colour textures that ship on main
+    // when it has not - so a fresh clone opens the same courtyard, only
+    // flatter.
+    const std::filesystem::path stock = stockMaterialsDirectory();
+    const auto pick = [&](const char* stockName, const char* name, Vec4 colour, const std::filesystem::path& texture) {
+        const std::filesystem::path fmat = stock / stockName / (std::string(stockName) + ".fmat");
+        std::error_code ec;
+        if (std::filesystem::exists(fmat, ec)) {
+            if (const MaterialHandle loaded = renderer.loadMaterialFile(fmat); loaded.valid()) {
+                return loaded;
+            }
+        }
+        return renderer.createMaterial(name, colour, texture);
+    };
     const MaterialHandle grassMaterial =
-        renderer.createMaterial("Grass", Vec4{0.85f, 0.9f, 0.85f, 1.0f}, textures / "grass.jpg");
+        pick("Grass", "Grass", Vec4{0.85f, 0.9f, 0.85f, 1.0f}, textures / "grass.jpg");
     const MaterialHandle brickMaterial =
-        renderer.createMaterial("Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, textures / "brick.jpg");
+        pick("Bricks", "Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, textures / "brick.jpg");
     const MaterialHandle woodMaterial =
-        renderer.createMaterial("Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, textures / "wood.jpg");
+        pick("WoodFloor", "Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, textures / "wood.jpg");
     const MaterialHandle stoneMaterial =
         renderer.createMaterial("Stone", Vec4{0.34f, 0.335f, 0.32f, 1.0f});
     const MaterialHandle metalMaterial =
@@ -63,14 +79,19 @@ void createStarterScene(Renderer& renderer) {
     // Tiling is what keeps a texture at a believable size. A node's scale does
     // not touch texture coordinates, so a cube stretched into a ten-metre wall
     // would otherwise carry one enormous brick.
-    resources.material(grassMaterial).uvScale = Vec2{14.0f, 14.0f};
-    resources.material(grassMaterial).roughness = 0.95f;
-
-    resources.material(brickMaterial).uvScale = Vec2{6.0f, 2.0f};
-    resources.material(brickMaterial).roughness = 0.85f;
-
-    resources.material(woodMaterial).uvScale = Vec2{3.0f, 3.0f};
-    resources.material(woodMaterial).roughness = 0.55f;
+    //
+    // A stock material's roughness comes from its map, which the factor
+    // scales - so only the plain fallbacks get a roughness set here.
+    const auto tune = [&](MaterialHandle handle, Vec2 tiling, f32 roughness) {
+        Material& material = resources.material(handle);
+        material.uvScale = tiling;
+        if (material.origin.kind != MaterialOrigin::Kind::Fmat) {
+            material.roughness = roughness;
+        }
+    };
+    tune(grassMaterial, Vec2{14.0f, 14.0f}, 0.95f);
+    tune(brickMaterial, Vec2{6.0f, 2.0f}, 0.85f);
+    tune(woodMaterial, Vec2{3.0f, 3.0f}, 0.55f);
 
     resources.material(stoneMaterial).roughness = 0.75f;
 
