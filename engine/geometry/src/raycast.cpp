@@ -77,6 +77,28 @@ RayCaster::RayCaster(const EditableMesh& mesh) {
         }
     }
 
+    buildTree();
+}
+
+RayCaster::RayCaster(std::span<const Vec3> positions, std::span<const u32> indices) {
+    m_triangles.reserve(indices.size() / 3);
+    for (usize i = 0; i + 2 < indices.size(); i += 3) {
+        // Out of range is skipped, not trusted: the indices may come from a file.
+        if (indices[i] >= positions.size() || indices[i + 1] >= positions.size() ||
+            indices[i + 2] >= positions.size()) {
+            continue;
+        }
+        m_triangles.push_back(Triangle{
+            .a = positions[indices[i]],
+            .b = positions[indices[i + 1]],
+            .c = positions[indices[i + 2]],
+            .face = static_cast<u32>(i / 3),
+        });
+    }
+    buildTree();
+}
+
+void RayCaster::buildTree() {
     if (m_triangles.empty()) {
         return;
     }

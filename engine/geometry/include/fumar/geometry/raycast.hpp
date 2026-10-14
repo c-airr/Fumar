@@ -3,6 +3,7 @@
 #include "fumar/geometry/editable_mesh.hpp"
 
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace fumar::geometry {
@@ -27,6 +28,12 @@ class RayCaster {
 public:
     RayCaster() = default;
     explicit RayCaster(const EditableMesh& mesh);
+
+    /// From a plain triangle list - three indices per triangle - as a renderer
+    /// holds it. A hit's `face` is then the triangle's number, index / 3. Used
+    /// by the CPU workload, which traces shadow and light rays through every
+    /// mesh in the scene the way the GPU traces them through its own tree.
+    RayCaster(std::span<const Vec3> positions, std::span<const u32> indices);
 
     struct Hit {
         /// Distance along the ray in multiples of `direction`, which need not
@@ -63,6 +70,7 @@ private:
         u32 count = 0;
     };
 
+    void buildTree();
     void build(u32 index, u32 first, u32 count);
 
     template <bool AnyHit>

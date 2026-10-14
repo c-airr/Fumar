@@ -14,8 +14,10 @@
 #include "fumar/geometry/operations.hpp"
 #include "fumar/geometry/primitives.hpp"
 #include "fumar/geometry/raycast.hpp"
+#include "fumar/core/job_pool.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -513,6 +515,92 @@ void flipping() {
     check(inward, "and every face points inward");
 }
 
+/// The triangle-list form against brute force: random rays through a sphere's
+/// triangles, the nearest hit from the tree and from testing every triangle
+/// must agree.
+void triangleListRaycasting() {
+    section("ray casting a triangle list");
+
+    const TriangleMesh triangles = makeUvSphere(1.0f, 24, 12).triangulate();
+    const RayCaster caster(triangles.positions, triangles.indices);
+
+    const auto bruteForce = [&](Vec3 origin, Vec3 direction) {
+        f32 best = 1e30f;
+        for (usize i = 0; i + 2 < triangles.indices.size(); i += 3) {
+            const Vec3 a = triangles.positions[triangles.indices[i]];
+            const Vec3 e1 = triangles.positions[triangles.indices[i + 1]] - a;
+            const Vec3 e2 = triangles.positions[triangles.indices[i + 2]] - a;
+            const Vec3 p = cross(direction, e2);
+            const f32 det = dot(e1, p);
+            if (std::abs(det) < 1e-12f) {
+                continue;
+            }
+            const Vec3 s = origin - a;
+            const f32 u = dot(s, p) / det;
+            const Vec3 q = cross(s, e1);
+            const f32 v = dot(direction, q) / det;
+            const f32 t = dot(e2, q) / det;
+            if (u >= 0.0f && v >= 0.0f && u + v <= 1.0f && t > 1e-6f) {
+                best = std::min(best, t);
+            }
+        }
+        return best;
+    };
+
+    u32 seed = 12345;
+    const auto random = [&seed] {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<f32>(seed >> 8) / static_cast<f32>(1u << 24) * 2.0f - 1.0f;
+    };
+
+    bool agree = true;
+    bool anyAgree = true;
+    for (int i = 0; i < 2000; ++i) {
+        const Vec3 origin{random() * 3.0f, random() * 3.0f, random() * 3.0f};
+        const Vec3 direction{random(), random(), random()};
+        const f32 expected = bruteForce(origin, direction);
+        const auto hit = caster.closest(origin, direction);
+        const f32 got = hit ? hit->t : 1e30f;
+        agree = agree && std::abs(expected - got) < 1e-3f;
+        anyAgree = anyAgree && caster.occluded(origin, direction, 1e30f) == (expected < 1e30f);
+    }
+    check(agree, "nearest hits match testing every triangle, 2000 random rays");
+    check(anyAgree, "any-hit answers match too");
+
+    const std::vector<u32> broken{0, 1, 99999};
+    check(RayCaster(triangles.positions, broken).empty(), "a triangle with an out-of-range index is skipped");
+}
+
+/// Every index visited exactly once, however the chunks fall.
+void jobPool() {
+    section("job pool");
+
+    JobPool pool;
+    check(pool.threadCount() >= 1, "the pool counts the caller as a thread");
+
+    for (const usize count : {usize{0}, usize{1}, usize{7}, usize{1000}, usize{100003}}) {
+        std::vector<std::atomic<u32>> visits(count);
+        pool.parallelFor(count, 64, [&](usize begin, usize end) {
+            for (usize i = begin; i < end; ++i) {
+                visits[i].fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+        bool once = true;
+        for (const std::atomic<u32>& v : visits) {
+            once = once && v.load() == 1;
+        }
+        check(once, "every one of " + std::to_string(count) + " indices runs exactly once");
+    }
+
+    // Back to back, many times: a worker that wakes late must not run a loop
+    // that has already finished.
+    std::atomic<usize> total{0};
+    for (int round = 0; round < 500; ++round) {
+        pool.parallelFor(256, 8, [&](usize begin, usize end) { total.fetch_add(end - begin); });
+    }
+    check(total.load() == 500u * 256u, "500 loops in a row lose and repeat nothing");
+}
+
 void raycasting() {
     section("ray casting");
 
@@ -594,6 +682,8 @@ int main() {
     subdivision();
     flipping();
     raycasting();
+    triangleListRaycasting();
+    jobPool();
     chains();
 
     std::printf(failures == 0 ? "\nall good\n" : "\n%d check(s) failed\n", failures);
