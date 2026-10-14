@@ -4,8 +4,10 @@
 
 #include "fumar/core/log.hpp"
 #include "fumar/platform/paths.hpp"
+#include "fumar/render/material_file.hpp"
 #include "fumar/render/renderer.hpp"
 #include "fumar/render/scene_io.hpp"
+#include "fumar/render/texture_set.hpp"
 #include "fumar/ui/imgui_layer.hpp"
 
 #include <ImGuizmo.h>
@@ -16,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 
 namespace fumar {
 namespace {
@@ -1323,6 +1326,119 @@ void drawMaterialsPanel(EditorState& state, Renderer& renderer) {
 bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const std::string& variant) {
     Scene& scene = renderer.scene();
     const bool finish = variant == "finish";
+
+    if (variant == "materials") {
+        const auto report = [](const char* step, bool ok) {
+            FUMAR_INFO("modeler smoke: materials {}: {}", step, ok ? "ok" : "FAILED");
+        };
+        const auto nodeNamed = [&](const char* name) {
+            NodeId found = kInvalidNode;
+            scene.traverse([&](NodeId id, u32) {
+                if (scene.node(id).name == name) {
+                    found = id;
+                }
+            });
+            return found;
+        };
+        const std::filesystem::path root = std::filesystem::temp_directory_path() / "fumar_smoke_materials";
+        const std::filesystem::path setFolder = root / "fumar_smoke_set";
+        const std::filesystem::path copyFile = root / "copy" / "copy.fmat";
+        const std::filesystem::path sceneFile = root / "smoke_materials.fumar";
+        static MaterialHandle imported;
+        static std::filesystem::file_time_type writtenAt;
+
+        if (frame == 20) {
+            // A texture set as a site would hand it out: three maps, named by
+            // suffix, in a folder of their own. Made fresh each run.
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+            std::filesystem::create_directories(setFolder, ec);
+            const auto image = [](u8 r, u8 g, u8 b) {
+                Pixels pixels{.width = 64, .height = 64, .rgba = {}};
+                for (u32 i = 0; i < 64 * 64; ++i) {
+                    pixels.rgba.insert(pixels.rgba.end(), {r, g, b, 255});
+                }
+                return pixels;
+            };
+            const bool written = writePng(setFolder / "smoke_Color.png", image(200, 40, 40)) &&
+                                 writePng(setFolder / "smoke_NormalGL.png", image(128, 128, 255)) &&
+                                 writePng(setFolder / "smoke_Roughness.png", image(128, 128, 128));
+            report("images written", written);
+
+            imported = renderer.importMaterialFolder(setFolder);
+            const ResourceRegistry& resources = renderer.resources();
+            bool sound = resources.has(imported);
+            if (sound) {
+                // Each map in the colour space its slot needs (A7).
+                const Material& m = resources.material(imported);
+                const auto format = [&](TextureHandle h) {
+                    return resources.has(h) ? resources.texture(h).format() : vk::Format::eUndefined;
+                };
+                sound = m.name == "fumar_smoke_set" && format(m.baseColor) == vk::Format::eR8G8B8A8Srgb &&
+                        format(m.normal) == vk::Format::eR8G8B8A8Unorm &&
+                        format(m.metallicRoughness) == vk::Format::eR8G8B8A8Unorm && !m.occlusion.valid() &&
+                        m.origin.kind == MaterialOrigin::Kind::Fmat;
+            }
+            report("folder imported, maps in the right formats", sound);
+
+            // Dropped again: the .fmat is loaded, not rewritten (A10), and it
+            // is the same material (A14) - by any spelling of its path.
+            writtenAt = std::filesystem::last_write_time(setFolder / "fumar_smoke_set.fmat", ec);
+            const MaterialHandle again = renderer.importMaterialFolder(setFolder);
+            const MaterialHandle respelled =
+                renderer.loadMaterialFile(setFolder / ".." / "fumar_smoke_set" / "fumar_smoke_set.fmat");
+            report("dropped twice: same material, file untouched",
+                   again == imported && respelled == imported &&
+                       std::filesystem::last_write_time(setFolder / "fumar_smoke_set.fmat", ec) == writtenAt);
+
+            const NodeId blockA = nodeNamed("Block A");
+            if (blockA != kInvalidNode && imported.valid()) {
+                scene.node(blockA).material = imported;
+                renderer.resources().material(imported).roughness = 0.1f;
+                renderer.markMaterialDirty(imported);
+            }
+        }
+
+        if (frame == 22) {
+            // A .fmat naming a map that is not there still loads - the slot
+            // reads the neutral texture, with a warning (Review Focus #2).
+            std::error_code ec;
+            std::filesystem::create_directories(copyFile.parent_path(), ec);
+            MaterialDesc desc;
+            desc.name = "copy";
+            desc.baseColor = copyFile.parent_path() / "gone.png";
+            const bool written = writeMaterialFile(copyFile, desc);
+            const MaterialHandle copy = renderer.loadMaterialFile(copyFile);
+            report("a missing map still loads", written && copy.valid() &&
+                                                    !renderer.resources().material(copy).baseColor.valid());
+
+            const NodeId blockB = nodeNamed("Block B");
+            if (blockB != kInvalidNode && copy.valid()) {
+                scene.node(blockB).material = copy;
+            }
+            report("scene saved", saveScene(renderer, sceneFile));
+
+            // The file the scene points at goes away before it is loaded
+            // again (Review Focus #5).
+            std::filesystem::remove(copyFile, ec);
+        }
+
+        if (frame == 24) {
+            const bool loaded = loadScene(renderer, sceneFile);
+            const ResourceRegistry& resources = renderer.resources();
+            const NodeId blockA = nodeNamed("Block A");
+            const NodeId blockB = nodeNamed("Block B");
+            const bool aKept = blockA != kInvalidNode && resources.has(scene.node(blockA).material) &&
+                               resources.material(scene.node(blockA).material).name == "fumar_smoke_set";
+            const bool bFellBack = blockB != kInvalidNode &&
+                                   scene.node(blockB).material == resources.fallbackMaterial();
+            report("reloaded: the .fmat material came back, the missing one fell back",
+                   loaded && aKept && bFellBack);
+            state.selected = kInvalidNode;
+            return false;
+        }
+        return true;
+    }
 
     if (variant == "helmet") {
         using Clock = std::chrono::steady_clock;

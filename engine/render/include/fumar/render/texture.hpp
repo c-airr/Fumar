@@ -29,4 +29,9 @@ rhi::Image loadTextureFromFile(rhi::Device& device, rhi::UploadContext& upload,
 rhi::Image loadTextureFromMemory(rhi::Device& device, rhi::UploadContext& upload, const void* data,
                                  usize bytes, bool srgb = true);
 
+/// A texture from pixels already in memory as 8-bit RGBA - a roughness and a
+/// metalness map packed into one, a normal map with its green flipped.
+rhi::Image createTextureFromPixels(rhi::Device& device, rhi::UploadContext& upload, const u8* rgba, u32 width,
+                                   u32 height, bool srgb);
+
 } // namespace fumar

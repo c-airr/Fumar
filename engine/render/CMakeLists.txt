@@ -11,6 +11,7 @@ add_library(fumar_render STATIC
     src/camera.cpp
     src/gltf_loader.cpp
     src/gltf_writer.cpp
+    src/material_file.cpp
     src/material_gpu.cpp
     src/mesh.cpp
     src/renderer.cpp
@@ -18,6 +19,7 @@ add_library(fumar_render STATIC
     src/scene_io.cpp
     src/tangents.cpp
     src/texture.cpp
+    src/texture_set.cpp
     src/third_party_impl.cpp)
 
 add_library(fumar::render ALIAS fumar_render)

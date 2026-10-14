@@ -781,6 +781,22 @@ int main() {
                 FUMAR_WARN("ignoring dropped file '{}': unsupported type", path.filename().string());
                 continue;
             }
+
+            // A folder of texture maps is a material. Dropped while something is
+            // selected, it goes straight onto it - one undo step - since that
+            // is nearly always why it was dropped.
+            std::error_code folderCheck;
+            if (std::filesystem::is_directory(path, folderCheck)) {
+                const MaterialHandle material = renderer.importMaterialFolder(path);
+                Scene& scene = renderer.scene();
+                if (material.valid() && state.selected != kInvalidNode && scene.isAlive(state.selected) &&
+                    renderer.resources().has(scene.node(state.selected).mesh)) {
+                    state.history.record(scene, state.selected);
+                    scene.node(state.selected).material = material;
+                }
+                continue;
+            }
+
             const NodeId imported = renderer.importAsset(path);
             if (imported != kInvalidNode) {
                 state.selected = imported;

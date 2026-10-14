@@ -233,6 +233,16 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
 
         Json entry;
         entry["name"] = material.name;
+
+        // A material from a .fmat is that file: the scene names it, and the
+        // file holds everything else, so one material edited and saved there
+        // changes every scene that uses it.
+        if (material.origin.kind == MaterialOrigin::Kind::Fmat) {
+            entry["fmat"] = toPortablePath(material.origin.file);
+            materials.push_back(std::move(entry));
+            continue;
+        }
+
         entry["color"] = toJson(material.baseColorFactor);
         entry["metallic"] = material.metallic;
         entry["roughness"] = material.roughness;
@@ -468,6 +478,21 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
     // --- materials ----------------------------------------------------------
     std::vector<MaterialHandle> materials;
     for (const Json& entry : root.value("materials", Json::array())) {
+        if (entry.contains("fmat") && entry["fmat"].is_string()) {
+            const std::filesystem::path materialFile = fromPortablePath(entry["fmat"].get<std::string>());
+            MaterialHandle loaded = renderer.loadMaterialFile(materialFile);
+            if (!loaded.valid()) {
+                // Moved or deleted since the scene was saved. The scene still
+                // loads; what used the material shows the default instead, and
+                // the slot is kept so every later material keeps its index.
+                FUMAR_WARN("scene '{}': material file '{}' is missing; using the default", path.filename().string(),
+                           materialFile.string());
+                loaded = renderer.resources().fallbackMaterial();
+            }
+            materials.push_back(loaded);
+            continue;
+        }
+
         if (entry.contains("file")) {
             const auto wantedFile = fromPortablePath(entry["file"].get<std::string>()).string();
             const auto wantedIndex = entry.value("index", 0u);

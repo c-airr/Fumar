@@ -4,9 +4,11 @@
 // contains nothing else - so editing our own code never recompiles them.
 
 #define STB_IMAGE_IMPLEMENTATION
-// We only decode; the writer and resizer are dead weight otherwise.
-#define STBI_NO_STDIO_WRITE
 #include <stb_image.h>
+
+// Writing PNGs: material maps pulled out of a glTF to stand beside a .fmat.
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>

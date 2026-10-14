@@ -3,6 +3,7 @@
 #include "fumar/core/types.hpp"
 #include "fumar/render/camera.hpp"
 #include "fumar/render/environment.hpp"
+#include "fumar/render/material_file.hpp"
 #include "fumar/render/material_gpu.hpp"
 #include "fumar/render/mesh.hpp"
 #include "fumar/render/resources.hpp"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace fumar {
@@ -114,6 +116,28 @@ public:
     /// unchanged and no branch is needed in the shader.
     MaterialHandle createMaterial(std::string name, Vec4 baseColor = Vec4{1.0f, 1.0f, 1.0f, 1.0f},
                                   const std::filesystem::path& baseColorTexture = {});
+
+    /// Makes a material from a description: every map loaded in the colour space
+    /// its slot needs, separate roughness and metalness packed into one, a
+    /// DirectX normal map flipped. A map that is missing, unreadable or larger
+    /// than the GPU allows is left out with a warning, and its slot reads the
+    /// neutral texture; the path is kept, so saving does not lose it.
+    MaterialHandle createMaterial(const MaterialDesc& desc, MaterialOrigin origin);
+
+    /// Loads a .fmat, or returns the handle it was already loaded as - one file
+    /// is one material however many times it is asked for, by however many
+    /// spellings of its path. Invalid on failure, with the reason logged.
+    MaterialHandle loadMaterialFile(const std::filesystem::path& file);
+
+    /// Writes a material back to the .fmat it came from. False for one that did
+    /// not come from a .fmat, or if the write failed.
+    bool saveMaterialFile(MaterialHandle handle);
+
+    /// A dropped folder of texture maps as a material: `<folder>/<folder>.fmat`
+    /// is loaded if it exists - never regenerated over what someone may have
+    /// edited - and written from the maps the folder holds if not. Invalid if
+    /// the folder has no colour or normal map.
+    MaterialHandle importMaterialFolder(const std::filesystem::path& folder);
 
     /// Says a material was changed in place - a slider moved, a map swapped -
     /// so its record is rewritten before the next frame that draws with it.
@@ -603,6 +627,14 @@ private:
 
     /// Said once per scene, not every frame.
     bool m_warnedTextureOverflow = false;
+
+    /// Every .fmat loaded, by its canonical path, so one file is one material.
+    /// Cleared with the registry it indexes.
+    std::unordered_map<std::string, MaterialHandle> m_materialFiles;
+
+    /// A texture for one map of a material, or invalid with a warning.
+    TextureHandle loadMaterialTexture(const std::string& material, const char* slot,
+                                      const std::filesystem::path& file, bool srgb);
 
     Scene m_scene;
     ResourceRegistry m_resources;
