@@ -233,6 +233,56 @@ Renderer::Renderer(Window& window) : m_window(window) {
                        .samples = m_sampleCount,
                    });
 
+    // Always the non-tracing build, even on a GPU that can trace. Balanced
+    // binds it: same lighting, no rays. Gpu keeps m_pipeline, which is the
+    // tracing build when the device has one.
+    m_rasterPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "mesh.vert.spv",
+                       .fragmentShader = shaderDir / "mesh.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       .depthFormat = m_depthFormat,
+                       .vertexBindings = vertexBindings,
+                       .vertexAttributes = vertexAttributes,
+                       .setLayouts = setLayouts,
+                       .pushConstantSize = sizeof(ObjectPushConstants),
+                       .pushConstantStages = vk::ShaderStageFlagBits::eVertex |
+                                             vk::ShaderStageFlagBits::eFragment,
+                       .samples = m_sampleCount,
+                   });
+
+    const vk::VertexInputBindingDescription litBinding{
+        .binding = 0,
+        .stride = sizeof(LitVertex),
+        .inputRate = vk::VertexInputRate::eVertex,
+    };
+    const std::array<vk::VertexInputBindingDescription, 1> litBindings{litBinding};
+    const std::array<vk::VertexInputAttributeDescription, 2> litAttributes{
+        vk::VertexInputAttributeDescription{
+            .location = 0,
+            .binding = 0,
+            .format = vk::Format::eR32G32B32Sfloat,
+            .offset = offsetof(LitVertex, position),
+        },
+        vk::VertexInputAttributeDescription{
+            .location = 1,
+            .binding = 0,
+            .format = vk::Format::eR32G32B32Sfloat,
+            .offset = offsetof(LitVertex, color),
+        },
+    };
+    m_cpuPipeline = std::make_unique<rhi::GraphicsPipeline>(
+        *m_device, rhi::GraphicsPipelineDesc{
+                       .vertexShader = shaderDir / "mesh_lit.vert.spv",
+                       .fragmentShader = shaderDir / "mesh_lit.frag.spv",
+                       .colorFormat = kSceneHdrFormat,
+                       .depthFormat = m_depthFormat,
+                       .vertexBindings = litBindings,
+                       .vertexAttributes = litAttributes,
+                       .setLayouts = setLayouts,
+                       .samples = m_sampleCount,
+                   });
+
     m_outlinePipeline = std::make_unique<rhi::GraphicsPipeline>(
         *m_device, rhi::GraphicsPipelineDesc{
                        .vertexShader = shaderDir / "mesh.vert.spv",
@@ -1677,6 +1727,7 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
     const Mat4 view = m_camera.view();
     const Mat4 projection = m_camera.projection(aspect);
     const Environment& env = m_environment;
+    const bool trace = m_workload == Workload::Gpu && m_device->rayTracingSupported();
 
     FrameUniforms uniforms{
         .view = view,
@@ -1700,14 +1751,17 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         // Zeroed rather than branched on in the shader when the GPU cannot
         // trace: the ray tracing functions are already compiled out there, and
         // leaving a live value in the buffer would be misleading to read back.
-        .shadowStrength = m_device->rayTracingSupported() ? env.shadowStrength : 0.0f,
-        .occlusionStrength = m_device->rayTracingSupported() ? env.occlusionStrength : 0.0f,
+        // Rays only in Gpu mode. Balanced and Cpu have already moved the
+        // vertices off the shader, and neither of those paths traces.
+        .shadowStrength = trace ? env.shadowStrength : 0.0f,
+        .occlusionStrength = trace ? env.occlusionStrength : 0.0f,
         .occlusionRadius = env.occlusionRadius,
-        .reflectionStrength = m_device->rayTracingSupported() ? env.reflectionStrength : 0.0f,
+        .reflectionStrength = trace ? env.reflectionStrength : 0.0f,
         .reflectionRoughnessLimit = env.reflectionRoughnessLimit,
-        .indirectStrength =
-            m_device->rayTracingSupported() ? env.indirectStrength : 0.0f,
-        .bloomStrength = env.bloomStrength,
+        .indirectStrength = trace ? env.indirectStrength : 0.0f,
+        // Cpu has no bright shader output worth blooming; the pass still runs
+        // so the glow image keeps a defined layout.
+        .bloomStrength = m_workload == Workload::Cpu ? 0.0f : env.bloomStrength,
         .bloomThreshold = env.bloomThreshold,
         // Zero on the frame after the images were created, because there is no
         // history to carry over yet - the pair holds uninitialised memory, and
@@ -1716,9 +1770,7 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
         //
         // Also zero when the GPU cannot trace: with no rays there is no
         // sampling noise, and nothing left for the filter to do but add lag.
-        .temporalStrength = (m_historyValid && m_device->rayTracingSupported())
-                                ? env.temporalStrength
-                                : 0.0f,
+        .temporalStrength = (m_historyValid && trace) ? env.temporalStrength : 0.0f,
         // Turns the sampling patterns, so each frame traces different rays and
         // the average over frames is an average of different estimates. Held at
         // zero when the filter is off, which locks the pattern to the geometry -
@@ -1777,7 +1829,7 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
                           // Shadows are only traced when the hardware can trace
                           // at all; otherwise the ray functions are compiled out
                           // and this would be a promise nothing keeps.
-                          (light.castsShadows && m_device->rayTracingSupported()) ? 1.0f : 0.0f},
+                          (light.castsShadows && trace) ? 1.0f : 0.0f},
         };
         ++lightCount;
     });
@@ -1797,7 +1849,9 @@ void Renderer::updateFrameUniforms(u32 frameIndex) {
 }
 
 void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex) {
-    if (!m_device->rayTracingSupported()) {
+    // Balanced and Cpu are not going to trace, so building the structure would
+    // be GPU work those modes exist to turn off.
+    if (!m_device->rayTracingSupported() || m_workload != Workload::Gpu) {
         return;
     }
 
@@ -1866,6 +1920,123 @@ void Renderer::recordAccelerationStructure(vk::CommandBuffer cmd, u32 frameIndex
         writer.submit(m_device->handle());
         frame.writtenStructure = frame.topLevel.handle();
     }
+}
+
+void Renderer::ensureWorkloadBuffer(u32 frameIndex, vk::DeviceSize bytes) {
+    rhi::Buffer& buffer = m_perFrame[frameIndex].workloadVertices;
+    if (buffer.valid() && buffer.size() >= bytes) {
+        return;
+    }
+
+    // Grow rather than matching the request, so a mesh that gets a few
+    // vertices bigger does not allocate again next frame.
+    vk::DeviceSize size = bytes;
+    if (buffer.valid()) {
+        size = std::max(bytes, buffer.size() + buffer.size() / 2);
+    }
+
+    buffer = rhi::Buffer(*m_device, rhi::BufferDesc{
+                                        .size = size,
+                                        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+                                        .hostVisible = true,
+                                    });
+}
+
+void Renderer::prepareWorkloadGeometry(u32 frameIndex) {
+    m_workloadDraws.clear();
+    m_balancedVertices.clear();
+    m_litVertices.clear();
+
+    const bool lit = m_workload == Workload::Cpu;
+    const Environment& env = m_environment;
+    const Vec3 sun = env.sunDirection();
+
+    forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& world) {
+        if (!m_resources.has(node.mesh)) {
+            return;
+        }
+        const Mesh& mesh = m_resources.mesh(node.mesh);
+        if (!mesh.valid()) {
+            return;
+        }
+
+        const MaterialHandle handle =
+            m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
+        if (!m_resources.has(handle)) {
+            return;
+        }
+
+        // Inverse-transpose takes normals along with a non-uniform scale. w = 0
+        // drops the translation, so the full 4x4 is the 3x3 that was needed.
+        const Mat4 normalMatrix = transpose(inverse(world));
+        const i32 base = static_cast<i32>(lit ? m_litVertices.size() : m_balancedVertices.size());
+
+        if (lit) {
+            // Flat colour only: the textures live on the GPU, and this mode is
+            // the one that does not ask the fragment shader to read them.
+            const Material& material = m_resources.material(handle);
+            const Vec3 albedo{material.baseColorFactor.x, material.baseColorFactor.y,
+                              material.baseColorFactor.z};
+
+            for (const Vertex& in : mesh.vertices()) {
+                const Vec4 worldPosition = world * Vec4{in.position.x, in.position.y, in.position.z, 1.0f};
+                const Vec4 worldNormal =
+                    normalMatrix * Vec4{in.normal.x, in.normal.y, in.normal.z, 0.0f};
+                const Vec3 n = normalize(Vec3{worldNormal.x, worldNormal.y, worldNormal.z});
+                const f32 nDotL = std::max(dot(n, sun), 0.0f);
+
+                // The same sky term the fragment shader uses when it is not
+                // tracing: up-facing surfaces take the sky, down-facing ones
+                // the ground. Dividing the sun by pi is the Lambert factor.
+                const f32 up = n.y * 0.5f + 0.5f;
+                const Vec3 sky = lerp(env.skyHorizonColor, env.skyZenithColor, 0.35f);
+                const Vec3 ambient = lerp(env.groundColor, sky, up) * env.skyIntensity;
+                const Vec3 sunLight = env.sunColor * (env.sunIntensity * nDotL / kPi);
+
+                m_litVertices.push_back(LitVertex{
+                    .position = {worldPosition.x, worldPosition.y, worldPosition.z},
+                    .color = hadamard(albedo, ambient + sunLight),
+                });
+            }
+        } else {
+            for (const Vertex& in : mesh.vertices()) {
+                Vertex out = in;
+                const Vec4 worldPosition = world * Vec4{in.position.x, in.position.y, in.position.z, 1.0f};
+                const Vec4 worldNormal =
+                    normalMatrix * Vec4{in.normal.x, in.normal.y, in.normal.z, 0.0f};
+                const Vec4 worldTangent =
+                    world * Vec4{in.tangent.x, in.tangent.y, in.tangent.z, 0.0f};
+                out.position = {worldPosition.x, worldPosition.y, worldPosition.z};
+                out.normal = {worldNormal.x, worldNormal.y, worldNormal.z};
+                out.tangent = {worldTangent.x, worldTangent.y, worldTangent.z, in.tangent.w};
+                m_balancedVertices.push_back(out);
+            }
+        }
+
+        m_workloadDraws.push_back(WorkloadDraw{
+            .indexBuffer = mesh.indexBuffer().handle(),
+            .indexCount = mesh.indexCount(),
+            .vertexOffset = base,
+            .materialIndex = handle.index,
+            .highlight = id == m_selected ? 1.0f : 0.0f,
+        });
+    });
+
+    const void* data = nullptr;
+    vk::DeviceSize bytes = 0;
+    if (lit) {
+        data = m_litVertices.data();
+        bytes = static_cast<vk::DeviceSize>(m_litVertices.size() * sizeof(LitVertex));
+    } else {
+        data = m_balancedVertices.data();
+        bytes = static_cast<vk::DeviceSize>(m_balancedVertices.size() * sizeof(Vertex));
+    }
+    if (bytes == 0) {
+        return;
+    }
+
+    ensureWorkloadBuffer(frameIndex, bytes);
+    m_perFrame[frameIndex].workloadVertices.write(data, static_cast<usize>(bytes));
 }
 
 void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
@@ -2043,42 +2214,78 @@ void Renderer::recordSceneRendering(vk::CommandBuffer cmd) {
     cmd.draw(3, 1, 0, 0);
 
     // --- geometry -----------------------------------------------------------
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_pipeline->handle());
+    // Gpu draws the meshes where they were uploaded. Balanced and Cpu fill a
+    // host-visible buffer here and bind that instead.
+    const bool cpuVertices = m_workload != Workload::Gpu;
+    rhi::GraphicsPipeline& geometry = m_workload == Workload::Cpu        ? *m_cpuPipeline
+                                      : m_workload == Workload::Balanced ? *m_rasterPipeline
+                                                                         : *m_pipeline;
+    if (cpuVertices) {
+        prepareWorkloadGeometry(m_frames->currentFrame());
+    }
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, geometry.handle());
 
     cmd.setViewport(0, viewport);
     cmd.setScissor(0, scissor);
 
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipeline->layout(), 0, frameSet, {});
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, geometry.layout(), 0, frameSet, {});
 
-    forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
-        if (!m_resources.has(node.mesh)) {
-            return;
+    if (!cpuVertices) {
+        forEachRenderedDrawable([&](NodeId id, const Node& node, const Mat4& worldTransform) {
+            if (!m_resources.has(node.mesh)) {
+                return;
+            }
+
+            const MaterialHandle handle =
+                m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
+            if (!m_resources.has(handle)) {
+                return;
+            }
+
+            // The world transform comes straight from the last scene update, so
+            // this loop does no matrix work of its own.
+            // Only the selection tints its faces. Hovering is answered by the
+            // wireframe pass below and nothing else, so passing the cursor over a
+            // crowded scene does not make objects flash.
+            const ObjectPushConstants push{
+                .model = worldTransform,
+                .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
+                .materialIndex = handle.index,
+                .highlight = id == m_selected ? 1.0f : 0.0f,
+            };
+            cmd.pushConstants<ObjectPushConstants>(
+                geometry.layout(),
+                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+
+            m_resources.mesh(node.mesh).draw(cmd);
+        });
+    } else if (!m_workloadDraws.empty()) {
+        cmd.bindVertexBuffers(0, m_perFrame[m_frames->currentFrame()].workloadVertices.handle(),
+                              {0});
+
+        for (const WorkloadDraw& draw : m_workloadDraws) {
+            // Balanced still lights in the fragment shader, which needs the
+            // material. The model is identity because the vertices are already
+            // in world space. Cpu baked the colour into the vertex and has no
+            // push constants at all.
+            if (m_workload == Workload::Balanced) {
+                const ObjectPushConstants push{
+                    .model = identity(),
+                    .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
+                    .materialIndex = draw.materialIndex,
+                    .highlight = draw.highlight,
+                };
+                cmd.pushConstants<ObjectPushConstants>(
+                    geometry.layout(),
+                    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
+                    push);
+            }
+
+            cmd.bindIndexBuffer(draw.indexBuffer, 0, vk::IndexType::eUint32);
+            cmd.drawIndexed(draw.indexCount, 1, 0, draw.vertexOffset, 0);
         }
-
-        const MaterialHandle handle =
-            m_resources.has(node.material) ? node.material : m_resources.fallbackMaterial();
-        if (!m_resources.has(handle)) {
-            return;
-        }
-
-
-        // The world transform comes straight from the last scene update, so
-        // this loop does no matrix work of its own.
-        // Only the selection tints its faces. Hovering is answered by the
-        // wireframe pass below and nothing else, so passing the cursor over a
-        // crowded scene does not make objects flash.
-        const ObjectPushConstants push{
-            .model = worldTransform,
-            .overlayColor = Vec4{0.0f, 0.0f, 0.0f, 0.0f},
-            .materialIndex = handle.index,
-            .highlight = id == m_selected ? 1.0f : 0.0f,
-        };
-        cmd.pushConstants<ObjectPushConstants>(
-            m_pipeline->layout(),
-            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
-
-        m_resources.mesh(node.mesh).draw(cmd);
-    });
+    }
 
     // --- outlines -----------------------------------------------------------
     // Drawn last, so they sit over the geometry rather than being overwritten

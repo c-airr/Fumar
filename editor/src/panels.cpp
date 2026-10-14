@@ -1241,6 +1241,31 @@ void drawWorldSettings(Renderer& renderer) {
         if (direction.y <= 0.0f) {
             ImGui::TextColored(kAccent, "below the horizon");
         }
+
+        ImGui::SeparatorText("Workload");
+        int workload = static_cast<int>(renderer.workload());
+        if (ImGui::Combo("Runs on", &workload, "GPU\0Balanced\0CPU\0")) {
+            renderer.setWorkload(static_cast<Renderer::Workload>(workload));
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "GPU: the shaders transform, light and trace.\n"
+                "Balanced: the CPU transforms every vertex each frame and\n"
+                "uploads it. The fragment shader still lights. No ray tracing.\n"
+                "CPU: the CPU transforms and lights each vertex. The GPU only\n"
+                "rasterises that colour - no textures, rays, bloom or temporal.");
+        }
+        switch (renderer.workload()) {
+        case Renderer::Workload::Gpu:
+            ImGui::TextDisabled("Transforms, lighting and rays stay on the GPU.");
+            break;
+        case Renderer::Workload::Balanced:
+            ImGui::TextDisabled("CPU transforms vertices. GPU lights them. No rays.");
+            break;
+        case Renderer::Workload::Cpu:
+            ImGui::TextDisabled("CPU transforms and lights. GPU only rasterises.");
+            break;
+        }
     }
 }
 

@@ -86,6 +86,8 @@ fumar_compile_shaders(fumar_shaders
         "${CMAKE_SOURCE_DIR}/shaders/mesh.vert"
         "${CMAKE_SOURCE_DIR}/shaders/mesh.frag"
         "${CMAKE_SOURCE_DIR}/shaders/mesh_rq.frag"
+        "${CMAKE_SOURCE_DIR}/shaders/mesh_lit.vert"
+        "${CMAKE_SOURCE_DIR}/shaders/mesh_lit.frag"
         "${CMAKE_SOURCE_DIR}/shaders/outline.frag"
         "${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert"
         "${CMAKE_SOURCE_DIR}/shaders/sky.frag"

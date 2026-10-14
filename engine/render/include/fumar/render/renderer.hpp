@@ -180,6 +180,18 @@ public:
     /// rather than leaving the sliders looking broken.
     bool rayTracingSupported() const;
 
+    /// Which device does the per-vertex work.
+    ///
+    /// Gpu is the ordinary path: the vertex shader transforms, the fragment
+    /// shader lights, and ray tracing runs when the GPU can. Balanced moves
+    /// the transform onto the CPU and uploads world-space vertices every
+    /// frame; lighting stays in the fragment shader, with rays off. Cpu also
+    /// lights each vertex on the CPU, and the GPU only rasterises the colour.
+    enum class Workload { Gpu, Balanced, Cpu };
+
+    void setWorkload(Workload workload) { m_workload = workload; }
+    Workload workload() const { return m_workload; }
+
     /// Blocks until the GPU has finished everything submitted so far.
     ///
     /// Application code needs this exactly once, on shutdown, before releasing
@@ -321,6 +333,15 @@ private:
     void allocateDescriptorSets();
     void updateFrameUniforms(u32 frameIndex);
 
+    /// Grows this frame's host-visible vertex buffer until it can hold `bytes`.
+    /// Safe only after this slot's fence has been waited on.
+    void ensureWorkloadBuffer(u32 frameIndex, vk::DeviceSize bytes);
+
+    /// Transforms every rendered mesh on the CPU into this frame's vertex
+    /// buffer. Balanced writes world-space vertices in the ordinary layout;
+    /// Cpu writes a position and a lit colour.
+    void prepareWorkloadGeometry(u32 frameIndex);
+
     /// Rebuilds this frame's picture of where everything is, for the rays to
     /// trace against. Recorded before the scene pass, into the same command
     /// buffer.
@@ -371,6 +392,14 @@ private:
     std::unique_ptr<rhi::Swapchain> m_swapchain;
     std::unique_ptr<rhi::UploadContext> m_upload;
     std::unique_ptr<rhi::GraphicsPipeline> m_pipeline;
+
+    /// The mesh pipeline with ray queries compiled out. Balanced binds this
+    /// so the fragment shader still lights, but nothing is traced.
+    std::unique_ptr<rhi::GraphicsPipeline> m_rasterPipeline;
+
+    /// Position and a colour, both already in world space. Cpu binds this:
+    /// the vertex shader only projects, the fragment shader only writes.
+    std::unique_ptr<rhi::GraphicsPipeline> m_cpuPipeline;
 
     /// Fills the frame with sky before any geometry, from a fullscreen triangle
     /// and no vertex buffer at all.
@@ -601,7 +630,31 @@ private:
         /// Texture slots [0, texturesWritten) of this frame's array hold the
         /// scene's textures; the rest still hold the white neutral one.
         u32 texturesWritten = 0;
+
+        /// Vertices Balanced and Cpu upload every frame. Host-visible, so the
+        /// CPU can write it with a memcpy; the GPU reads it across the bus,
+        /// which is the cost of not leaving the transform in the shader.
+        rhi::Buffer workloadVertices;
     };
+
+    /// One drawable after prepareWorkloadGeometry. Indices stay in the mesh's
+    /// own buffer - topology did not change - and vertexOffset says where in
+    /// the shared workload buffer this object's vertices start.
+    struct WorkloadDraw {
+        vk::Buffer indexBuffer;
+        u32 indexCount = 0;
+        i32 vertexOffset = 0;
+        u32 materialIndex = 0;
+        f32 highlight = 0.0f;
+    };
+
+    /// World position plus a colour the CPU already computed. Twenty-four
+    /// bytes, packed, which is what mesh_lit.vert reads.
+    struct LitVertex {
+        Vec3 position;
+        Vec3 color;
+    };
+    static_assert(sizeof(LitVertex) == 24);
     std::array<PerFrame, rhi::kFramesInFlight> m_perFrame;
 
     /// Rebuilt every frame from the scene. A member rather than a local so the
@@ -649,6 +702,11 @@ private:
     ResourceRegistry m_resources;
     Camera m_camera;
     Environment m_environment;
+    Workload m_workload = Workload::Gpu;
+
+    std::vector<WorkloadDraw> m_workloadDraws;
+    std::vector<Vertex> m_balancedVertices;
+    std::vector<LitVertex> m_litVertices;
     OverlayCallback m_overlay;
 
     NodeId m_selected = kInvalidNode;
