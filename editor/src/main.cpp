@@ -487,6 +487,11 @@ int main() {
 
     EditorState state;
 
+    // Material edits are steps of the scene's history too; undoing one has to
+    // reach the GPU copy as well as the registry.
+    state.history.trackMaterials(&renderer.resources(),
+                                 [&renderer](MaterialHandle handle) { renderer.markMaterialDirty(handle); });
+
     // Rebuilt each frame except for the camera, which a script may keep
     // adjusting across frames - so it lives out here rather than in the loop.
     ScriptContext scriptContext;

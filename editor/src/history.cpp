@@ -2,6 +2,7 @@
 
 #include "fumar/core/log.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace fumar {
@@ -119,8 +120,38 @@ NodeId pasteInto(Scene& scene, const SceneSnapshot& snapshot, NodeId parent) {
     return created.empty() ? kInvalidNode : created.front();
 }
 
+void History::trackMaterials(ResourceRegistry* registry, std::function<void(MaterialHandle)> changed) {
+    m_registry = registry;
+    m_materialChanged = std::move(changed);
+}
+
+History::Step History::capture(const Scene& scene, NodeId selected) const {
+    Step step;
+    step.scene = captureScene(scene, selected);
+    if (m_registry != nullptr) {
+        step.materials.reserve(m_registry->materialCount());
+        for (u32 i = 0; i < static_cast<u32>(m_registry->materialCount()); ++i) {
+            step.materials.push_back(m_registry->material(MaterialHandle{i}));
+        }
+    }
+    return step;
+}
+
+void History::restoreMaterials(const Step& step) {
+    if (m_registry == nullptr) {
+        return;
+    }
+    const usize count = std::min(step.materials.size(), m_registry->materialCount());
+    for (u32 i = 0; i < static_cast<u32>(count); ++i) {
+        m_registry->material(MaterialHandle{i}) = step.materials[i];
+        if (m_materialChanged) {
+            m_materialChanged(MaterialHandle{i});
+        }
+    }
+}
+
 void History::record(const Scene& scene, NodeId selected) {
-    m_undo.push_back(captureScene(scene, selected));
+    m_undo.push_back(capture(scene, selected));
     ++m_records;
 
     // Anything that was undone is no longer reachable once a new change is
@@ -140,13 +171,14 @@ bool History::undo(Scene& scene, NodeId currentSelection, NodeId& restoredSelect
 
     // The state being left has to go somewhere, or redo would have nothing to
     // return to.
-    m_redo.push_back(captureScene(scene, currentSelection));
+    m_redo.push_back(capture(scene, currentSelection));
 
-    const SceneSnapshot snapshot = std::move(m_undo.back());
+    const Step step = std::move(m_undo.back());
     m_undo.pop_back();
 
     clearScene(scene);
-    restoredSelection = selectionFrom(snapshot, rebuild(scene, snapshot, kRootNode, false));
+    restoredSelection = selectionFrom(step.scene, rebuild(scene, step.scene, kRootNode, false));
+    restoreMaterials(step);
     return true;
 }
 
@@ -155,13 +187,14 @@ bool History::redo(Scene& scene, NodeId currentSelection, NodeId& restoredSelect
         return false;
     }
 
-    m_undo.push_back(captureScene(scene, currentSelection));
+    m_undo.push_back(capture(scene, currentSelection));
 
-    const SceneSnapshot snapshot = std::move(m_redo.back());
+    const Step step = std::move(m_redo.back());
     m_redo.pop_back();
 
     clearScene(scene);
-    restoredSelection = selectionFrom(snapshot, rebuild(scene, snapshot, kRootNode, false));
+    restoredSelection = selectionFrom(step.scene, rebuild(scene, step.scene, kRootNode, false));
+    restoreMaterials(step);
     return true;
 }
 

@@ -1435,6 +1435,34 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
             report("reloaded: the .fmat material came back, the missing one fell back",
                    loaded && aKept && bFellBack);
             state.selected = kInvalidNode;
+        }
+
+        // A material edit is a step of the scene's history like any other:
+        // undone and redone with the nodes, the GPU copy following.
+        const auto blockMaterial = [&]() -> Material* {
+            const NodeId blockA = nodeNamed("Block A");
+            if (blockA == kInvalidNode || !renderer.resources().has(scene.node(blockA).material)) {
+                return nullptr;
+            }
+            return &renderer.resources().material(scene.node(blockA).material);
+        };
+        if (frame == 26) {
+            if (Material* m = blockMaterial()) {
+                m->roughness = 0.1f;
+                state.history.record(scene, state.selected);
+                m->roughness = 0.9f;
+                renderer.markMaterialDirty(scene.node(nodeNamed("Block A")).material);
+            }
+            state.undoRequested = true;
+        }
+        if (frame == 28) {
+            const Material* m = blockMaterial();
+            report("undo brings the material back", m != nullptr && m->roughness == 0.1f);
+            state.redoRequested = true;
+        }
+        if (frame == 30) {
+            const Material* m = blockMaterial();
+            report("redo puts the edit back", m != nullptr && m->roughness == 0.9f);
             return false;
         }
         return true;

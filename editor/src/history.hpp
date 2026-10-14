@@ -1,7 +1,9 @@
 #pragma once
 
+#include "fumar/render/resources.hpp"
 #include "fumar/scene/scene.hpp"
 
+#include <functional>
 #include <vector>
 
 namespace fumar {
@@ -66,6 +68,16 @@ NodeId pasteInto(Scene& scene, const SceneSnapshot& snapshot, NodeId parent = kR
 /// per edit. When that starts to hurt, this is the class to replace.
 class History {
 public:
+    /// The materials to keep in step with the scene: each step remembers them
+    /// as well as the nodes, and undo puts them back.
+    ///
+    /// A material is not a node, but editing one is a change to the scene like
+    /// any other, and a person pressing Ctrl+Z after dragging a roughness
+    /// slider expects the slider to move back. `changed` is told about every
+    /// material put back, so the renderer can rewrite its GPU copy. Until this
+    /// is called, materials are not recorded.
+    void trackMaterials(ResourceRegistry* registry, std::function<void(MaterialHandle)> changed);
+
     /// Records the state BEFORE a change. Call it immediately before mutating -
     /// at the moment a drag begins, not while it continues, or a single gizmo
     /// pull would fill the stack with a hundred steps.
@@ -97,8 +109,26 @@ private:
     /// bound.
     static constexpr usize kMaxSteps = 128;
 
-    std::vector<SceneSnapshot> m_undo;
-    std::vector<SceneSnapshot> m_redo;
+    /// One step: the nodes, and every material as it stood. Materials are
+    /// small, and copying the lot keeps a step self-contained - the same trade
+    /// the node snapshots make.
+    struct Step {
+        SceneSnapshot scene;
+        std::vector<Material> materials;
+    };
+
+    Step capture(const Scene& scene, NodeId selected) const;
+
+    /// Puts a step's materials back. Materials made after the step - past the
+    /// end of its list - are left as they are: nothing uses them in the scene
+    /// being restored.
+    void restoreMaterials(const Step& step);
+
+    std::vector<Step> m_undo;
+    std::vector<Step> m_redo;
+
+    ResourceRegistry* m_registry = nullptr;
+    std::function<void(MaterialHandle)> m_materialChanged;
     u64 m_records = 0;
 };
 
