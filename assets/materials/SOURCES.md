@@ -11,7 +11,7 @@ left out. Each folder's `.fmat` names its maps; see `docs/materials.md` on `main
 
 | Folder | ambientCG asset | Source |
 |---|---|---|
-| `Bricks` | Bricks105 | https://ambientcg.com/a/Bricks105 |
+| `Bricks` | Bricks085 | https://ambientcg.com/a/Bricks085 |
 | `WoodFloor` | WoodFloor043 | https://ambientcg.com/a/WoodFloor043 |
 | `Grass` | Grass005 | https://ambientcg.com/a/Grass005 |
 | `Concrete` | Concrete034 | https://ambientcg.com/a/Concrete034 |
