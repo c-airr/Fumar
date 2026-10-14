@@ -13,12 +13,15 @@ namespace fumar {
 /// shaders/material.glsl.
 inline constexpr u32 kMaxSceneTextures = 1024;
 
-/// Where the three neutral textures sit in that array. A material slot with no
-/// map of its own reads one of these, so a shader never has to ask.
+/// Where the neutral textures sit in that array. A material slot with no map
+/// of its own reads one of these, so a shader never has to ask.
+///
+/// White stands in for every map that multiplies a factor - colour,
+/// metal-rough, occlusion, and emission too: glTF's emission is the colour
+/// times the map, and with no map the colour alone must shine.
 struct NeutralTextures {
-    u32 white = 0;       ///< colour, metal-rough, occlusion
+    u32 white = 0;
     u32 flatNormal = 0;  ///< (0.5, 0.5, 1): a normal map that tilts nothing
-    u32 black = 0;       ///< emission
 };
 
 /// One material as the shaders read it: shaders/material.glsl declares the

@@ -78,9 +78,10 @@ struct Material {
 
 | Slot | Neutral texture |
 |---|---|
-| base colour, metal-rough, occlusion | white |
+| base colour, metal-rough, occlusion, emissive | white |
 | normal | `(0.5, 0.5, 1)` |
-| emissive | black |
+
+Emissive reads white, not black: glTF's emission is the colour times the map, so with no map the colour alone has to come through. (The first version of this spec said black, which switched off every emissive colour without a texture; fixed during Task 4.)
 
 The per-material `vk::DescriptorSet` and the material set layout's use for materials go away. The bloom and post passes keep a layout of their own, which they currently borrow from materials.
 

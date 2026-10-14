@@ -92,7 +92,7 @@ void textureSlots() {
 }
 
 void recordFromMaterial() {
-    const NeutralTextures neutral{.white = 0, .flatNormal = 1, .black = 2};
+    const NeutralTextures neutral{.white = 5, .flatNormal = 6};
 
     Material material;
     material.emissiveColor = Vec3{1.0f, 0.5f, 0.0f};
@@ -101,7 +101,10 @@ void recordFromMaterial() {
     check(glowing.emissive.x == 4.0f && glowing.emissive.y == 2.0f && glowing.emissive.z == 0.0f,
           "emissive is colour times intensity");
     check(glowing.normalTexture == neutral.flatNormal, "no normal map reads the flat normal");
-    check(glowing.emissiveTexture == neutral.black, "no emissive map reads black");
+    // glTF multiplies the emissive colour by the map. With no map the colour
+    // alone has to come through, so the stand-in is white - black would turn
+    // every emissive colour without a texture off.
+    check(glowing.emissiveTexture == neutral.white, "no emissive map reads white, so the colour alone glows");
     check(glowing.baseColorTexture == neutral.white, "no colour map reads white");
     check(glowing.alphaCutoff < 0.0f, "an opaque material has no cutoff");
 

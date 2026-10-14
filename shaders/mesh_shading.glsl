@@ -23,6 +23,7 @@
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) in vec3 vWorldPosition;
+layout(location = 3) in vec4 vTangent;
 
 layout(location = 0) out vec4 outColor;
 
@@ -120,25 +121,30 @@ float distanceFalloff(float distance, float range) {
 }
 
 void main() {
+    // This draw's material, picked by index, with every map it has. A map it
+    // lacks reads a neutral texture, so nothing here asks which ones exist.
+    //
     // Interpolating a normal across a triangle shortens it, so it has to be
     // renormalised per fragment or large faces go dark in the middle.
-    const vec3 n = normalize(vNormal);
+    const MaterialSample surface = sampleMaterial(object.materialIndex, vUV, normalize(vNormal), vTangent);
+
+    // A cutout: a hole where the colour's alpha says so, before anything is
+    // spent lighting a pixel that will not be there.
+    const float alphaCutoff = materials[object.materialIndex].alphaCutoff;
+    if (alphaCutoff >= 0.0 && surface.alpha < alphaCutoff) {
+        discard;
+    }
+
+    const vec3 n = surface.normal;
     const vec3 v = normalize(frame.cameraPosition.xyz - vWorldPosition);
     const vec3 l = normalize(frame.sunDirection.xyz);
 
-    // The texture is multiplied by the material colour, so an untextured
-    // material uses a 1x1 white texture and shows its colour unchanged.
-    // This draw's material, picked by index. The index is the same for every
-    // fragment of the draw, so no nonuniformEXT: the hardware may read it once.
-    const MaterialRecord material = materials[object.materialIndex];
-    const vec3 albedo = texture(sceneTextures[material.baseColorTexture], vUV * material.uvScale).rgb *
-                        material.baseColorFactor.rgb;
-
-    const float metallic = clamp(material.metallic, 0.0, 1.0);
+    const vec3 albedo = surface.albedo;
+    const float metallic = clamp(surface.metallic, 0.0, 1.0);
 
     // Never exactly zero: a perfectly smooth surface makes the GGX lobe a
     // spike narrower than a pixel, which turns into flickering white dots.
-    const float roughness = clamp(material.roughness, 0.045, 1.0);
+    const float roughness = clamp(surface.roughness, 0.045, 1.0);
 
     // What the surface reflects head-on. Dielectrics reflect about 4% of the
     // light and let the rest through to be coloured by the material underneath;
@@ -248,6 +254,12 @@ void main() {
         ambient = skyIrradiance(n) * occlusion;
     }
 
+    // The material's own occlusion map - the crevices baked into the texture,
+    // too small for any ray to find - darkens what arrives from around, never
+    // the sun or the lamps: direct light reaches into a groove all the same.
+    occlusion *= surface.occlusion;
+    ambient *= surface.occlusion;
+
     lit += ambient * albedo * (1.0 - metallic);
 
     // A rough surface reflects a blurred sky. Lerping the reflection direction
@@ -289,6 +301,10 @@ void main() {
     // because the wireframe outline carries most of the signal - this only has
     // to say which object the outline belongs to.
     lit = mix(lit, lit * kSelectionTint * 2.5, object.highlight * 0.35);
+
+    // Light the surface gives off, after everything that lights it, and not
+    // tinted by the selection: a lamp stays the colour of the lamp.
+    lit += surface.emissive;
 
     outColor = vec4(lit, 1.0);
 }

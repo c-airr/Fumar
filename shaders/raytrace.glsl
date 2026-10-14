@@ -73,6 +73,11 @@ const int kOcclusionSamples = 12;
 /// surface that should be shading smoothly.
 const int kIndirectSamples = 16;
 
+/// The brightest a single bounced-light sample may be, in scene radiance. See
+/// indirectBounce. Above anything the sun puts on a surface, so ordinary
+/// bounce light is never touched - only the rare ray that lands on a lamp.
+const float kIndirectClamp = 10.0;
+
 /// One pseudo-random number from a point in the WORLD.
 ///
 /// Not from gl_FragCoord, and that distinction is the whole reason this
@@ -357,19 +362,11 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
 
     const vec3 hitPoint = origin + rayDirection * distance;
 
-    // nonuniformEXT is not decoration. Neighbouring rays hit different
-    // objects, so these indices vary within the wave; without it the hardware
-    // is entitled to use one lane's index for all of them, and a reflection
-    // shows the wrong object's texture in patches.
-    //
-    // textureLod with level 0 rather than texture(): there are no derivatives
-    // here to pick a mip level from, because there is no neighbouring fragment
-    // marching along the same surface. The cost is aliasing in a reflection of
-    // something far away - a ray differential is what would fix it properly.
-    const MaterialRecord material = materials[nonuniformEXT(record.materialIndex)];
-    const vec3 albedo = material.baseColorFactor.rgb *
-                        textureLod(sceneTextures[nonuniformEXT(material.baseColorTexture)],
-                                   uv * material.uvScale, 0.0).rgb;
+    // The same material the rasteriser draws this object with. Sampled at mip
+    // level 0, which costs aliasing in a reflection of something far away - a
+    // ray differential is what would fix it properly.
+    const MaterialSample surface = sampleMaterialHit(record.materialIndex, uv, normal);
+    const vec3 albedo = surface.albedo;
 
     // Lambert rather than the full reflectance model. What is being computed is
     // a reflection of a surface, at whatever size that reflection appears on
@@ -384,7 +381,9 @@ vec3 traceScene(vec3 origin, vec3 rayDirection, float maxDistance, bool includeS
         lit += albedo * frame.sunColor.rgb * frame.sunIntensity * nDotL * shadow / 3.14159265;
     }
 
-    return lit;
+    // What the surface gives off, whatever lights it: seen in a mirror, and -
+    // through indirectBounce - shining on whatever is near it.
+    return lit + surface.emissive;
 }
 
 /// Kept for the reflection path, which always wants the sun in it, and does not
@@ -455,7 +454,13 @@ vec3 indirectBounce(vec3 position, vec3 normal, out float skyVisibility) {
         const vec3 incoming = traceScene(origin, direction, 200.0, false, hitGeometry);
 
         if (hitGeometry) {
-            sum += incoming;
+            // Capped. A small, bright emissive panel is found by one ray in
+            // sixteen on one frame and none on the next, and that one ray is
+            // averaged into twenty frames of history: uncapped, it leaves a
+            // white speck that takes a second to fade. Capping the brightness
+            // a single sample may carry trades a little energy for no specks.
+            const float luminance = dot(incoming, vec3(0.2126, 0.7152, 0.0722));
+            sum += luminance > kIndirectClamp ? incoming * (kIndirectClamp / luminance) : incoming;
         } else {
             open += 1.0;
         }

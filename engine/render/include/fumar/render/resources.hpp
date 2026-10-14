@@ -109,9 +109,9 @@ struct MaterialOrigin {
 /// glTF uses.
 ///
 /// Every map is optional. A slot with no texture reads a neutral one the
-/// renderer keeps for the purpose - white for colour, metal-rough and
-/// occlusion, a flat normal, black emission - so the shaders never branch on
-/// whether a map is there, and the factors below are what such a slot shows.
+/// renderer keeps for the purpose - white for everything a factor multiplies,
+/// a flat normal for the normal map - so the shaders never branch on whether
+/// a map is there, and the factors below are what such a slot shows.
 struct Material {
     std::string name;
 

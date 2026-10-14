@@ -23,7 +23,7 @@ MaterialRecord toRecord(const Material& material, const NeutralTextures& neutral
         .metallicRoughnessTexture = textureSlot(material.metallicRoughness, textureCount, neutral.white),
         .normalTexture = textureSlot(material.normal, textureCount, neutral.flatNormal),
         .occlusionTexture = textureSlot(material.occlusion, textureCount, neutral.white),
-        .emissiveTexture = textureSlot(material.emissive, textureCount, neutral.black),
+        .emissiveTexture = textureSlot(material.emissive, textureCount, neutral.white),
         .padding = 0,
     };
 }

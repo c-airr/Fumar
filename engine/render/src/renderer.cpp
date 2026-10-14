@@ -977,10 +977,10 @@ std::string lowerExtension(const std::filesystem::path& path) {
 } // namespace
 
 void Renderer::registerBuiltins() {
-    // Into an empty registry, so they take the first three slots every time.
-    // A slot with no map of its own reads one of these: white multiplies
-    // nothing away, (0.5, 0.5, 1) is a normal map that tilts nothing, black
-    // gives off no light.
+    // Into an empty registry, so they take the first slots every time. A slot
+    // with no map of its own reads one of these: white multiplies nothing away
+    // - the factor alone comes through - and (0.5, 0.5, 1) is a normal map
+    // that tilts nothing.
     const auto solid = [this](const char* name, std::array<u8, 4> rgba, bool srgb) {
         rhi::Image image(*m_device, rhi::ImageDesc{
                                         .extent = vk::Extent2D{1, 1},
@@ -999,7 +999,6 @@ void Renderer::registerBuiltins() {
         const rhi::UploadBatch batch(*m_upload);
         m_neutral.white = solid("white", {255, 255, 255, 255}, true);
         m_neutral.flatNormal = solid("flat normal", {128, 128, 255, 255}, false);
-        m_neutral.black = solid("black", {0, 0, 0, 255}, true);
     }
     m_warnedTextureOverflow = false;
 

@@ -1337,6 +1337,31 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
             const bool entered = enterEditSession(state, renderer);
             const f64 ms = std::chrono::duration<f64, std::milli>(Clock::now() - start).count();
             FUMAR_INFO("modeler smoke: helmet {} in {:.1f} ms", entered ? "opened" : "FAILED to open", ms);
+
+            // The helmet carries all five glTF maps. Each must arrive, and in
+            // the colour space its slot needs: a normal or roughness map read
+            // as sRGB still renders, just wrongly, which is why it is checked
+            // here rather than noticed in a screenshot.
+            if (state.selected != kInvalidNode && renderer.resources().has(scene.node(state.selected).material)) {
+                const ResourceRegistry& resources = renderer.resources();
+                const Material& material = resources.material(scene.node(state.selected).material);
+                const auto slot = [&](const char* name, TextureHandle handle, bool srgb) {
+                    if (!resources.has(handle)) {
+                        return std::string(name) + " MISSING";
+                    }
+                    const vk::Format format = resources.texture(handle).format();
+                    const bool right = format == (srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm);
+                    return std::string(name) + (right ? " ok" : " WRONG FORMAT");
+                };
+                const std::string report = slot("base", material.baseColor, true) + ", " +
+                                           slot("metal-rough", material.metallicRoughness, false) + ", " +
+                                           slot("normal", material.normal, false) + ", " +
+                                           slot("occlusion", material.occlusion, false) + ", " +
+                                           slot("emissive", material.emissive, true);
+                const bool allGood = report.find("MISSING") == std::string::npos &&
+                                     report.find("WRONG") == std::string::npos;
+                FUMAR_INFO("modeler smoke: helmet maps {}: {}", allGood ? "ok" : "FAILED", report);
+            }
         }
         if (frame == 21 && state.edit.has_value()) {
             // What refreshVisibility does when the camera moves: a ray per

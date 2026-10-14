@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -119,7 +120,7 @@ void generateNormals(std::vector<Vertex>& vertices, const std::vector<u32>& indi
 /// Resolves a glTF image to pixels, whether it sits in a separate file or in
 /// the .glb binary chunk.
 rhi::Image loadImage(const cgltf_image& image, const std::filesystem::path& baseDirectory,
-                     rhi::Device& device, rhi::UploadContext& upload) {
+                     rhi::Device& device, rhi::UploadContext& upload, bool srgb) {
     if (image.buffer_view != nullptr) {
         const cgltf_buffer_view& view = *image.buffer_view;
         const auto* base = static_cast<const u8*>(view.buffer->data);
@@ -127,7 +128,7 @@ rhi::Image loadImage(const cgltf_image& image, const std::filesystem::path& base
             FUMAR_WARN("embedded texture has no buffer data");
             return {};
         }
-        return loadTextureFromMemory(device, upload, base + view.offset, view.size);
+        return loadTextureFromMemory(device, upload, base + view.offset, view.size, srgb);
     }
 
     if (image.uri == nullptr) {
@@ -140,7 +141,7 @@ rhi::Image loadImage(const cgltf_image& image, const std::filesystem::path& base
     cgltf_decode_uri(uri.data());
     uri.resize(std::strlen(uri.c_str()));
 
-    return loadTextureFromFile(device, upload, baseDirectory / uri);
+    return loadTextureFromFile(device, upload, baseDirectory / uri, srgb);
 }
 
 /// The polygon sizes fumar writes into a mesh's extras - see writeGlb - or
@@ -289,11 +290,31 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
     const std::filesystem::path baseDirectory = path.parent_path();
 
     // --- textures -----------------------------------------------------------
-    std::vector<TextureHandle> textureHandles(data->images_count);
-    for (usize i = 0; i < data->images_count; ++i) {
-        rhi::Image image = loadImage(data->images[i], baseDirectory, context.device, context.upload);
-        textureHandles[i] = image.valid() ? resources.addTexture(std::move(image)) : TextureHandle{};
-    }
+    // Made when a material asks for them, not up front, for two reasons. An
+    // image no material uses is not worth uploading. And the colour space is
+    // a property of the USE, not of the image: base colour and emission are
+    // sRGB, everything else is data and must not be linearised - so one image
+    // could in principle be needed both ways, and is uploaded once per way.
+    std::map<std::pair<usize, bool>, TextureHandle> textures;
+    const auto textureFor = [&](const cgltf_texture_view& view, bool srgb) -> TextureHandle {
+        if (view.texture == nullptr || view.texture->image == nullptr) {
+            return {};
+        }
+        // Pointer arithmetic against the array base is how cgltf expects you
+        // to recover an index - it stores pointers, not ids.
+        const usize imageIndex = static_cast<usize>(view.texture->image - data->images);
+        if (imageIndex >= data->images_count) {
+            return {};
+        }
+        const auto key = std::make_pair(imageIndex, srgb);
+        if (const auto found = textures.find(key); found != textures.end()) {
+            return found->second;
+        }
+        rhi::Image image = loadImage(data->images[imageIndex], baseDirectory, context.device, context.upload, srgb);
+        const TextureHandle handle = image.valid() ? resources.addTexture(std::move(image)) : TextureHandle{};
+        textures.emplace(key, handle);
+        return handle;
+    };
 
     // --- materials ----------------------------------------------------------
     std::vector<MaterialHandle> materialHandles(data->materials_count);
@@ -310,16 +331,38 @@ NodeId loadGltfIntoScene(const std::filesystem::path& path, const GltfLoadContex
                                             pbr.base_color_factor[2], pbr.base_color_factor[3]};
             material.metallic = pbr.metallic_factor;
             material.roughness = pbr.roughness_factor;
+            material.baseColor = textureFor(pbr.base_color_texture, true);
+            material.metallicRoughness = textureFor(pbr.metallic_roughness_texture, false);
+        }
 
-            const cgltf_texture* texture = pbr.base_color_texture.texture;
-            if (texture != nullptr && texture->image != nullptr) {
-                // Pointer arithmetic against the array base is how cgltf
-                // expects you to recover an index - it stores pointers, not ids.
-                const usize imageIndex = static_cast<usize>(texture->image - data->images);
-                if (imageIndex < textureHandles.size() && textureHandles[imageIndex].valid()) {
-                    material.baseColor = textureHandles[imageIndex];
-                }
-            }
+        material.normal = textureFor(source.normal_texture, false);
+        if (source.normal_texture.texture != nullptr) {
+            material.normalScale = source.normal_texture.scale;
+        }
+        material.occlusion = textureFor(source.occlusion_texture, false);
+        if (source.occlusion_texture.texture != nullptr) {
+            // cgltf keeps occlusion's "strength" in the same field as a normal
+            // map's "scale".
+            material.occlusionStrength = source.occlusion_texture.scale;
+        }
+        material.emissive = textureFor(source.emissive_texture, true);
+        material.emissiveColor = Vec3{source.emissive_factor[0], source.emissive_factor[1], source.emissive_factor[2]};
+        if (source.has_emissive_strength) {
+            material.emissiveIntensity = source.emissive_strength.emissive_strength;
+        }
+
+        switch (source.alpha_mode) {
+        case cgltf_alpha_mode_mask:
+            material.alphaMode = AlphaMode::Mask;
+            material.alphaCutoff = source.alpha_cutoff;
+            break;
+        case cgltf_alpha_mode_blend:
+            // No transparency yet: drawn solid rather than not at all.
+            FUMAR_DEBUG("material '{}' blends; drawn opaque", material.name);
+            break;
+        case cgltf_alpha_mode_opaque:
+        default:
+            break;
         }
 
         // Recorded so a saved scene can find this material again by reloading
