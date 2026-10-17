@@ -4,6 +4,10 @@
 
 The idea behind this is simple: test whether an AI can actually build and maintain a complex, low-level C++ repository from scratch. At the same time, I'm learning C++ myself and wanted to see how engine architecture, linking, build systems, and modern Vulkan actually work under the hood — without copy-pasting outdated 10-year-old tutorials or hiding behind ready-made black boxes.
 
+![Editor: Level workspace with ray-traced scene](docs/screenshots/editor.png)
+
+![Modeler: the helmet in edit mode, materials panel](docs/screenshots/modeler.png)
+
 ### Tech Stack
 
 - **Standard:** C++20
