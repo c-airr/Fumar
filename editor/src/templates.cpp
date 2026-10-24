@@ -340,7 +340,7 @@ void buildRayTracing(Renderer& renderer) {
     std::array<MaterialHandle, 5> golds{};
     for (usize i = 0; i < golds.size(); ++i) {
         char name[32];
-        std::snprintf(name, sizeof(name), "Gold %.2f", 0.2f * static_cast<f32>(i));
+        std::snprintf(name, sizeof(name), "Gold %.2f", static_cast<double>(0.2f * static_cast<f32>(i)));
         golds[i] = plainMaterial(renderer, name, Vec3{1.0f, 0.77f, 0.34f}, 0.2f * static_cast<f32>(i), 1.0f);
     }
 
