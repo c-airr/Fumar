@@ -1,5 +1,6 @@
 #include "materials_panel.hpp"
 #include "panels.hpp"
+#include "templates.hpp"
 
 #include "fumar/core/log.hpp"
 #include "fumar/core/math.hpp"
@@ -29,208 +30,6 @@
 using namespace fumar;
 
 namespace {
-
-/// Builds the scene the editor opens with.
-///
-/// A real editor would reopen the last project. Until scene files exist this
-/// stands in for one - and an empty grey window is a poor first impression
-/// either way.
-void createStarterScene(Renderer& renderer) {
-    Scene& scene = renderer.scene();
-    const std::filesystem::path textures = executableDirectory() / "assets" / "textures";
-
-    // A small walled courtyard, because an open plain is the worst possible
-    // scene for showing what this renderer does. Shadows need something to fall
-    // across, bounced light needs a surface to bounce off, and a reflection of
-    // an empty sky is a reflection of nothing. Three walls give all three.
-    //
-    // Base colours are LINEAR reflectances, not the numbers a colour picker
-    // shows. Something that looks mid-grey on screen reflects about 20% of the
-    // light hitting it, not 50. Where a texture supplies the colour the factor
-    // stays near white and only trims the brightness.
-    //
-    // The stock library's full materials when it has been fetched (see
-    // tools/get-materials), and the plain colour textures that ship on main
-    // when it has not - so a fresh clone opens the same courtyard, only
-    // flatter.
-    //
-    // A stock material is taken as a DESCRIPTION, made into the scene's own
-    // material with the scene's tiling - not loaded as the shared .fmat. The
-    // tiling belongs to these walls and this ground, not to every scene that
-    // uses grass, and a scene keeps its own materials when it is saved.
-    const std::filesystem::path stock = stockMaterialsDirectory();
-    const auto pick = [&](const char* stockName, const char* name, Vec4 colour, const std::filesystem::path& texture,
-                          Vec2 tiling) {
-        const std::filesystem::path fmat = stock / stockName / (std::string(stockName) + ".fmat");
-        std::error_code ec;
-        if (std::filesystem::exists(fmat, ec)) {
-            if (std::optional<MaterialDesc> desc = readMaterialFile(fmat)) {
-                desc->uvScale = tiling;
-                return renderer.createMaterial(
-                    *desc, MaterialOrigin{.kind = MaterialOrigin::Kind::Builtin, .file = {}, .index = 0});
-            }
-        }
-        const MaterialHandle plain = renderer.createMaterial(name, colour, texture);
-        renderer.resources().material(plain).uvScale = tiling;
-        return plain;
-    };
-    const MaterialHandle grassMaterial =
-        pick("Grass", "Grass", Vec4{0.85f, 0.9f, 0.85f, 1.0f}, textures / "grass.jpg", Vec2{14.0f, 14.0f});
-    const MaterialHandle brickMaterial =
-        pick("Bricks", "Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, textures / "brick.jpg", Vec2{6.0f, 2.0f});
-    const MaterialHandle woodMaterial =
-        pick("WoodFloor", "Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, textures / "wood.jpg", Vec2{3.0f, 3.0f});
-    const MaterialHandle stoneMaterial =
-        renderer.createMaterial("Stone", Vec4{0.34f, 0.335f, 0.32f, 1.0f});
-    const MaterialHandle metalMaterial =
-        renderer.createMaterial("Polished metal", Vec4{0.55f, 0.56f, 0.58f, 1.0f});
-
-    ResourceRegistry& resources = renderer.resources();
-
-    // Tiling is what keeps a texture at a believable size. A node's scale does
-    // not touch texture coordinates, so a cube stretched into a ten-metre wall
-    // would otherwise carry one enormous brick.
-    //
-    // A stock material's roughness comes from its map, which the factor
-    // scales - so only the plain fallbacks get a roughness set here.
-    const auto roughen = [&](MaterialHandle handle, f32 roughness) {
-        Material& material = resources.material(handle);
-        if (material.roughnessPath.empty() && material.packedMetallicRoughnessPath.empty()) {
-            material.roughness = roughness;
-        }
-    };
-    roughen(grassMaterial, 0.95f);
-    roughen(brickMaterial, 0.85f);
-    roughen(woodMaterial, 0.55f);
-
-    resources.material(stoneMaterial).roughness = 0.75f;
-
-    // Polished metal, so the courtyard shows a ray traced reflection without
-    // anyone having to build one: the grass, the brick and the sky all appear
-    // in it. Turn its roughness up in Details and watch the reflection dissolve
-    // into the sky gradient - that is the whole difference between the two
-    // methods, in one slider.
-    resources.material(metalMaterial).roughness = 0.12f;
-    resources.material(metalMaterial).metallic = 1.0f;
-
-    const MeshHandle groundMesh = renderer.createPlaneMesh(16.0f);
-    const MeshHandle cubeMesh = renderer.createCubeMesh();
-    const MeshHandle cylinderMesh = renderer.createCylinderMesh(0.9f, 3.0f, 40);
-
-    // --- ground -------------------------------------------------------------
-    const NodeId ground = scene.createNode("Ground");
-    scene.node(ground).mesh = groundMesh;
-    scene.node(ground).material = grassMaterial;
-
-    // --- walls --------------------------------------------------------------
-    // Boxes rather than flat quads, so they have a thickness for the sun to
-    // find an edge of and for bounced light to come off the inside face of.
-    const NodeId walls = scene.createNode("Walls");
-
-    struct WallPlacement {
-        const char* name;
-        Vec3 position;
-        Vec3 scale;
-    };
-
-    // Open towards the camera, so the courtyard reads as a place you are
-    // standing in rather than a box you are looking into.
-    const std::array<WallPlacement, 3> wallPlacements{{
-        {"Wall back", Vec3{0.0f, 1.75f, -7.0f}, Vec3{14.0f, 3.5f, 0.5f}},
-        {"Wall left", Vec3{-7.0f, 1.75f, 0.0f}, Vec3{0.5f, 3.5f, 14.0f}},
-        {"Wall right", Vec3{7.0f, 1.75f, 0.0f}, Vec3{0.5f, 3.5f, 14.0f}},
-    }};
-
-    for (const WallPlacement& wall : wallPlacements) {
-        const NodeId id = scene.createNode(wall.name, walls);
-        scene.node(id).mesh = cubeMesh;
-        scene.node(id).material = brickMaterial;
-        scene.node(id).transform.position = wall.position;
-        scene.node(id).transform.scale = wall.scale;
-    }
-
-    // --- a wooden deck ------------------------------------------------------
-    const NodeId deck = scene.createNode("Deck");
-    scene.node(deck).mesh = cubeMesh;
-    scene.node(deck).material = woodMaterial;
-    scene.node(deck).transform.position = Vec3{-3.4f, 0.15f, 2.6f};
-    scene.node(deck).transform.scale = Vec3{5.0f, 0.3f, 4.0f};
-
-    // --- the pillar ---------------------------------------------------------
-    const NodeId pillar = scene.createNode("Pillar");
-    scene.node(pillar).mesh = cylinderMesh;
-    scene.node(pillar).material = metalMaterial;
-    scene.node(pillar).transform.position = Vec3{0.0f, 1.5f, -1.0f};
-
-    // --- some blocks --------------------------------------------------------
-    const NodeId blocks = scene.createNode("Blocks");
-
-    struct BlockPlacement {
-        Vec3 position;
-        Vec3 scale;
-        f32 yawDegrees;
-    };
-
-    const std::array<BlockPlacement, 4> blockPlacements{{
-        {Vec3{3.4f, 0.5f, 1.4f}, Vec3{1.0f, 1.0f, 1.0f}, 18.0f},
-        {Vec3{4.6f, 0.3f, -2.4f}, Vec3{0.6f, 0.6f, 0.6f}, -35.0f},
-        {Vec3{-4.8f, 0.55f, -3.6f}, Vec3{1.1f, 1.1f, 1.1f}, 8.0f},
-        {Vec3{1.6f, 0.25f, 3.8f}, Vec3{1.6f, 0.5f, 1.0f}, 52.0f},
-    }};
-
-    char blockName[32];
-    int blockIndex = 0;
-    for (const BlockPlacement& block : blockPlacements) {
-        std::snprintf(blockName, sizeof(blockName), "Block %c",
-                      static_cast<char>('A' + blockIndex++));
-
-        const NodeId id = scene.createNode(blockName, blocks);
-        scene.node(id).mesh = cubeMesh;
-        scene.node(id).material = stoneMaterial;
-        scene.node(id).transform.position = block.position;
-        scene.node(id).transform.scale = block.scale;
-        scene.node(id).transform.rotation =
-            fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, radians(block.yawDegrees));
-    }
-
-    // One block bobs, so Play visibly does two different things at once.
-    if (scene.isAlive(blocks) && !scene.node(blocks).children.empty()) {
-        scene.node(scene.node(blocks).children.front()).script = "bob";
-    }
-
-    // --- a lamp -------------------------------------------------------------
-    // Warm, low, and inside the courtyard where the sun does not reach. A light
-    // that only brightens what is already lit teaches nothing.
-    const NodeId lamp = scene.createNode("Lamp");
-    scene.node(lamp).transform.position = Vec3{-3.4f, 1.6f, 2.6f};
-    scene.node(lamp).light = Light{
-        .color = Vec3{1.0f, 0.62f, 0.30f},
-        .intensity = 55.0f,
-        .range = 9.0f,
-    };
-
-    const std::filesystem::path modelPath = executableDirectory() / "assets" / "DamagedHelmet.glb";
-    if (std::filesystem::exists(modelPath)) {
-        const NodeId model = renderer.loadModel(modelPath);
-        if (model != kInvalidNode) {
-            scene.node(model).transform.position = Vec3{0.0f, 4.2f, -1.0f};
-
-            // A C++ component, while a block above carries a Lua script. Both
-            // run in the same frame off the same context, which is the whole
-            // claim the dual scripting model makes - press Play and watch one
-            // object driven from each side.
-            scene.node(model).component = "Spinner";
-        }
-    }
-
-    // The camera, placed to look into the courtyard rather than at the origin.
-    renderer.camera().position = Vec3{6.5f, 4.2f, 9.5f};
-    renderer.camera().yaw = -125.0f;
-    renderer.camera().pitch = -16.0f;
-
-    FUMAR_INFO("starter scene: {} nodes, {} meshes, {} materials", scene.nodeCount(),
-               renderer.resources().meshCount(), renderer.resources().materialCount());
-}
 
 /// Copies the keyboard and mouse into the form scripts see them in.
 ///
@@ -512,9 +311,9 @@ int main() {
     renderer.setOverlay([&ui](vk::CommandBuffer cmd) { ui.record(cmd); });
 
     // The camera comes with the scene. It used to be set again here, right
-    // after, which silently won - so moving the viewpoint inside
-    // createStarterScene changed nothing and there was no way to tell.
-    createStarterScene(renderer);
+    // after, which silently won - so moving the viewpoint inside a template
+    // changed nothing and there was no way to tell.
+    buildSceneTemplate(renderer, kDefaultSceneTemplate);
 
     const std::filesystem::path sceneDirectory = executableDirectory() / "scenes";
 
@@ -920,7 +719,7 @@ int main() {
             renderer.waitIdle();
             resetMaterialsPanel(state, ui);
             renderer.resetScene();
-            createStarterScene(renderer);
+            buildSceneTemplate(renderer, state.newSceneTemplate);
             state.scenePath.clear();
             state.selected = kInvalidNode;
             state.hovered = kInvalidNode;

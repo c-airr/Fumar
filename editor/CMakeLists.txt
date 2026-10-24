@@ -11,7 +11,8 @@ add_executable(fumar_editor
     src/main.cpp
     src/materials_panel.cpp
     src/modeler.cpp
-    src/panels.cpp)
+    src/panels.cpp
+    src/templates.cpp)
 
 target_link_libraries(fumar_editor PRIVATE
     fumar::core
