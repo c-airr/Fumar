@@ -341,6 +341,21 @@ int main() {
     bool scriptDrivesCamera = false;
     bool playHeldMouse = false;
 
+    // What Play starts from, put back on Stop - the character returns to where
+    // it stood and the pickups come back, as in Unreal. Taken when scriptsRunning
+    // turns on rather than at the button, so every way of starting is covered.
+    struct PlayedNode {
+        NodeId id;
+        u32 generation;
+        Transform transform;
+        bool visible;
+    };
+    std::vector<PlayedNode> beforePlay;
+    Vec3 cameraBeforePlay{};
+    f32 yawBeforePlay = 0.0f;
+    f32 pitchBeforePlay = 0.0f;
+    bool wasPlaying = false;
+
     auto lastFrameTime = Clock::now();
 
     // When something last happened: an event, a script running, an animation
@@ -434,6 +449,36 @@ int main() {
             state.scriptsRunning = false;
         }
         playHeldMouse = window.relativeMouse();
+
+        if (state.scriptsRunning != wasPlaying) {
+            Scene& scene = renderer.scene();
+            if (state.scriptsRunning) {
+                beforePlay.clear();
+                const auto record = [&](auto&& self, NodeId id) -> void {
+                    const Node& node = scene.node(id);
+                    beforePlay.push_back({id, scene.generation(id), node.transform, node.visible});
+                    for (const NodeId child : node.children) {
+                        self(self, child);
+                    }
+                };
+                record(record, kRootNode);
+                cameraBeforePlay = renderer.camera().position;
+                yawBeforePlay = renderer.camera().yaw;
+                pitchBeforePlay = renderer.camera().pitch;
+            } else {
+                for (const PlayedNode& saved : beforePlay) {
+                    if (scene.isAlive(saved.id) && scene.generation(saved.id) == saved.generation) {
+                        scene.node(saved.id).transform = saved.transform;
+                        scene.node(saved.id).visible = saved.visible;
+                    }
+                }
+                renderer.camera().position = cameraBeforePlay;
+                renderer.camera().yaw = yawBeforePlay;
+                renderer.camera().pitch = pitchBeforePlay;
+                beforePlay.clear();
+            }
+            wasPlaying = state.scriptsRunning;
+        }
 
         const bool wantRelative =
             window.hasFocus() &&
