@@ -11,6 +11,7 @@
 #include "fumar/scene/scene.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
@@ -276,6 +277,159 @@ void buildBlank(Renderer& renderer) {
     renderer.camera().pitch = -15.0f;
 }
 
+/// The course both character templates share: a walled yard to walk round, with
+/// something in it for each thing the character does.
+///
+/// - stairs up to a platform on the left, a ramp up to one on the right, and a
+///   bridge between the two, for the floor probe;
+/// - pillars and the perimeter wall, for walls and sliding along them;
+/// - a low wall to jump;
+/// - a violet wall with Collision off, walked straight through;
+/// - a pickup that disappears, and stops being solid, when touched.
+///
+/// The player starts at z = 10 looking down -Z, towards all of it.
+void buildCourse(Renderer& renderer) {
+    Scene& scene = renderer.scene();
+
+    const MaterialHandle concrete = pickMaterial(renderer, "Concrete", "Concrete", Vec4{0.36f, 0.36f, 0.35f, 1.0f},
+                                                 nullptr, Vec2{16.0f, 16.0f}, 0.85f);
+    const MaterialHandle brick =
+        pickMaterial(renderer, "Bricks", "Brick", Vec4{0.85f, 0.85f, 0.85f, 1.0f}, "brick.jpg", Vec2{12.0f, 1.5f}, 0.85f);
+    const MaterialHandle wood = pickMaterial(renderer, "WoodFloor", "Wood", Vec4{0.9f, 0.9f, 0.9f, 1.0f}, "wood.jpg",
+                                             Vec2{2.0f, 2.0f}, 0.6f);
+    const MaterialHandle stone = plainMaterial(renderer, "Stone", Vec3{0.34f, 0.335f, 0.32f}, 0.75f);
+    const MaterialHandle orange = plainMaterial(renderer, "Orange", Vec3{0.7f, 0.22f, 0.03f}, 0.6f);
+    const MaterialHandle ghost = glowMaterial(renderer, "Ghost", Vec3{0.6f, 0.3f, 1.0f}, 2.0f);
+    const MaterialHandle gold = plainMaterial(renderer, "Gold", Vec3{1.0f, 0.77f, 0.34f}, 0.15f, 1.0f);
+
+    const MeshHandle cube = renderer.createCubeMesh();
+    const MeshHandle pillarMesh = renderer.createCylinderMesh(0.4f, 3.0f);
+
+    const auto box = [&](const char* name, NodeId parent, MaterialHandle material, Vec3 position, Vec3 scale) {
+        const NodeId id = scene.createNode(name, parent);
+        scene.node(id).mesh = cube;
+        scene.node(id).material = material;
+        scene.node(id).transform.position = position;
+        scene.node(id).transform.scale = scale;
+        return id;
+    };
+
+    const NodeId course = scene.createNode("Course");
+
+    const NodeId ground = scene.createNode("Ground", course);
+    scene.node(ground).mesh = renderer.createPlaneMesh(16.0f);
+    scene.node(ground).material = concrete;
+
+    box("Wall north", course, brick, Vec3{0.0f, 1.5f, -16.0f}, Vec3{32.5f, 3.0f, 0.5f});
+    box("Wall south", course, brick, Vec3{0.0f, 1.5f, 16.0f}, Vec3{32.5f, 3.0f, 0.5f});
+    box("Wall west", course, brick, Vec3{-16.0f, 1.5f, 0.0f}, Vec3{0.5f, 3.0f, 32.0f});
+    box("Wall east", course, brick, Vec3{16.0f, 1.5f, 0.0f}, Vec3{0.5f, 3.0f, 32.0f});
+
+    // Six steps of 0.3 m, under the 0.45 m the character climbs without
+    // jumping, up to a platform 1.8 m high.
+    const NodeId stairs = scene.createNode("Stairs", course);
+    for (int i = 0; i < 6; ++i) {
+        const f32 height = 0.3f * static_cast<f32>(i + 1);
+        char name[16];
+        std::snprintf(name, sizeof(name), "Step %d", i + 1);
+        box(name, stairs, wood, Vec3{-6.0f, height * 0.5f, 4.0f - 0.6f * static_cast<f32>(i)},
+            Vec3{3.0f, height, 0.6f});
+    }
+    box("Platform left", course, stone, Vec3{-6.0f, 0.9f, -2.3f}, Vec3{4.0f, 1.8f, 6.0f});
+
+    // The same 1.8 m on the right, as an 18 degree slope. A tilted box: the
+    // floor probe tests it in its own space, so the slope is exact.
+    constexpr f32 kRampDegrees = 18.0f;
+    const f32 rampLength = 1.8f / std::sin(radians(kRampDegrees));
+    const f32 rampRun = 1.8f / std::tan(radians(kRampDegrees));
+    const NodeId ramp = box("Ramp", course, stone, Vec3{6.0f, 0.9f - 0.1f, 4.0f - rampRun * 0.5f},
+                            Vec3{3.0f, 0.2f, rampLength});
+    // A positive turn about X tips -Z upwards, which is the way the ramp climbs.
+    scene.node(ramp).transform.rotation = fromAxisAngle(Vec3{1.0f, 0.0f, 0.0f}, radians(kRampDegrees));
+    box("Platform right", course, stone, Vec3{6.0f, 0.9f, 4.0f - rampRun - 3.0f}, Vec3{4.0f, 1.8f, 6.0f});
+
+    box("Bridge", course, wood, Vec3{0.0f, 1.7f, -4.0f}, Vec3{8.0f, 0.2f, 1.5f});
+
+    // To walk into and slide along.
+    const NodeId pillars = scene.createNode("Pillars", course);
+    for (int i = 0; i < 4; ++i) {
+        char name[16];
+        std::snprintf(name, sizeof(name), "Pillar %d", i + 1);
+        const NodeId id = scene.createNode(name, pillars);
+        scene.node(id).mesh = pillarMesh;
+        scene.node(id).material = stone;
+        scene.node(id).transform.position = Vec3{-6.0f + 4.0f * static_cast<f32>(i), 1.5f, -12.0f};
+    }
+
+    // Lower than the 1.2 m a jump reaches.
+    box("Low wall", course, orange, Vec3{0.0f, 0.4f, -8.5f}, Vec3{6.0f, 0.8f, 0.4f});
+
+    // Solid-looking, and not solid: Collision is unticked in Details.
+    const NodeId ghostWall = box("Ghost wall (no collision)", course, ghost, Vec3{0.0f, 1.25f, 4.0f},
+                                 Vec3{4.0f, 2.5f, 0.2f});
+    scene.node(ghostWall).collision = false;
+
+    // Hidden and switched off by its script when the player reaches it.
+    const NodeId pickup = box("Pickup", course, gold, Vec3{-12.0f, 0.8f, 8.0f}, Vec3{0.4f, 0.4f, 0.4f});
+    scene.node(pickup).script = "pickup";
+}
+
+/// The course, and a player who sees it through their own eyes: player.lua on
+/// a person-sized box, as Add > Player makes it. Press Play.
+void buildFirstPerson(Renderer& renderer) {
+    buildCourse(renderer);
+
+    Scene& scene = renderer.scene();
+    const NodeId player = scene.createNode("Player");
+    scene.node(player).mesh = renderer.createCubeMesh();
+    scene.node(player).material = plainMaterial(renderer, "Player", Vec3{0.3f, 0.3f, 0.32f}, 0.7f);
+    // The script expects the origin at the middle of the box, as Add makes it.
+    scene.node(player).transform.position = Vec3{0.0f, 0.85f, 10.0f};
+    scene.node(player).transform.scale = Vec3{0.6f, 1.7f, 0.6f};
+    scene.node(player).script = "player";
+
+    // At the player's eyes, so Play does not move the view.
+    renderer.camera().position = Vec3{0.0f, 1.7f, 10.0f};
+    renderer.camera().yaw = -90.0f;
+    renderer.camera().pitch = -5.0f;
+}
+
+/// The course, and a character seen from behind: third_person.lua on a node at
+/// the feet, with a simple mannequin under it. Press Play.
+void buildThirdPerson(Renderer& renderer) {
+    buildCourse(renderer);
+
+    Scene& scene = renderer.scene();
+    const MaterialHandle suit = plainMaterial(renderer, "Mannequin", Vec3{0.08f, 0.2f, 0.45f}, 0.55f);
+    const MaterialHandle visor = glowMaterial(renderer, "Visor", Vec3{0.3f, 0.9f, 1.0f}, 3.0f);
+    const MeshHandle cube = renderer.createCubeMesh();
+
+    const NodeId player = scene.createNode("Player");
+    scene.node(player).transform.position = Vec3{0.0f, 0.0f, 10.0f};
+    scene.node(player).script = "third_person";
+
+    // The body is only for looking at. Collision off, so the camera boom - which
+    // starts inside the head - does not stop on the character's own shoulders.
+    const auto part = [&](const char* name, MeshHandle mesh, MaterialHandle material, Vec3 position, Vec3 scale) {
+        const NodeId id = scene.createNode(name, player);
+        scene.node(id).mesh = mesh;
+        scene.node(id).material = material;
+        scene.node(id).transform.position = position;
+        scene.node(id).transform.scale = scale;
+        scene.node(id).collision = false;
+    };
+    part("Legs", cube, suit, Vec3{0.0f, 0.4f, 0.0f}, Vec3{0.4f, 0.8f, 0.26f});
+    part("Body", cube, suit, Vec3{0.0f, 1.08f, 0.0f}, Vec3{0.56f, 0.6f, 0.32f});
+    part("Head", renderer.createSphereMesh(0.2f), suit, Vec3{0.0f, 1.58f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f});
+    // On the face, which is -Z: the one thing that says which way it looks.
+    part("Visor", cube, visor, Vec3{0.0f, 1.6f, -0.18f}, Vec3{0.26f, 0.07f, 0.06f});
+
+    // Where the boom will put the camera, so Play does not jump the view.
+    renderer.camera().position = Vec3{0.0f, 1.5f + 4.5f * std::sin(radians(15.0f)), 10.0f + 4.5f * std::cos(radians(15.0f))};
+    renderer.camera().yaw = -90.0f;
+    renderer.camera().pitch = -15.0f;
+}
+
 /// A walk rather than a view: a walled yard in daylight, a lamp-lit tunnel out
 /// of it, and a hall at the end lit through a hole in the roof.
 ///
@@ -495,6 +649,14 @@ constexpr std::array kTemplates{
                   "steel panels, and a hall with coloured walls, a mirror and gold balls from polished to rough. "
                   "Each stage shows something the rays do.",
                   &buildRayTracing},
+    SceneTemplate{"firstperson", "First Person",
+                  "A walled course seen through the player's eyes: stairs, a ramp, a bridge, pillars, a low wall "
+                  "to jump, a wall with collision off and a pickup. Press Play; WASD, mouse, shift, space.",
+                  &buildFirstPerson},
+    SceneTemplate{"thirdperson", "Third Person",
+                  "The same course with a character seen from behind on a camera boom that stops at walls. "
+                  "Press Play; WASD, mouse, shift, space.",
+                  &buildThirdPerson},
 };
 
 } // namespace

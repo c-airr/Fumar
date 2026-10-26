@@ -1297,6 +1297,19 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
         return false;
     }
 
+    // A character template, then Play - the scripts, the walls test and the
+    // camera boom all run, with the character standing still (nothing presses
+    // a key). Left playing for a look; Stop as usual.
+    if (variant == "firstperson" || variant == "thirdperson") {
+        if (frame == 0) {
+            state.newSceneTemplate = findSceneTemplate(variant);
+            state.newSceneRequested = true;
+            return true;
+        }
+        state.scriptsRunning = true;
+        return false;
+    }
+
     // Every template in turn through the same path File > New scene takes,
     // a couple of seconds each under the validation layers, ending back on the
     // default. Each build logs its node, mesh and material counts.
