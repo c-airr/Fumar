@@ -2,6 +2,7 @@
 
 #include "materials_panel.hpp"
 #include "panels.hpp"
+#include "templates.hpp"
 
 #include "fumar/core/log.hpp"
 #include "fumar/platform/paths.hpp"
@@ -1287,6 +1288,43 @@ bool runModelerSmoke(EditorState& state, Renderer& renderer, u32 frame, const st
     if (variant == "cpu" || variant == "gpu") {
         renderer.setWorkload(variant == "cpu" ? Renderer::Workload::Cpu : Renderer::Workload::Gpu);
         return false;
+    }
+
+    // Straight into the Ray Tracing template, for screenshots of it.
+    if (variant == "raytracing") {
+        state.newSceneTemplate = findSceneTemplate("raytracing");
+        state.newSceneRequested = true;
+        return false;
+    }
+
+    // A character template, then Play - the scripts, the walls test and the
+    // camera boom all run, with the character standing still (nothing presses
+    // a key). Left playing for a look; Stop as usual.
+    if (variant == "firstperson" || variant == "thirdperson") {
+        if (frame == 0) {
+            state.newSceneTemplate = findSceneTemplate(variant);
+            state.newSceneRequested = true;
+            return true;
+        }
+        state.scriptsRunning = true;
+        return false;
+    }
+
+    // Every template in turn through the same path File > New scene takes,
+    // a couple of seconds each under the validation layers, ending back on the
+    // default. Each build logs its node, mesh and material counts.
+    if (variant == "templates") {
+        constexpr u32 kPhase = 120;
+        const usize count = sceneTemplates().size();
+        const usize phase = frame / kPhase;
+        if (phase > count) {
+            return false;
+        }
+        if (frame % kPhase == 0) {
+            state.newSceneTemplate = phase < count ? phase : kDefaultSceneTemplate;
+            state.newSceneRequested = true;
+        }
+        return true;
     }
 
     if (variant == "workload") {

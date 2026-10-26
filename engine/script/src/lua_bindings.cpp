@@ -169,6 +169,18 @@ int nodeSetVisible(lua_State* lua) {
     return 0;
 }
 
+int nodeCollision(lua_State* lua) {
+    lua_pushboolean(lua, checkNode(lua, 1).collision ? 1 : 0);
+    return 1;
+}
+
+/// Picking something up, or a door that opens once touched, is a node that
+/// stops being solid at runtime - the same switch as Collision in Details.
+int nodeSetCollision(lua_State* lua) {
+    checkNode(lua, 1).collision = lua_toboolean(lua, 2) != 0;
+    return 0;
+}
+
 int nodeChildCount(lua_State* lua) {
     lua_pushinteger(lua, static_cast<lua_Integer>(checkNode(lua, 1).children.size()));
     return 1;
@@ -224,6 +236,8 @@ const luaL_Reg kNodeMethods[] = {
     {"set_scale", nodeSetScale},
     {"visible", nodeVisible},
     {"set_visible", nodeSetVisible},
+    {"collision", nodeCollision},
+    {"set_collision", nodeSetCollision},
     {"child_count", nodeChildCount},
     {"child", nodeChild},
     {"parent", nodeParent},

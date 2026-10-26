@@ -147,6 +147,8 @@ Methods use `:` syntax.
 | `node:set_scale(x, y, z)` | | |
 | `node:visible()` | boolean | |
 | `node:set_visible(b)` | | Hiding a node hides its whole subtree, and takes it out of raycasts. |
+| `node:collision()` | boolean | |
+| `node:set_collision(b)` | | Whether raycasts stop at this node - the Collision box in Details. On by default. Only this node, not its children. Turn it off when something is picked up or a door opens. |
 | `node:child_count()` | integer | |
 | `node:child(i)` | node or `nil` | **One-based**, like the rest of Lua. `nil` when out of range. |
 | `node:parent()` | node or `nil` | Top-level nodes return the scene root (named `root`); only the root itself returns `nil`. |
@@ -253,6 +255,7 @@ Do that work in `on_start` instead.
 - It tests the node's **bounding box**, not its triangles. A ray can hit the empty corner of a box around a sphere.
 - **A box the ray starts inside is not hit.** That keeps a node from finding its own box when it casts from its middle. It also means a ray started inside a wall passes through that wall.
 - Hidden nodes, and everything under them, are ignored.
+- Nodes with **Collision** off (in Details, or `node:set_collision(false)`) are ignored.
 
 ### Camera ownership
 
@@ -508,6 +511,7 @@ The editor can only rebuild in a development tree. A distributed build has no co
 | `node:rotation()` (degrees) | `node.transform.rotation` (quaternion; `fromAxisAngle`, `radians`) |
 | `node:scale()` | `node.transform.scale` |
 | `node:visible()` | `node.visible` |
+| `node:collision()` / `set_collision` | `node.collision` (`bool`) |
 | `node:name()` | `node.name` |
 | `node:child(i)` (1-based) / `node:parent()` | `node.children[i]` (0-based) / `node.parent` (`kInvalidNode` = none) |
 | `node:id()` | the `NodeId` from `scene.traverse`, or the one you stored |

@@ -24,6 +24,7 @@ struct NodeRecord {
     std::string component;
     std::optional<Light> light;
     bool visible = true;
+    bool collision = true;
 
     /// Index of the parent within the same list, or -1 for the scene root.
     /// Records are stored depth first, so a parent always comes before its

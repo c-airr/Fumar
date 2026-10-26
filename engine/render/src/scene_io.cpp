@@ -322,6 +322,9 @@ bool saveScene(const Renderer& renderer, const std::filesystem::path& path) {
         if (!node.visible) {
             entry["visible"] = false;
         }
+        if (!node.collision) {
+            entry["collision"] = false;
+        }
         if (!node.script.empty()) {
             entry["script"] = node.script;
         }
@@ -625,6 +628,7 @@ bool loadScene(Renderer& renderer, const std::filesystem::path& path) {
         node.transform.rotation = quatFrom(entry.value("rotation", Json::array()));
         node.transform.scale = vec3From(entry.value("scale", Json::array()), Vec3{1.0f, 1.0f, 1.0f});
         node.visible = entry.value("visible", true);
+        node.collision = entry.value("collision", true);
         node.script = entry.value("script", std::string{});
         node.component = entry.value("component", std::string{});
 

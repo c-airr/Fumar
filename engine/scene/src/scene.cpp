@@ -185,6 +185,7 @@ NodeId Scene::duplicateInto(NodeId source, NodeId parent) {
     const MeshHandle mesh = m_nodes[source].mesh;
     const MaterialHandle material = m_nodes[source].material;
     const bool visible = m_nodes[source].visible;
+    const bool collision = m_nodes[source].collision;
     const std::string script = m_nodes[source].script;
     const std::string component = m_nodes[source].component;
     const std::optional<Light> light = m_nodes[source].light;
@@ -194,6 +195,7 @@ NodeId Scene::duplicateInto(NodeId source, NodeId parent) {
     m_nodes[copy].mesh = mesh;
     m_nodes[copy].material = material;
     m_nodes[copy].visible = visible;
+    m_nodes[copy].collision = collision;
     m_nodes[copy].script = script;
     m_nodes[copy].component = component;
     m_nodes[copy].light = light;

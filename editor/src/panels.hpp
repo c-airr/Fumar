@@ -110,6 +110,11 @@ struct EditorState {
     /// performed inside it. Loading a scene destroys the very nodes the panels
     /// are in the middle of describing, so it has to happen between frames.
     bool newSceneRequested = false;
+
+    /// Which template the next new scene is built from; an index into
+    /// sceneTemplates(). Chosen in the New scene dialog.
+    usize newSceneTemplate = 1;
+    bool newSceneDialogRequested = false;
     bool saveRequested = false;
     bool openRequested = false;
     std::string openPath;

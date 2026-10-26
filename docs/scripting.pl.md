@@ -147,6 +147,8 @@ Metody wywołuje się przez `:`.
 | `node:set_scale(x, y, z)` | | |
 | `node:visible()` | boolean | |
 | `node:set_visible(b)` | | Ukrycie węzła ukrywa całe jego poddrzewo i wyłącza je z raycastów. |
+| `node:collision()` | boolean | |
+| `node:set_collision(b)` | | Czy raycasty zatrzymują się na tym węźle - to samo co Collision w Details. Domyślnie włączone. Dotyczy tylko tego węzła, nie dzieci. Wyłącz, gdy coś zostanie podniesione albo drzwi się otworzą. |
 | `node:child_count()` | liczba całkowita | |
 | `node:child(i)` | węzeł albo `nil` | **Indeksowanie od 1**, jak wszędzie w Lua. `nil` poza zakresem. |
 | `node:parent()` | węzeł albo `nil` | Dla węzłów najwyższego poziomu zwraca korzeń sceny (o nazwie `root`). `nil` zwraca tylko sam korzeń. |
@@ -253,6 +255,7 @@ Taką pracę rób w `on_start`.
 - Sprawdzany jest **prostopadłościan otaczający** węzła, a nie jego trójkąty. Promień może trafić w pusty róg pudełka wokół kuli.
 - **Pudełko, w którego środku promień się zaczyna, nie jest trafiane.** Dzięki temu węzeł nie znajduje własnego pudełka, gdy rzuca promień ze swojego środka. Oznacza to też, że promień wystartowany wewnątrz ściany przechodzi przez tę ścianę.
 - Ukryte węzły i wszystko pod nimi są pomijane.
+- Węzły z wyłączonym **Collision** (w Details albo przez `node:set_collision(false)`) są pomijane.
 
 ### Kto ma kamerę
 
@@ -508,6 +511,7 @@ Przebudowa działa tylko w drzewie deweloperskim. Wydany build nie ma kompilator
 | `node:rotation()` (stopnie) | `node.transform.rotation` (kwaternion; `fromAxisAngle`, `radians`) |
 | `node:scale()` | `node.transform.scale` |
 | `node:visible()` | `node.visible` |
+| `node:collision()` / `set_collision` | `node.collision` (`bool`) |
 | `node:name()` | `node.name` |
 | `node:child(i)` (od 1) / `node:parent()` | `node.children[i]` (od 0) / `node.parent` (`kInvalidNode` = brak) |
 | `node:id()` | `NodeId` z `scene.traverse` albo ten, który zapamiętałeś |

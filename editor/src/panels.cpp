@@ -1,6 +1,7 @@
 #include "panels.hpp"
 
 #include "materials_panel.hpp"
+#include "templates.hpp"
 
 #include "fumar/core/log.hpp"
 #include "fumar/core/math.hpp"
@@ -22,6 +23,7 @@
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -377,6 +379,62 @@ void drawNodeRecursive(EditorState& state, Scene& scene, NodeId id) {
     }
 }
 
+/// File > New scene: the templates on the left, what the chosen one contains
+/// on the right, the way Unreal's project browser lays them out.
+void drawNewSceneDialog(EditorState& state) {
+    constexpr const char* kTitle = "New scene";
+    if (state.newSceneDialogRequested) {
+        state.newSceneDialogRequested = false;
+        ImGui::OpenPopup(kTitle);
+    }
+
+    const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(620.0f, 300.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+        return;
+    }
+
+    const std::span<const SceneTemplate> templates = sceneTemplates();
+    const f32 buttonRow = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+
+    ImGui::BeginChild("##templates", ImVec2(180.0f, -buttonRow), ImGuiChildFlags_Borders);
+    for (usize i = 0; i < templates.size(); ++i) {
+        if (ImGui::Selectable(templates[i].name, state.newSceneTemplate == i,
+                              ImGuiSelectableFlags_AllowDoubleClick)) {
+            state.newSceneTemplate = i;
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                state.newSceneRequested = true;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##template", ImVec2(0.0f, -buttonRow));
+    if (state.newSceneTemplate < templates.size()) {
+        const SceneTemplate& chosen = templates[state.newSceneTemplate];
+        ImGui::TextColored(kAccentBright, "%s", chosen.name);
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", chosen.description);
+        ImGui::Spacing();
+        ImGui::TextDisabled("Replaces the open scene. Unsaved changes are lost.");
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Create", ImVec2(120.0f, 0.0f))) {
+        state.newSceneRequested = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
+}
+
 } // namespace
 
 void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirectory) {
@@ -410,8 +468,8 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
 
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New scene")) {
-                state.newSceneRequested = true;
+            if (ImGui::MenuItem("New scene...")) {
+                state.newSceneDialogRequested = true;
             }
 
             if (ImGui::BeginMenu("Open")) {
@@ -540,6 +598,8 @@ void drawDockspace(EditorState& state, const std::filesystem::path& sceneDirecto
 
         ImGui::EndMenuBar();
     }
+
+    drawNewSceneDialog(state);
 
     ImGui::End();
 }
@@ -834,6 +894,11 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         if (ImGui::Checkbox("Visible", &node.visible)) {
             state.history.record(scene, state.selected);
         }
+        if (ImGui::Checkbox("Collision", &node.collision)) {
+            state.history.record(scene, state.selected);
+        }
+        ImGui::SetItemTooltip("Characters stand on this and cannot walk through it.\n"
+                              "Off for things meant to be passed through.");
 
         ImGui::SeparatorText("Transform");
 
