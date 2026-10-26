@@ -304,6 +304,7 @@ public:
     /// a box around a sphere. Exact enough for standing on a block, not exact
     /// enough for a bullet. A box the ray starts inside is not hit, which is
     /// what lets an object cast from its own middle without finding itself.
+    /// Nodes with collision turned off are passed straight through.
     f32 raycast(const Ray& ray, f32 maxDistance = 1000.0f) const;
 
     /// Colour format of the swapchain, which any pipeline drawing into it must

@@ -894,6 +894,11 @@ void drawDetailsPanel(EditorState& state, Scene& scene, Renderer& renderer,
         if (ImGui::Checkbox("Visible", &node.visible)) {
             state.history.record(scene, state.selected);
         }
+        if (ImGui::Checkbox("Collision", &node.collision)) {
+            state.history.record(scene, state.selected);
+        }
+        ImGui::SetItemTooltip("Characters stand on this and cannot walk through it.\n"
+                              "Off for things meant to be passed through.");
 
         ImGui::SeparatorText("Transform");
 

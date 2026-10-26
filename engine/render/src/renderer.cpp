@@ -1757,7 +1757,7 @@ f32 Renderer::raycast(const Ray& ray, f32 maxDistance) const {
     bool hit = false;
 
     m_scene.forEachDrawable([&](NodeId, const Node& node, const Mat4& worldTransform) {
-        if (!m_resources.has(node.mesh)) {
+        if (!node.collision || !m_resources.has(node.mesh)) {
             return;
         }
 

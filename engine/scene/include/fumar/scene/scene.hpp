@@ -44,6 +44,13 @@ struct Node {
     /// so an editor can toggle it without losing the node.
     bool visible = true;
 
+    /// Whether rays - a character finding the floor, or a wall in front of it -
+    /// stop at this node. On by default, because a scene where the player
+    /// falls through everything until each piece is ticked is no default at
+    /// all; off for foliage, decals, light shades and anything else that is
+    /// meant to be walked through.
+    bool collision = true;
+
     /// A light at this node's world position, if it is one.
     ///
     /// Optional rather than a flag plus a struct, because "this node has no
