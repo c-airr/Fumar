@@ -43,6 +43,9 @@ assets/*
 # and licence are recorded in assets/textures/SOURCES.md.
 !assets/textures/
 
+# And the mannequin, which tools/blender/make_mannequin.py builds - ours.
+!assets/characters/
+
 # distribution output
 dist/
 

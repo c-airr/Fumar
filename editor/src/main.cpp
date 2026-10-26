@@ -339,6 +339,7 @@ int main() {
     // first Play tick that takes the camera; that is preferable to fighting
     // the cursor every frame.
     bool scriptDrivesCamera = false;
+    bool playHeldMouse = false;
 
     auto lastFrameTime = Clock::now();
 
@@ -424,6 +425,16 @@ int main() {
         const bool cameraButton =
             window.mouseButtonDown(MouseButton::Right) ||
             (state.workspace == Workspace::Modeler && window.mouseButtonDown(MouseButton::Middle));
+        // Escape while a script holds the mouse: Window has just released it,
+        // and left alone the line below would grab it straight back - Play
+        // could then only be stopped with the button, out of reach with no
+        // cursor. So Escape stops Play, as in Unreal.
+        if (state.scriptsRunning && scriptDrivesCamera && playHeldMouse && !window.relativeMouse() &&
+            window.hasFocus()) {
+            state.scriptsRunning = false;
+        }
+        playHeldMouse = window.relativeMouse();
+
         const bool wantRelative =
             window.hasFocus() &&
             ((scriptDrivesCamera && state.scriptsRunning) ||

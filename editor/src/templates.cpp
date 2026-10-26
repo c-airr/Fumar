@@ -418,11 +418,30 @@ void buildThirdPerson(Renderer& renderer) {
         scene.node(id).transform.scale = scale;
         scene.node(id).collision = false;
     };
-    part("Legs", cube, suit, Vec3{0.0f, 0.4f, 0.0f}, Vec3{0.4f, 0.8f, 0.26f});
-    part("Body", cube, suit, Vec3{0.0f, 1.08f, 0.0f}, Vec3{0.56f, 0.6f, 0.32f});
-    part("Head", renderer.createSphereMesh(0.2f), suit, Vec3{0.0f, 1.58f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f});
-    // On the face, which is -Z: the one thing that says which way it looks.
-    part("Visor", cube, visor, Vec3{0.0f, 1.6f, -0.18f}, Vec3{0.26f, 0.07f, 0.06f});
+    // The modelled mannequin (tools/blender/make_mannequin.py) when its file is
+    // there, the boxes when it is not.
+    const std::filesystem::path mannequinPath = executableDirectory() / "assets" / "characters" / "mannequin.glb";
+    NodeId mannequin = kInvalidNode;
+    if (std::filesystem::exists(mannequinPath)) {
+        mannequin = renderer.loadModel(mannequinPath, player);
+    }
+    if (mannequin != kInvalidNode) {
+        // glTF faces +Z; the script walks towards -Z.
+        scene.node(mannequin).transform.rotation = fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, radians(180.0f));
+        const auto noCollision = [&scene](auto&& self, NodeId id) -> void {
+            scene.node(id).collision = false;
+            for (const NodeId child : scene.node(id).children) {
+                self(self, child);
+            }
+        };
+        noCollision(noCollision, mannequin);
+    } else {
+        part("Legs", cube, suit, Vec3{0.0f, 0.4f, 0.0f}, Vec3{0.4f, 0.8f, 0.26f});
+        part("Body", cube, suit, Vec3{0.0f, 1.08f, 0.0f}, Vec3{0.56f, 0.6f, 0.32f});
+        part("Head", renderer.createSphereMesh(0.2f), suit, Vec3{0.0f, 1.58f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f});
+        // On the face, which is -Z: the one thing that says which way it looks.
+        part("Visor", cube, visor, Vec3{0.0f, 1.6f, -0.18f}, Vec3{0.26f, 0.07f, 0.06f});
+    }
 
     // Where the boom will put the camera, so Play does not jump the view.
     renderer.camera().position = Vec3{0.0f, 1.5f + 4.5f * std::sin(radians(15.0f)), 10.0f + 4.5f * std::cos(radians(15.0f))};
